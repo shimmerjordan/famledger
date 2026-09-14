@@ -12,6 +12,21 @@ const path = require('node:path');
 
 const SERVER = path.join(__dirname, '..', 'src', 'server.js');
 
+// 找到了一个真实 bug：只钉死下面 startServer() 生成的子进程的 TZ 是不够的——
+// 这个测试文件自己（node --test 的外层进程）也会调 `new Date().getHours()`
+// 去配置「这个点」跑一次定时备份（见 backup.test.js 的调度用例），如果外层
+// 进程和被钉死 Asia/Shanghai 的子进程站在两个不同时区，两边对「现在几点」
+// 各说各话，调度器永远对不上「到点了」，定时备份一次都不会触发。
+// 本地开发机通常本来就是 Asia/Shanghai（外层/子进程天然一致，测试怎么跑都是
+// 绿的），但 GitHub Actions 的 ubuntu-latest 默认是 UTC——外层还是 UTC、子
+// 进程被钉成 +8，两边正好差 8 小时，这两条调度测试在 CI 上必然失败（已用
+// `TZ=UTC node --test test/backup.test.js` 在本地实锤复现，报错与 CI 日志
+// 逐字一致）。在这里把外层进程自己也钉成 Asia/Shanghai，之前对子进程的钉法
+// 才真正生效、两边才会一致——顺序很重要：必须在任何测试文件调用
+// `new Date()` 之前执行，所以放在 helpers.js 最顶上，且每个测试文件都会
+// require 这个模块。
+process.env.TZ = 'Asia/Shanghai';
+
 /** Ask the OS for a port nobody is using, then release it. */
 function freePort() {
   return new Promise((resolve, reject) => {
