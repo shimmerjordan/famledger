@@ -1,0 +1,81 @@
+# ---------------------------------------------------------------------------
+# 自带 Flutter 的多阶段版本：给**没装 Flutter 的机器**（NAS 上直接 build、
+# 别人 clone 下来就想跑）用。日常用 deploy/Dockerfile —— 那个只 COPY 现成产物，
+# 十几秒就好；这个第一阶段要拉 3 GB 左右的 Flutter 镜像，首次构建十几分钟起。
+#
+#   docker compose -f deploy/docker-compose.build.yml up -d --build
+#     （先把 build.dockerfile 改成 deploy/Dockerfile.full，那边有注释）
+#   或者直接：docker build -f deploy/Dockerfile.full -t famledger:local .
+#
+# 两个文件的运行阶段必须保持一致 —— 改了 deploy/Dockerfile 的运行阶段，记得同步
+# 改这里（刻意不做 include：Dockerfile 没有 include，用 ARG 拼出来只会更难读）。
+# ---------------------------------------------------------------------------
+
+# ── 第一阶段：构建 Web 产物 ─────────────────────────────────────────────────
+# 版本钉死 3.32.1，和本机开发用的 SDK 一致：Flutter 的 web 产物在小版本之间也会
+# 变（canvaskit 版本、bootstrap 脚本形态），构建机和开发机漂开了，线上出的怪问题
+# 在本机永远复现不出来。
+#
+# 这一阶段**不**加 --platform=$BUILDPLATFORM：web 产物是纯 JS/wasm，与目标架构无关，
+# 但 buildx 出双架构镜像时两个 target 各自会跑一遍这个阶段。想省这一遍就在 CI 里
+# 用 deploy/Dockerfile + 外部构建好的产物（.github/workflows/build.yml 就是这么干的）。
+FROM ghcr.io/cirruslabs/flutter:3.32.1 AS web
+
+# 只拷 app/：server/ 的改动不该让这一层缓存失效。仓库根的 .dockerignore 已经把
+# app/.dart_tool、app/android/.gradle、app/ios/Pods 这些挡在外面了。
+COPY app/ /src/app/
+WORKDIR /src/app
+
+# pub get 与 build 放在同一个 RUN：分开写只会多一层，而 pub 的缓存本来就不跨层复用。
+# 保持默认 PWA 策略（会生成 flutter_service_worker.js）；服务端对 index.html /
+# flutter_bootstrap.js / flutter_service_worker.js / version.json 一律 no-cache，
+# 所以升级镜像后浏览器下一次打开就能换到新版本，不会被 SW 钉在旧版上。
+#
+# `git config --global --add safe.directory '*'` 是防御性的：这一阶段以 root 跑，
+# 而 flutter 命令启动时要对自己的 SDK 目录跑 git（查版本、查 channel）。镜像里
+# SDK 的属主若不是 root，新版 git 的 dubious ownership 检查会让 flutter 直接罢工，
+# 报一句和 Flutter 毫无关系的 git 错。cirruslabs 的镜像目前不会踩到，但这行成本为零。
+RUN git config --global --add safe.directory '*' \
+ && flutter pub get \
+ && flutter build web --release
+
+# ── 第二阶段：运行镜像（与 deploy/Dockerfile 完全一致，只有 web 产物来源不同）──
+FROM node:24-bookworm-slim
+
+# slim 里 curl 和 wget 都没有，HEALTHCHECK 得自带；tzdata 让 TZ=Asia/Shanghai 真的
+# 生效，否则 Node 静默回落 UTC，按自然月切的统计口径会差 8 小时。
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      curl tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# 后端零 npm 依赖，拷进来就能跑。
+COPY server/ /app/server/
+
+# 从第一阶段取 web 产物。同样不 --chown、不 --chmod：运行期进程对静态资源只读
+# （被打穿也没法往 /web 塞改过的 main.dart.js），而 --chmod=0644 会让目录丢掉执行位、
+# 整片资源无法遍历。
+COPY --from=web /src/app/build/web/ /web/
+
+RUN mkdir -p /data && chown node:node /data
+
+USER node
+
+# TRUST_PROXY 默认 1：目标部署形态是 NAS + Cloudflare Tunnel，隧道来的源 IP 永远是
+# 127.0.0.1，不认 CF-Connecting-IP 的话限流等于没有。直连暴露时设回 0。
+ENV PORT=48090 \
+    HOST=0.0.0.0 \
+    DATA_DIR=/data \
+    WEB_ROOT=/web \
+    TRUST_PROXY=1 \
+    NODE_ENV=production \
+    TZ=Asia/Shanghai
+
+VOLUME ["/data"]
+EXPOSE 48090
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:48090/healthz || exit 1
+
+CMD ["node", "/app/server/src/server.js"]

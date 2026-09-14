@@ -1,0 +1,80 @@
+import 'dart:async';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../capture/pipeline.dart' show CaptureOutcome;
+import '../platform/capture_providers.dart';
+import '../platform/share_import.dart';
+import 'router.dart';
+
+/// 外壳挂上时，把两条「没人拉一下就不会活」的平台接线接通：
+///
+/// - [capturePlatformProvider]：读一次就够 —— 它在构造时注册 MethodChannel 处理器，
+///   原生的 `onOpenCapture(captureId)` 从此由 Dart 接手（查本地捕获记录 →
+///   `/transactions/:id`），不必等用户打开「自动记账」设置页；随容器一起释放。
+/// - [shareImportProvider]：`start()`（幂等）订阅深链 / 读冷启动链接 / drain 一次
+///   App Group，并自己挂了生命周期观察者（回到前台再 drain）；`outcomes` 每出一条
+///   结论就弹一条 SnackBar，有本地捕获记录的可点「查看」跳到对应流水。
+///
+/// 两个服务在没有原生通道的平台（Web、桌面、测试）都自己吞 `MissingPluginException`
+/// 且一次 `invokeMethod` 都不发，这里不再判平台。只包在登录后的外壳外面：
+/// 没登录本来也导不进去，认证页不需要这些。
+class StartupWiring extends ConsumerStatefulWidget {
+  const StartupWiring({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  ConsumerState<StartupWiring> createState() => _StartupWiringState();
+}
+
+class _StartupWiringState extends ConsumerState<StartupWiring> {
+  StreamSubscription<CaptureOutcome>? _outcomes;
+
+  @override
+  void initState() {
+    super.initState();
+    // 读一下就完成了注册；返回值不需要。
+    ref.read(capturePlatformProvider);
+
+    final share = ref.read(shareImportProvider);
+    unawaited(share.start());
+    _outcomes = share.outcomes.listen(_showOutcome);
+  }
+
+  @override
+  void dispose() {
+    // 只取消自己的订阅；服务本身归 provider 管，登出再登入时 start() 是幂等的。
+    unawaited(_outcomes?.cancel());
+    super.dispose();
+  }
+
+  void _showOutcome(CaptureOutcome outcome) {
+    if (!mounted) return;
+    final captureId = outcome.captureId;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(outcome.title),
+        action: captureId == null
+            ? null
+            : SnackBarAction(label: '查看', onPressed: () => _open(captureId)),
+      ),
+    );
+  }
+
+  /// captureId → 详情页：本地捕获记录里已经有流水 id 就去 `/transactions/:id`，
+  /// 还没同步出 id 就回首页看「待确认」（与 `openCaptureRoute` 同一条规则）。
+  Future<void> _open(String captureId) async {
+    try {
+      final store = await ref.read(captureStoreProvider.future);
+      final txId = (await store.loadCapture(captureId))?.transactionId;
+      ref.read(routerProvider).push(txId == null ? '/home' : '/transactions/$txId');
+    } catch (_) {
+      // 本地记录读不到就算了：SnackBar 只是个提示，别为它抛错。
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
+}

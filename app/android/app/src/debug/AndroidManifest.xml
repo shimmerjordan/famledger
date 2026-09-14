@@ -1,0 +1,21 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- The INTERNET permission is required for development. Specifically,
+         the Flutter tool needs it to communicate with the running application
+         to allow setting breakpoints, to provide hot reload, etc.
+    -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+
+    <application>
+        <!-- 仅调试构建：adb 端到端脚本的广播入口（登录 / 触发通知动作 / 直接注入通知）。
+             release 清单里没有这个 receiver，类本身也用 BuildConfig.DEBUG 再守一道。 -->
+        <receiver
+            android:name=".capture.E2eReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.famledger.app.E2E_LOGIN"/>
+                <action android:name="com.famledger.app.E2E_ACTION"/>
+                <action android:name="com.famledger.app.E2E_NOTIFY"/>
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

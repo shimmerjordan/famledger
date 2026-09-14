@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">家账</string>
+    <string name="capture_listener_label">家账 · 自动记账</string>
+    <string name="capture_channel_name">自动记账</string>
+    <string name="capture_channel_description">识别到支付通知后的记账结果，可以直接确认、修改或撤销</string>
+    <string name="capture_test_channel_name">自动记账（测试）</string>
+</resources>

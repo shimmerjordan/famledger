@@ -1,0 +1,406 @@
+name: 构建与发布
+
+# ════════════════════════════════════════════════════════════════════════
+# 本仓库只有两条流水线：test.yml 回答「代码是好的吗」（push / PR 自动跑），
+# 这一条回答「现在要把它发出去吗」——只能手动触发。
+#
+#   version ── 从 CHANGELOG.md 取版本号
+#   test（调用 test.yml）── 门禁，下面每个 job 都 needs 它
+#     ├─ image    GHCR 单镜像，双架构（linux/amd64 + linux/arm64）
+#     └─ android  APK
+#   release ── 把 APK 挂到 GitHub Release，说明里带上本次镜像 tag
+#   docs ── 不管这次是不是真的发布，都把「怎么部署/怎么装/怎么用」写进
+#           **这次 Actions 运行自己的 Summary 页面**：验证性构建（publish
+#           取消勾选）也能当场看到产物长什么样，不用等 Release 页面或翻 README
+#
+# ── 为什么发布只能手动触发 ──────────────────────────────────────────────
+# 这条流水线的每个 job 都有对外副作用，而且不便宜：image 要交叉编译两个
+# 架构再推 GHCR（成功即顶掉 NAS 上 compose 默认拉的 :latest），release 要在
+# 仓库里建一个公开可见的 Release 并挂上 APK。这些该由人按下按钮的那一刻
+# 决定，而不是「我刚推了一行代码」自动决定。所以门禁自动化、发布手动化：
+# push 只回答「代码是好的吗」，这条流水线回答「现在要发出去吗」。
+#
+# ── 为什么版本号来自 CHANGELOG.md 而不是 git tag ────────────────────────
+# tag 是发布的**结果**，拿它当来源就要求「先打 tag 再构建」，tag 打错了
+# 还得删、还可能和已推的镜像对不上。CHANGELOG 是写变更时顺手就改的地方
+# （见 scripts/version.sh），让它当唯一来源，版本号与变更说明天然同步。
+# 想临时发一个别的号（比如验证一个 hotfix）用 version 输入覆盖它。
+#
+# ── 为什么 CI 必须真的编译 Flutter，而不是只跑 analyze ───────────────────
+# `flutter analyze` 只做静态检查，抓不出依赖与 SDK 之间的不兼容——本项目
+# 就踩过 fl_chart 与 Flutter 3.32.1 的坑：analyze 全程绿灯，只有真正
+# build 才在编译期炸开。test.yml 里已经把 `flutter build web --release`
+# 和 `flutter test` 当门禁跑过一遍；这里 image / android 两个 job 各自
+# 再编一次给发布用的产物，同样是「编出来」而不是「看起来没问题」。
+#
+# ── 怎么用 ──────────────────────────────────────────────────────────────
+# Actions 页 → 构建与发布 → Run workflow。第一个 job 是测试（调用
+# test.yml，与 push 上跑的是同一份定义），红了后面全不动。
+#
+#   正常发布      两个输入用默认，直接跑
+#   只验证不发布  publish 取消勾选（镜像、APK 照编，但不推 GHCR、不建 Release）
+#   发个别的号    version 填 0.1.1-rc.1
+# ════════════════════════════════════════════════════════════════════════
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号。留空 = 用 CHANGELOG.md 里的（推荐）。填了则覆盖，例如 0.1.1-rc.1'
+        required: false
+        default: ''
+      publish:
+        description: '真的发布？取消勾选 = 镜像与 APK 照编照验，但不推 GHCR、不建 Release'
+        type: boolean
+        default: true
+      prerelease:
+        description: 'GitHub Release 标记为预发布？'
+        type: boolean
+        default: true
+
+# 一次发布不该被后来的触发顶掉，所以不取消进行中的运行——第二次触发排队
+# 等着。这与 test.yml 相反：那边每次 push 都只想看最后一次结论，这边发布
+# 中途被打断则代价高得多（镜像可能推到一半）。
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ───────────────────────── 版本号 ─────────────────────────
+  # 单独一个 job 只为「算一次，image / android / release 三边共用」。
+  version:
+    name: 版本号
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: v
+        env:
+          OVERRIDE: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          FROM_CHANGELOG=$(./scripts/version.sh)
+          if [ -n "${OVERRIDE:-}" ]; then
+            V="$OVERRIDE"
+            echo "::notice::版本由手动输入指定：$V（CHANGELOG.md 里是 $FROM_CHANGELOG）"
+          else
+            V="$FROM_CHANGELOG"
+            echo "::notice::版本取自 CHANGELOG.md：$V"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+  # ───────────────────────── 门禁 ─────────────────────────
+  # 定义只在 test.yml 里写一处，这里通过 workflow_call 复用。下面每个 job
+  # 都 needs 它，所以「测试红了就不发布」是真的依赖关系，手动发布也绕不过。
+  test:
+    name: 测试
+    uses: ./.github/workflows/test.yml
+
+  # ───────────────────── GHCR 镜像（双架构）─────────────────────
+  image:
+    name: GHCR 镜像
+    needs: [version, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: write # 推 GHCR 需要
+    outputs:
+      owner: ${{ steps.meta.outputs.owner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.32.1
+          channel: stable
+          cache: true
+
+      # Web 产物在镜像外构建一次：与 CPU 架构无关，amd64/arm64 两个 target
+      # 共用同一份、COPY 进镜像即可，不必像 Dockerfile.full 那样在镜像内
+      # 对着每个架构各编一遍（deploy/Dockerfile 顶部注释是同一个理由）。
+      - name: 构建 Flutter web 产物
+        working-directory: app
+        run: flutter build web --release
+
+      # QEMU 只用于「跑」arm64 那一侧做交叉编译，setup-buildx 提供跨架构
+      # 构建器。
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 登录 GHCR
+        if: inputs.publish
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # GHCR 镜像路径要求全小写，而 github.repository_owner 可能带大写
+      # （例如个人账号 ShimmerJordan）；表达式语法里没有转小写、也没有截断
+      # 字符串的函数，两样都只能在 shell 里算：owner 用 ${VAR,,}，短 SHA
+      # 用 bash 的 ${VAR:0:7} 切片。下面的 tags 统一用这两个结果拼。
+      - name: 计算镜像标签用到的派生值（owner 转小写、短 SHA）
+        id: meta
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          echo "owner=${OWNER,,}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+      # 先单架构 load 到本地 daemon 才能真正跑起来，交给 test.yml 里的
+      # docker job 去做完整冒烟；这里是双架构发布构建，不重复冒烟一遍
+      # （改动同一份 Dockerfile，冒烟只需要跑一次）。
+      - name: 构建并（可选）推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ inputs.publish }}
+          tags: |
+            ghcr.io/${{ steps.meta.outputs.owner }}/famledger:latest
+            ghcr.io/${{ steps.meta.outputs.owner }}/famledger:${{ needs.version.outputs.version }}
+            ghcr.io/${{ steps.meta.outputs.owner }}/famledger:sha-${{ steps.meta.outputs.short_sha }}
+          cache-from: type=gha,scope=famledger-image
+          cache-to: type=gha,scope=famledger-image,mode=max
+
+  # ───────────────────────── Android APK ─────────────────────────
+  android:
+    name: Android APK
+    needs: [version, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.32.1
+          channel: stable
+          cache: true
+
+      # app/android/app/build.gradle.kts 里 release 构建目前签的是 debug
+      # 密钥（"Signing with the debug keys for now" 的 TODO 还没做）——
+      # 装得上、跑得起，但不是生产签名，也就没有「覆盖安装跨签名一致」或
+      # 应用商店上架的保证。家账现阶段只是自己和家人侧载，够用；真要生产
+      # 签名再补 keystore secrets 与 android/key.properties。
+      - name: Build APK (release)
+        working-directory: app
+        env:
+          V: ${{ needs.version.outputs.version }}
+        run: |
+          flutter build apk --release \
+            --build-name="$V" --build-number="${{ github.run_number }}"
+
+      - name: Rename APK
+        run: |
+          set -euo pipefail
+          V="${{ needs.version.outputs.version }}"
+          SRC=app/build/app/outputs/flutter-apk/app-release.apk
+          test -f "$SRC" || { echo "::error::没有找到 $SRC"; exit 1; }
+          cp "$SRC" "famledger-${V}.apk"
+          ls -lah "famledger-${V}.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: famledger-apk
+          path: famledger-*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+  # ───────────────────── 发布 GitHub Release ─────────────────────
+  release:
+    name: GitHub Release
+    needs: [version, image, android]
+    # if 里只要不出现 always()/failure()/cancelled()，Actions 会自动在前面
+    # 加上 success()——所以这一个条件已经隐含「image 与 android 都成功」，
+    # 不用再手写一遍。
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # 建 Release 需要
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: famledger-apk
+          path: artifacts
+
+      - name: 生成 Release 说明
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          OWNER: ${{ needs.image.outputs.owner }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          SHORT="${SHA:0:7}"
+          {
+            echo "# famledger v${VERSION}"
+            echo
+            echo "版本号取自 \`CHANGELOG.md\`，镜像与 APK 同号。"
+            echo
+            echo "## 镜像"
+            echo '```'
+            echo "ghcr.io/${OWNER}/famledger:latest"
+            echo "ghcr.io/${OWNER}/famledger:${VERSION}"
+            echo "ghcr.io/${OWNER}/famledger:sha-${SHORT}"
+            echo '```'
+            echo
+            echo "## Android APK"
+            echo
+            echo "见下方附件 \`famledger-${VERSION}.apk\`——用仓库当前的调试签名出包"
+            echo "（\`android/app/build.gradle.kts\` 里 release 还没配生产签名），可以"
+            echo "直接侧载安装，暂不适合应用商店上架。"
+          } > /tmp/notes.md
+          cat /tmp/notes.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.version.outputs.version }}
+          name: v${{ needs.version.outputs.version }}
+          body_path: /tmp/notes.md
+          prerelease: ${{ inputs.prerelease }}
+          fail_on_unmatched_files: true
+          files: artifacts/*.apk
+
+  # ───────────────────── Actions 摘要：部署与使用说明 ─────────────────────
+  # release job 只在 `publish=true` 时跑（它有对外副作用：真的建 Release）。
+  # 这个 job 不同——它不产生任何对外副作用，只是把本次运行的产物信息拼成一段
+  # Markdown 写进 `$GITHUB_STEP_SUMMARY`，所以**不受 publish 门控**，`publish`
+  # 取消勾选的验证性构建也一样生成，方便在发正式版之前先看一眼说明对不对。
+  #
+  # `if: always()` 是必须的：即便 image/android 其中一个失败或被跳过，也要
+  # 如实生成一份「这次到底发生了什么」的摘要，而不是让 docs 也一起消失。
+  # 只挡 `needs.version.result != 'success'`——版本号都算不出来，没什么可写的。
+  docs:
+    name: Actions 摘要 · 部署与使用说明
+    needs: [version, image, android]
+    if: always() && needs.version.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 写入本次运行的部署/安装/使用说明
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          PUBLISH: ${{ inputs.publish }}
+          IMAGE_RESULT: ${{ needs.image.result }}
+          ANDROID_RESULT: ${{ needs.android.result }}
+          SHA: ${{ github.sha }}
+          RUN_NUMBER: ${{ github.run_number }}
+          ACTOR: ${{ github.actor }}
+          REPO: ${{ github.repository }}
+          OWNER_RAW: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          # GHCR 镜像路径要求全小写，github.repository_owner 可能带大写；
+          # 表达式语法里没有转小写函数，只能在 shell 里用 ${VAR,,}（image job
+          # 里的 meta 步骤算过同一个值，这里独立再算一次——docs job 不依赖
+          # image job 真的跑到那一步，image 失败/跳过时这里也不能没有 owner）。
+          OWNER="${OWNER_RAW,,}"
+          mark() {
+            case "$1" in
+              success) echo '✅ 成功' ;;
+              skipped) echo '⏭️ 跳过' ;;
+              failure) echo '❌ 失败' ;;
+              *) echo "⚠️ $1" ;;
+            esac
+          }
+
+          {
+            echo "# 🚀 famledger v${VERSION} — 部署与使用说明"
+            echo
+            if [ "$PUBLISH" = "true" ]; then
+              echo "本次是**正式发布**：镜像已推送 GHCR，APK 已挂到 GitHub Release。"
+            else
+              echo "本次是**验证性构建**（\`publish\` 未勾选）：镜像与 APK 都编出来了，"
+              echo "但**没有**推送到 GHCR、**没有**创建 GitHub Release——下面涉及下载/拉取的"
+              echo "步骤请改成从本次运行的 **Artifacts** 里取。"
+            fi
+            echo
+            echo "| 产物 | 标识 | 状态 |"
+            echo "|---|---|---|"
+            echo "| Docker 镜像 | \`ghcr.io/${OWNER}/famledger:${VERSION}\` | $(mark "$IMAGE_RESULT") |"
+            echo "| Android APK | \`famledger-${VERSION}.apk\` | $(mark "$ANDROID_RESULT") |"
+            echo
+            echo "---"
+            echo
+            echo "## 一、部署（NAS / 服务器，Docker Compose 推荐）"
+            echo
+            echo '```bash'
+            if [ "$PUBLISH" = "true" ]; then
+              echo "# 仓库根目录下执行，拉的是本次发布的镜像"
+              echo "docker compose -f deploy/docker-compose.yml up -d"
+            else
+              echo "# 这次没有推镜像到 GHCR，本地构建验证："
+              echo "./scripts/build-web.sh"
+              echo "docker compose -f deploy/docker-compose.build.yml up -d --build"
+            fi
+            echo '```'
+            echo
+            echo "浏览器打开 \`http://<NAS 内网 IP>:48090/\`，进首启向导。数据落容器 \`/data\`"
+            echo "（\`famledger.db\` + \`secret.key\`）；用 bind mount 记得先"
+            echo "\`chown -R 1000:1000\`，否则容器起来几秒就因 \`EACCES\` 退出。"
+            echo
+            echo "## 二、公网访问（Cloudflare Tunnel）"
+            echo
+            echo "把 \`deploy/cloudflared-ingress.example.yml\` 那一段粘进本机"
+            echo "\`~/.cloudflared/config.yml\` 的 ingress 列表（放在 catch-all **之前**），"
+            echo "重启 cloudflared。**不要**给这条隧道配 \`TUNNEL_TOKEN\`——那会切成面板"
+            echo "托管模式，本地 config.yml 直接失效。"
+            echo
+            echo "## 三、首启向导"
+            echo
+            echo "1. 打开面板 → 填家庭名称 / 用户名（2–32 字符，可中文）/ 口令（≥ 6 位）/"
+            echo "   显示名 → 提交，自动种 21 个默认类别 + 1 个家庭公共基金 + 1 个现金账户。"
+            echo "2. 这台实例会**先暴露到公网、后有人初始化**的话，务必设"
+            echo "   \`SETUP_TOKEN\`（\`openssl rand -hex 16\`）——不设的话谁先打开这个"
+            echo "   地址谁就是管理员。"
+            echo
+            echo "## 四、Android 安装"
+            echo
+            if [ "$PUBLISH" = "true" ]; then
+              echo "去这次发布对应的 [GitHub Release](https://github.com/${REPO}/releases/tag/v${VERSION})"
+              echo "下载 \`famledger-${VERSION}.apk\`，直接侧载安装（未知来源需在系统设置里放行一次）。"
+            else
+              echo "去**本次 Actions 运行页面**下方的 \`famledger-apk\` Artifact 下载"
+              echo "（验证构建不建 Release，Artifact 30 天后过期）。"
+            fi
+            echo
+            echo "装完在**设置 → 自动记账**里依次办齐：通知使用权 → 通知权限"
+            echo "（Android 13+）→ MIUI 自启动/省电策略（如适用）→ 检查放行的 App 列表。"
+            echo "当前 release APK 签的是仓库里的 debug 密钥，覆盖安装没问题，但**没有"
+            echo "生产签名的应用商店上架保证**（见 README「已知限制」）。"
+            echo
+            echo "## 五、iOS"
+            echo
+            echo "本次发布**不含** iOS 产物：系统不允许读取其他 App 的通知，只有分享扩展 /"
+            echo "快捷指令 / 剪贴板三条半自动入口，且必须有本机 Xcode 才能编译签名。首次"
+            echo "构建的一次性手工步骤（App Group、Share Extension target、URL Scheme、"
+            echo "签名）见 [\`docs/ios.md\`](https://github.com/${REPO}/blob/main/docs/ios.md)。"
+            echo
+            echo "## 六、几个必看的环境变量"
+            echo
+            echo "| 变量 | 默认 | 说明 |"
+            echo "|---|---|---|"
+            echo "| \`TZ\` | \`Asia/Shanghai\`（镜像内已设） | 统计按自然月切，时区错了「本月支出」就是错的 |"
+            echo "| \`TRUST_PROXY\` | \`1\`（镜像内已设） | 隧道/反代后面必须是 1，否则限流按 IP 分桶形同虚设 |"
+            echo "| \`SETUP_TOKEN\` | 空 | 暴露到公网前建议设置，见「三、首启向导」 |"
+            echo "| \`AI_PER_MIN\` / \`AI_MAX_STREAMS\` | \`30\` / \`4\` | AI 请求限流：每成员每分钟次数 / 同时在跑的流条数 |"
+            echo
+            echo "完整变量表、资金模型（账户 × 基金）、AI 渠道预设、WebDAV 备份细节见"
+            echo "[README.md](https://github.com/${REPO}/blob/main/README.md)；变更历史见"
+            echo "[CHANGELOG.md](https://github.com/${REPO}/blob/main/CHANGELOG.md)。"
+            echo
+            echo "---"
+            echo
+            echo "构建自 \`${SHA}\`（第 ${RUN_NUMBER} 次运行，由 @${ACTOR} 触发）。"
+          } >> "$GITHUB_STEP_SUMMARY"

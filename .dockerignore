@@ -1,0 +1,48 @@
+# Build context for the famledger image. The image needs `server/src`,
+# `server/package.json` and the built web bundle at `app/build/web` — nothing
+# else, and definitely not anyone's real ledger.
+
+.git
+.gitignore
+.github
+
+# planning + spec artefacts
+.superpowers
+
+# node
+node_modules
+**/node_modules
+*.log
+npm-debug.log*
+
+# a live database must never be baked into an image
+data
+server/data
+
+# flutter: keep only the compiled web bundle
+app/.dart_tool
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+app/.packages
+# `app/build/*` 而不是 `app/build`：后者是「排除父目录再把子目录捞回来」，
+# 那是 Docker ignore 语义里出了名的脆弱写法，不同 BuildKit 版本行为不保证一致 ——
+# 而这两行是编译好的 Web 看板进镜像的**唯一**通路，它一失效镜像里就只剩一个
+# .gitkeep，首页变成「还没构建前端」的说明页。排除到子项一级（`app/build/*` 的
+# `*` 不跨 `/`，只吃 app/build 的直接子项），再把 web 这一项捞回来，就不依赖那条
+# 例外规则了。app/build/app 有 2.6 GB（Android 中间产物），漏出去就是灾难。
+app/build/*
+!app/build/web
+!app/build/web/**
+app/android/.gradle
+app/android/local.properties
+app/android/key.properties
+app/ios/Pods
+app/ios/.symlinks
+app/ios/Flutter/ephemeral
+app/.idea
+app/*.iml
+
+# editor / OS noise
+.DS_Store
+.vscode
+.idea

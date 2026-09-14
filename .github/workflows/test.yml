@@ -1,0 +1,153 @@
+name: 测试
+
+# ════════════════════════════════════════════════════════════════════════
+# 全仓库唯一的测试定义：Node 后端、Flutter App、以及用真实产物冒烟一次
+# Docker 镜像，三个 job 一次跑完。
+#
+# **这是唯一一条 push 会自动触发的流水线。** 发布侧（build.yml）只能手动
+# 触发：push 只回答「代码是好的吗」，发布回答「现在要发出去吗」，后者该由
+# 人决定。build.yml 里的 test job 通过 `workflow_call` 复用这份定义（同一份
+# 定义只写一处），下游的 image / android / release 全部 `needs` 它——所以
+# 手动发布也绕不过这道门禁。
+#
+# 重要教训：`flutter analyze` 抓不出依赖/SDK 之间的不兼容（fl_chart 与
+# Flutter 3.32.1 就只在编译期才炸，analyze 全程绿灯）。所以 app job 里
+# analyze 之后必须再跑 `flutter test` 和 `flutter build web --release`——
+# 后者是 dart2js 编译门禁，光静态分析通过不代表编得出来。
+# ════════════════════════════════════════════════════════════════════════
+
+on:
+  push:
+  pull_request:
+  workflow_call: {}
+
+concurrency:
+  # 同一个 ref 上后来的取消先前的，只留最后一次的结论。简化写法：不区分
+  # push / PR / 被 build.yml 调用，三者共用同一个 group——代价是手动发布
+  # 走到这一步时，如果同一个 ref 上又发生一次 push，理论上会互相取消；
+  # 这个仓库体量小、发布节奏慢，接受这个简化。
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # 最便宜的先跑：零 npm 依赖，装个 node 就能跑，几秒钟出结果。
+  server:
+    name: Node · server 单元测试
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24 # 与 deploy/Dockerfile 的 node:24-bookworm-slim 同版本
+
+      - name: npm test
+        working-directory: server
+        run: npm test
+
+  app:
+    name: Flutter · analyze / test / build web
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.32.1 # 与 deploy/Dockerfile.full 里钉的版本一致
+          channel: stable
+          cache: true
+
+      - name: flutter pub get
+        working-directory: app
+        run: flutter pub get
+
+      # --fatal-infos 未加：仓库目前没有约定 info 级别一律拦截，先保持默认
+      # 严格度（warning/error 才算失败），需要更严可以再加。
+      - name: flutter analyze
+        working-directory: app
+        run: flutter analyze
+
+      - name: flutter test
+        working-directory: app
+        run: flutter test
+
+      # dart2js 编译门禁。**这一步不是多余的**：flutter test 跑在 Dart VM 上，
+      # 不经过 dart2js，web 端独有的编译失败（比如依赖与 SDK 版本不兼容）
+      # 它一个都看不见——本项目就踩过 fl_chart 与 Flutter 3.32.1 的坑，
+      # analyze 与本地跑测试全绿，只有真正 build web 才会报错。
+      - name: flutter build web --release
+        working-directory: app
+        run: flutter build web --release
+
+      # 供下面的 docker job 直接下载使用，不必在那边重新装一遍 Flutter SDK
+      # 再编一次——产物与 CPU 架构无关，编一次全流水线共用（deploy/Dockerfile
+      # 顶部注释是同一个理由）。
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-build
+          path: app/build/web
+          if-no-files-found: error
+          retention-days: 1
+
+  docker:
+    name: Docker · 构建镜像并冒烟 /healthz + /api/v1/setup/status
+    needs: [server, app]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # checkout 出来的 app/build/web 只有一个 .gitkeep（真实产物不入库，
+      # 见 .gitignore）；把 app job 编好的产物下载回同一个路径，
+      # 拼成 deploy/Dockerfile 要求的「镜像外构建、COPY 进去」布局。
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-build
+          path: app/build/web
+
+      - name: docker build
+        run: docker build -f deploy/Dockerfile -t famledger:ci .
+
+      - name: 起容器并等 /healthz → ok
+        run: |
+          set -euo pipefail
+          docker run -d --name famledger-ci -p 48090:48090 famledger:ci
+
+          # 首启要建库、跑迁移、种默认类别（见 Dockerfile 里 HEALTHCHECK 的
+          # start-period 注释），比稳态启动慢，这里给足 60 次 × 1s 的余量。
+          ok=0
+          for _ in $(seq 1 60); do
+            body="$(curl -fsS http://127.0.0.1:48090/healthz 2>/dev/null || true)"
+            if [ "$body" = "ok" ]; then
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "::error::等了 60s，/healthz 也没有返回 ok"
+            docker logs famledger-ci || true
+            exit 1
+          fi
+          echo "/healthz → ok"
+
+      - name: 冒烟 /api/v1/setup/status
+        run: |
+          set -euo pipefail
+          body="$(curl -fsS http://127.0.0.1:48090/api/v1/setup/status)"
+          echo "$body"
+          echo "$body" | grep -q 'needsSetup' \
+            || { echo "::error::/api/v1/setup/status 响应里没有 needsSetup 字段"; exit 1; }
+
+      - name: 失败时打印容器日志
+        if: failure()
+        run: docker logs famledger-ci || true
+
+      - name: 清理容器
+        if: always()
+        run: docker rm -f famledger-ci >/dev/null 2>&1 || true

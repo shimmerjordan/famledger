@@ -1,0 +1,14 @@
+{
+  "name": "famledger-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "famledger (家账) server — zero-dependency Node backend for a self-hosted family ledger.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test --test-concurrency=4 test/*.test.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  }
+}

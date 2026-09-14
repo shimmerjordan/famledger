@@ -1,0 +1,37 @@
+# famledger 的一条 Cloudflare Tunnel ingress。
+#
+# 这台 NAS 上的隧道（nas-adan）走的是**本地 config.yml + 通配符 DNS**那种模式，
+# 不是面板 token 模式：所有 hostname 的路由规则都写在 ~/.cloudflared/config.yml 里，
+# DNS 那边已经有一条 `*.<域名>` 的 CNAME 指向隧道。所以加一个新服务**只需要**把
+# 下面这段 ingress 粘到那个 config.yml 的 ingress 列表里（放在 catch-all 之前），
+# 然后重启 cloudflared：
+#
+#   sudo systemctl restart cloudflared      # 或 docker restart cloudflared
+#
+# 不用去面板点 Public hostname，不用加 DNS 记录，**更不要**给这个隧道塞
+# TUNNEL_TOKEN —— 那会把它切成面板托管模式，本地 config.yml 直接失效，
+# 现有的一堆 hostname 会一起掉线。
+#
+# 家宽封入方向 80/443，隧道走出方向 443，所以 famledger 的 48090 只在局域网/本机
+# 监听就够了，不需要在路由器上做任何端口映射。
+
+ingress:
+  # ── famledger（家账）────────────────────────────────────────────────────
+  - hostname: ledger.example.com
+    # 同一个端口既是 Web 看板也是 App 的 API：服务端一个进程全包了，不用分两条。
+    # cloudflared 与 famledger 跑在同一台机器上 → localhost。跑在另一台就写内网 IP，
+    # 并且那台的 48090 别对公网开。
+    service: http://localhost:48090
+    originRequest:
+      # 回源是明文 HTTP 且只在本机环回，没有证书可验，也没有中间人可插。
+      # 保持 false：万一哪天回源换成 https://，这里是 true 就会把证书校验静默关掉。
+      noTLSVerify: false
+      # AI 月报/对话是 SSE 长连接：把回源连接池的空闲超时放宽一点，免得两次请求
+      # 之间的空闲把连接掐掉又重建（和 explore_journal 那条 WebSocket ingress 同理）。
+      keepAliveTimeout: 90s
+      # 容器里 TRUST_PROXY=1，靠 cloudflared 传下来的 CF-Connecting-IP 做登录限流；
+      # 这一段不用配任何东西，Cloudflare 默认就会带这个头。
+
+  # catch-all：必须是最后一条，否则 cloudflared 启动时直接报配置非法。
+  # 未匹配的 hostname 回 404，而不是漏到某个服务上。
+  - service: http_status:404

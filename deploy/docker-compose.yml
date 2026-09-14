@@ -1,0 +1,81 @@
+# famledger（家账）自托管：一个容器、一个端口（48090）同时提供
+#   · Web 看板（Flutter Web 产物，静态）            → /
+#   · 手机 App 用的 API + SSE                        → /api/v1/*
+#   · 定时 WebDAV 备份、AI 渠道转发                  → 同一个进程内
+#
+#   docker compose -f deploy/docker-compose.yml up -d
+#   docker compose -f deploy/docker-compose.yml logs -f
+#
+# 想本地构建镜像（改了代码、或不信任 GHCR 上那个）用 docker-compose.build.yml。
+#
+# 端口用高位 48090：家庭宽带运营商普遍封禁入方向的 80 / 443 / 8080，**别把端口
+# 配回这三个**，否则家里/NAS 部署从公网完全连不上，只是白折腾一圈。要让公网访问
+# 就走 Cloudflare Tunnel（出方向 443，不受入方向封禁影响），见
+# deploy/cloudflared-ingress.example.yml。
+
+# 项目名钉成 famledger：compose 默认拿**文件所在目录名**当项目名，这个文件在
+# deploy/ 下，不钉的话卷会叫 deploy_fldata、网络叫 deploy_default —— 换个目录
+# 名就等于换了一份数据，升级时最容易踩的坑。
+name: famledger
+
+services:
+  famledger:
+    image: ghcr.io/shimmerjordan/famledger:latest
+    container_name: famledger
+    restart: unless-stopped
+    ports:
+      # 左边是宿主端口（被占了就改 FL_PORT），右边 48090 是容器内的，别动 ——
+      # 镜像里的 HEALTHCHECK 探的就是 48090。
+      - "${FL_PORT:-48090}:48090"
+    volumes:
+      # 里面是 famledger.db（SQLite，WAL）与 secret.key。
+      #
+      #   不设（默认）→ 名为 fldata 的 Docker 命名卷，零宿主配置，首次使用会继承
+      #     镜像里的属主（node，UID 1000），直接就能写。
+      #
+      #   设成绝对路径 → bind mount，数据落在你自己的目录里（NAS 上通常这么选，
+      #     好让它落在大盘上、被 NAS 自己的备份任务带走）：
+      #
+      #       FL_DATA_PATH=/volume1/docker/famledger/data
+      #
+      #     bind mount **不**继承镜像里的属主（挂上来是 root:root），而容器里是
+      #     UID 1000 的 node 在跑，所以第一次要自己来一下：
+      #
+      #       mkdir -p /volume1/docker/famledger/data && chown -R 1000:1000 $_
+      #
+      #     漏了这步表现为容器起来几秒就退，日志里是 EACCES: open '/data/secret.key'。
+      #
+      # 只用本地文件系统 —— 别指向 NFS/SMB：网络挂载上 POSIX 锁不可靠，SQLite 在
+      # 那上面有把库写坏的真实风险。要异地备份就用应用内的 WebDAV 备份功能。
+      - "${FL_DATA_PATH:-fldata}:/data"
+    environment:
+      # 统计按自然月切，时区错了「本月支出」就是错的。
+      TZ: "${TZ:-Asia/Shanghai}"
+      # 经 Cloudflare Tunnel / frp / 任何反代暴露时保持 1：限流按客户端 IP 分桶，
+      # 不开的话看到的 IP 永远是反代自己，全世界共用一个桶 = 没有限流。
+      # 直接把端口暴露在局域网里用（没有任何反代）就设 0，否则谁都能伪造
+      # X-Forwarded-For 把限流绕过去。
+      TRUST_PROXY: "${TRUST_PROXY:-1}"
+      # 首次初始化（创建第一个管理员）的口令。空 = 不加锁：一个还没初始化的实例
+      # 挂到公网上，谁先打开谁就是管理员。**先暴露、后初始化**的话务必设一个：
+      #   SETUP_TOKEN=$(openssl rand -hex 16)
+      # 初始化完成后这个变量就不再起作用（有用户了 /setup 自动关闭），可以留着。
+      SETUP_TOKEN: "${SETUP_TOKEN:-}"
+      # 限流：每分钟每 IP 的初始化 / 登录尝试次数。0 或非法值会被忽略（回落默认），
+      # 免得一个手滑的 0 把全家锁在门外。
+      SETUP_PER_MIN: "${SETUP_PER_MIN:-5}"
+      LOGIN_PER_MIN: "${LOGIN_PER_MIN:-10}"
+      # AI 限流。上游是按 token 收费的，这两条是账单保护，不是性能调优：
+      #   · 每人每分钟最多几次 AI 请求 —— 按**成员**分桶而不是按 IP，因为全家都在
+      #     同一个公网出口后面，按 IP 会互相挤掉。超了 429 rate_limited。
+      AI_PER_MIN: "${AI_PER_MIN:-30}"
+      #   · 同时在跑的上游**流**最多几条（月报/对话是 SSE 长连接）。超了 503 ai_busy，
+      #     名额在请求结束时归还，客户端半路跑了也照还。
+      AI_MAX_STREAMS: "${AI_MAX_STREAMS:-4}"
+      # debug 会打请求行与耗时；rawText 之类的敏感内容任何级别都只记长度。
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+      # 只有把 Web 看板单独部署到另一个域名时才需要（App 和看板同源，默认不用）：
+      # CORS_ORIGINS: "${CORS_ORIGINS:-}"
+
+volumes:
+  fldata:
