@@ -45,6 +45,11 @@ async function startServer(env = {}) {
       DATA_DIR: dataDir,
       WEB_ROOT: webRoot,
       LOG_LEVEL: 'error',
+      // 部署镜像永远是 Asia/Shanghai（见 deploy/Dockerfile），本地开发机通常也是；
+      // CI 的 ubuntu-latest 默认是 UTC。不钉死这个，任何按「本地日期/月份」判断
+      // 的用例就会在本地和 CI 之间跑出不同结果——钉在这里而不是逐个测试里设，
+      // 是因为所有测试都经这一个函数起服务端，钉一处即可，且仍可被 `env` 覆盖。
+      TZ: 'Asia/Shanghai',
       ...env,
     },
     stdio: ['ignore', 'pipe', 'pipe'],

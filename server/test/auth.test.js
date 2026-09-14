@@ -218,15 +218,19 @@ test('⑤ POST /auth/logout 后同 token 401', async (t) => {
 });
 
 // ⑥ ---------------------------------------------------------------------
-test('⑥ 登录连打 11 次，第 11 次 429（LOGIN_PER_MIN=10）', async (t) => {
-  const { a } = await bootstrapped(t, { LOGIN_PER_MIN: '10' });
+test('⑥ 登录连打 3 次，第 3 次 429（LOGIN_PER_MIN=2）', async (t) => {
+  // N 故意取小（与 test/ai.test.js 的 AI_PER_MIN=2 同一约定）：每次登录尝试都会
+  // 真的跑一遍 scrypt 校验密码，N=10 时窗口边界只有 6 秒裕量，CI 较慢的机器上
+  // 曾经真的因此偶发 429 判定提前触发；N=2 把裕量放大到 30 秒，覆盖的生产代码
+  // 路径（RateLimiter + 登录路由 + 429 rate_limited）完全一样。
+  const { a } = await bootstrapped(t, { LOGIN_PER_MIN: '2' });
   const statuses = [];
-  for (let i = 0; i < 11; i++) {
+  for (let i = 0; i < 3; i++) {
     const r = await a.post('/auth/login', { username: 'admin', password: 'wrong' });
     statuses.push(r.status);
-    if (i === 10) assert.equal(r.json.error.code, 'rate_limited');
+    if (i === 2) assert.equal(r.json.error.code, 'rate_limited');
   }
-  assert.deepEqual(statuses, [401, 401, 401, 401, 401, 401, 401, 401, 401, 401, 429]);
+  assert.deepEqual(statuses, [401, 401, 429]);
 });
 
 // ⑦ ---------------------------------------------------------------------

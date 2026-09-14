@@ -579,7 +579,7 @@ test('恢复全程持锁：下载途中开始的备份被挡掉，恢复照常�
 
   fake.setDelay(700); // 让 restore 卡在下载上
   const restoring = a.post('/backup/restore', { name: first.json.name }, { token });
-  await sleep(150); // 确保锁已经被 restore 拿走
+  await sleep(400); // 确保锁已经被 restore 拿走（对 700ms 的下载延迟留足余量）
 
   const blocked = await a.post('/backup/run', {}, { token });
   assert.equal(blocked.status, 409, blocked.text);
