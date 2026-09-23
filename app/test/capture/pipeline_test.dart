@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:famledger/capture/accuracy_stats.dart';
 import 'package:famledger/capture/capture_types.dart';
 import 'package:famledger/capture/classifier.dart';
 import 'package:famledger/capture/naive_bayes.dart';
@@ -146,7 +147,9 @@ class _Harness {
   _Harness({
     bool trained = true,
     double threshold = 0.75,
-    bool aiFallback = false,
+    AiTrigger aiTrigger = AiTrigger.off,
+    bool aiAutoConfirm = false,
+    AccuracyStats? accuracyStats,
   }) {
     final categoryModel = NaiveBayes.empty();
     if (trained) trainSeedCategoryModel(categoryModel, _categories);
@@ -167,8 +170,10 @@ class _Harness {
       config: CapturePipelineConfig(
         threshold: threshold,
         memberId: 'member-1',
-        aiFallback: aiFallback,
+        aiTrigger: aiTrigger,
+        aiAutoConfirm: aiAutoConfirm,
       ),
+      accuracyStats: accuracyStats,
       now: () => clock,
       idGenerator: () => 'cap-${++_ids}',
     );
@@ -283,8 +288,8 @@ void main() {
       expect(record.synced, isFalse);
     });
 
-    test('AI 兜底：低于阈值且开关打开时调用 /ai/classify', () async {
-      final h = _Harness(trained: false, aiFallback: true);
+    test('自动模式：低于阈值调用 /ai/classify，但默认不能自己拍板，仍停在待确认', () async {
+      final h = _Harness(trained: false, aiTrigger: AiTrigger.auto);
       h.api.aiResponse = <String, dynamic>{
         'categoryId': 'cat-餐饮',
         'fundId': 'fund-public',
@@ -292,15 +297,59 @@ void main() {
       };
       final out = await h.pipeline.handle(_didi());
       expect(h.api.aiCalls, hasLength(1));
-      expect(out.decision, CaptureDecision.recorded);
+      expect(out.decision, CaptureDecision.pending);
+      expect(out.draft!.status, 'pending');
       expect(out.draft!.categoryId, 'cat-餐饮');
       expect(out.draft!.confidence, 0.9);
+      expect(h.store.captures['cap-1']!.source, 'ai');
     });
 
-    test('AI 兜底关闭时不调用', () async {
+    test('自动模式 + 开了「AI 结果可以自动入账」：够阈值就直接 recorded', () async {
+      final h = _Harness(trained: false, aiTrigger: AiTrigger.auto, aiAutoConfirm: true);
+      h.api.aiResponse = <String, dynamic>{
+        'categoryId': 'cat-餐饮',
+        'fundId': 'fund-public',
+        'confidence': 0.9,
+      };
+      final out = await h.pipeline.handle(_didi());
+      expect(out.decision, CaptureDecision.recorded);
+      expect(out.draft!.status, 'confirmed');
+    });
+
+    test('关闭（默认）时不调用 AI', () async {
       final h = _Harness(trained: false);
       await h.pipeline.handle(_didi());
       expect(h.api.aiCalls, isEmpty);
+    });
+
+    test('手动模式：低于阈值也不自动调用，等用户在快捷回复里叫它', () async {
+      final h = _Harness(trained: false, aiTrigger: AiTrigger.manual);
+      final out = await h.pipeline.handle(_didi());
+      expect(h.api.aiCalls, isEmpty);
+      expect(out.decision, CaptureDecision.pending);
+    });
+
+    test('自动模式下本地模型最近够准：跳过这次 AI 调用，省一次网络往返', () async {
+      final stats = AccuracyStats.empty();
+      for (var i = 0; i < 20; i++) {
+        stats.record(AccuracySource.nb, hit: true);
+      }
+      final h = _Harness(aiTrigger: AiTrigger.auto, accuracyStats: stats);
+      final out = await h.pipeline.handle(_meituan()); // 种子证据不足，nb 给的置信度本就低于阈值
+      expect(out.decision, CaptureDecision.pending);
+      expect(h.api.aiCalls, isEmpty, reason: '本地模型最近 20/20 全中，够可信，没必要叫 AI');
+      expect(h.store.captures['cap-1']!.source, 'nb');
+    });
+
+    test('本地模型样本还不够 minSamples：校准还不生效，自动模式照常叫 AI', () async {
+      final stats = AccuracyStats.empty();
+      for (var i = 0; i < 5; i++) {
+        stats.record(AccuracySource.nb, hit: true);
+      }
+      final h = _Harness(aiTrigger: AiTrigger.auto, accuracyStats: stats);
+      h.api.aiResponse = <String, dynamic>{'categoryId': 'cat-餐饮', 'confidence': 0.9};
+      await h.pipeline.handle(_meituan());
+      expect(h.api.aiCalls, hasLength(1));
     });
 
     test('短商户首次 pending，用户确认一次后同一笔即可自动入账', () async {
@@ -407,6 +456,103 @@ void main() {
       final r = await h.pipeline.applyQuickReply('nope', '宠物');
       expect(r.title, contains('找不到'));
       expect(h.api.patched, isEmpty);
+    });
+  });
+
+  group('AI 手动复核（快捷回复回「AI」/「再想想」）', () {
+    test('手动模式下回「AI」触发一次复核，更新草稿并记一次未命中', () async {
+      final h = _Harness(trained: false, aiTrigger: AiTrigger.manual);
+      final out = await h.pipeline.handle(_didi());
+      expect(out.decision, CaptureDecision.pending);
+
+      h.api.aiResponse = <String, dynamic>{
+        'categoryId': 'cat-餐饮',
+        'fundId': 'fund-public',
+        'confidence': 0.9,
+      };
+      final result = await h.pipeline.applyQuickReply('cap-1', 'AI');
+
+      expect(h.api.aiCalls, hasLength(1));
+      final record = h.store.captures['cap-1']!;
+      expect(record.draft.categoryId, 'cat-餐饮');
+      expect(record.source, 'ai');
+      // 没开「AI 结果可以自动入账」，还是待确认。
+      expect(record.draft.status, 'pending');
+      expect(result.title, contains('AI 复核'));
+    });
+
+    test('回「再想想」等价于回「AI」，且不分大小写', () async {
+      final h = _Harness(trained: false, aiTrigger: AiTrigger.manual);
+      await h.pipeline.handle(_didi());
+      h.api.aiResponse = <String, dynamic>{'categoryId': 'cat-餐饮', 'confidence': 0.9};
+      await h.pipeline.applyQuickReply('cap-1', ' 再想想 ');
+      expect(h.api.aiCalls, hasLength(1));
+    });
+
+    test('自动模式下也能手动叫一次（不是只有手动模式才行）', () async {
+      final h = _Harness(trained: false, aiTrigger: AiTrigger.auto);
+      await h.pipeline.handle(_didi()); // 没配 aiResponse，自动那次兜底静默失败，留在本地
+      h.api.aiResponse = <String, dynamic>{'categoryId': 'cat-餐饮', 'confidence': 0.9};
+      await h.pipeline.applyQuickReply('cap-1', 'AI');
+      expect(h.store.captures['cap-1']!.draft.categoryId, 'cat-餐饮');
+    });
+
+    test('AI 关闭时，回「AI」不触发复核，走普通快捷回复解析（当备注处理）', () async {
+      final h = _Harness(); // 默认 off
+      await h.pipeline.handle(_didi());
+      final result = await h.pipeline.applyQuickReply('cap-1', 'AI');
+      expect(h.api.aiCalls, isEmpty);
+      expect(h.store.captures['cap-1']!.draft.note, 'AI');
+      expect(result.title, contains('已更新'));
+    });
+
+    test('AI 没给出结果（渠道没配好/暂时联系不上）：明确提示，草稿不变', () async {
+      final h = _Harness(trained: false, aiTrigger: AiTrigger.manual);
+      await h.pipeline.handle(_didi());
+      final result = await h.pipeline.applyQuickReply('cap-1', 'AI');
+      expect(result.title, 'AI 没给出结果');
+      expect(h.store.captures['cap-1']!.draft.status, 'pending');
+    });
+  });
+
+  group('命中率记录', () {
+    test('confirm 记一次命中', () async {
+      final h = _Harness(trained: false); // reason=default → fallback 桶
+      await h.pipeline.handle(_didi());
+      expect(h.store.captures['cap-1']!.source, 'fallback');
+
+      await h.pipeline.confirm('cap-1');
+      expect(h.pipeline.accuracyStats.sampleCountOf(AccuracySource.fallback), 1);
+    });
+
+    test('只改备注/金额，不碰类别基金 → 20 次全记命中', () async {
+      final h = _Harness();
+      for (var i = 0; i < 20; i++) {
+        await h.pipeline.handle(_didi());
+        await h.pipeline.applyQuickReply('cap-${i + 1}', '备注$i');
+        h.clock = h.clock.add(const Duration(minutes: 11));
+      }
+      expect(h.pipeline.accuracyStats.hitRateOf(AccuracySource.nb), 1.0);
+    });
+
+    test('真的改了基金 → 20 次全记未命中', () async {
+      final h = _Harness();
+      for (var i = 0; i < 20; i++) {
+        await h.pipeline.handle(_didi());
+        await h.pipeline.applyQuickReply('cap-${i + 1}', '宠物');
+        h.clock = h.clock.add(const Duration(minutes: 11));
+      }
+      expect(h.pipeline.accuracyStats.hitRateOf(AccuracySource.nb), 0.0);
+    });
+
+    test('老数据（source 是空串）不计入任何桶', () async {
+      final h = _Harness();
+      await h.pipeline.handle(_didi());
+      await h.store.saveCapture(h.store.captures['cap-1']!.copyWith(source: ''));
+      await h.pipeline.confirm('cap-1');
+      for (final s in AccuracySource.values) {
+        expect(h.pipeline.accuracyStats.sampleCountOf(s), 0);
+      }
     });
   });
 

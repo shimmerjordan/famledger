@@ -255,6 +255,36 @@ void main() {
         isTrue,
       );
     });
+
+    test('source 字段往返；空串（老数据/默认）不写进 JSON', () {
+      final base = CaptureRecord(
+        captureId: 'cap-1',
+        decision: CaptureDecision.pending,
+        draft: CaptureDraft(
+          clientId: 'cap-1',
+          type: 'expense',
+          amountCents: 100,
+          occurredAt: DateTime(2026, 9, 12),
+          memberId: 'm',
+          status: 'pending',
+          confidence: 0,
+          rawText: '',
+          sourceApp: '',
+          captureId: 'cap-1',
+        ),
+        dedupeHash: 'h',
+        learnText: '',
+        features: const CaptureFeatures(hour: 0, weekday: 1),
+        createdAt: DateTime(2026, 9, 12),
+        source: 'nb',
+      );
+      expect(base.toJson()['source'], 'nb');
+      expect(CaptureRecord.fromJson(base.toJson()).source, 'nb');
+
+      final legacy = base.copyWith(source: '');
+      expect(legacy.toJson().containsKey('source'), isFalse);
+      expect(CaptureRecord.fromJson(legacy.toJson()).source, '');
+    });
   });
 
   group('RawNotification', () {

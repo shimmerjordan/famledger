@@ -63,11 +63,15 @@ class _FundsPageState extends ConsumerState<FundsPage> {
     final wide = widthClassOf(context) != WidthClass.compact;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('基金')),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _newFund(context, ref),
-        icon: const Icon(Icons.add),
-        label: const Text('新建基金'),
+      appBar: AppBar(
+        title: const Text('基金'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.add),
+            tooltip: '新建基金',
+            onPressed: () => _newFund(context, ref),
+          ),
+        ],
       ),
       body: RefreshIndicator(
         onRefresh: () => _refresh(month),

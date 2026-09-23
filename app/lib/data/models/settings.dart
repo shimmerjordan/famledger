@@ -42,26 +42,45 @@ class Settings {
 }
 
 /// 自动记账设置。`allowedApps` 服务端只是存着，真正生效在设备上。
+///
+/// [aiTrigger] 是 `off|manual|auto` 三选一的字符串，与 `lib/capture` 的
+/// `AiTrigger` 枚举一一对应——这层刻意只存字符串（跟 `defaultFundId` 这类
+/// 字段一样是「服务端 JSON 的形状」），真正转成枚举是
+/// `platform/capture_adapters.dart` 这个适配层的活，`lib/data` 不反过来
+/// 依赖 `lib/capture`。
 class CaptureSettings {
   const CaptureSettings({
     this.defaultFundId,
     this.defaultAccountId,
     this.autoConfirmThreshold = 0.75,
-    this.llmFallback = false,
+    this.aiTrigger = 'off',
+    this.aiAutoConfirm = false,
+    this.aiProviderId,
     this.allowedApps = const [],
   });
 
   final String? defaultFundId;
   final String? defaultAccountId;
   final double autoConfirmThreshold;
-  final bool llmFallback;
+
+  /// off|manual|auto。
+  final String aiTrigger;
+
+  /// AI 给出的结果能不能像本地模型一样直接自动入账。
+  final bool aiAutoConfirm;
+
+  /// 记账兜底专用的 AI 渠道；null = 跟聊天/月报一样用默认渠道。
+  final String? aiProviderId;
+
   final List<String> allowedApps;
 
   factory CaptureSettings.fromJson(Map<String, dynamic> json) => CaptureSettings(
     defaultFundId: jsonStringOrNull(json['defaultFundId']),
     defaultAccountId: jsonStringOrNull(json['defaultAccountId']),
     autoConfirmThreshold: jsonDouble(json['autoConfirmThreshold'], 0.75),
-    llmFallback: jsonBool(json['llmFallback']),
+    aiTrigger: jsonString(json['aiTrigger'], 'off'),
+    aiAutoConfirm: jsonBool(json['aiAutoConfirm']),
+    aiProviderId: jsonStringOrNull(json['aiProviderId']),
     allowedApps: jsonStringList(json['allowedApps']),
   );
 
@@ -69,7 +88,9 @@ class CaptureSettings {
     'defaultFundId': defaultFundId,
     'defaultAccountId': defaultAccountId,
     'autoConfirmThreshold': autoConfirmThreshold,
-    'llmFallback': llmFallback,
+    'aiTrigger': aiTrigger,
+    'aiAutoConfirm': aiAutoConfirm,
+    'aiProviderId': aiProviderId,
     'allowedApps': allowedApps,
   };
 
@@ -77,13 +98,17 @@ class CaptureSettings {
     String? defaultFundId,
     String? defaultAccountId,
     double? autoConfirmThreshold,
-    bool? llmFallback,
+    String? aiTrigger,
+    bool? aiAutoConfirm,
+    String? aiProviderId,
     List<String>? allowedApps,
   }) => CaptureSettings(
     defaultFundId: defaultFundId ?? this.defaultFundId,
     defaultAccountId: defaultAccountId ?? this.defaultAccountId,
     autoConfirmThreshold: autoConfirmThreshold ?? this.autoConfirmThreshold,
-    llmFallback: llmFallback ?? this.llmFallback,
+    aiTrigger: aiTrigger ?? this.aiTrigger,
+    aiAutoConfirm: aiAutoConfirm ?? this.aiAutoConfirm,
+    aiProviderId: aiProviderId ?? this.aiProviderId,
     allowedApps: allowedApps ?? this.allowedApps,
   );
 }

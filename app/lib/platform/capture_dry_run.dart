@@ -34,7 +34,7 @@ Future<CaptureDryRun> dryRunCapture({
     store: store,
     api: const _DryRunApi(),
     ledger: ledger,
-    settings: settings.copyWith(llmFallback: false),
+    settings: settings.copyWith(aiTrigger: 'off'),
     memberId: memberId,
   );
   final outcome = await pipeline.handle(notification);

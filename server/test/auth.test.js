@@ -306,7 +306,9 @@ test('⑧ GET /settings 默认 currency:CNY；PATCH 深合并生效', async (t) 
       defaultFundId: null,
       defaultAccountId: null,
       autoConfirmThreshold: 0.75,
-      llmFallback: false,
+      aiTrigger: 'off',
+      aiAutoConfirm: false,
+      aiProviderId: null,
     },
     ui: { firstDayOfMonth: 1 },
   });
@@ -315,7 +317,7 @@ test('⑧ GET /settings 默认 currency:CNY；PATCH 深合并生效', async (t) 
   assert.equal(p.status, 200, p.text);
   assert.equal(p.json.capture.autoConfirmThreshold, 0.8);
   // one-level deep merge: siblings inside `capture` survive
-  assert.equal(p.json.capture.llmFallback, false);
+  assert.equal(p.json.capture.aiTrigger, 'off');
   assert.equal(p.json.ui.firstDayOfMonth, 1);
   assert.equal(p.json.currency, 'CNY');
 
@@ -332,6 +334,24 @@ test('⑧ GET /settings 默认 currency:CNY；PATCH 深合并生效', async (t) 
   const bad = await a.patch('/settings', { capture: { autoConfirmThreshold: 9 } }, { token });
   assert.equal(bad.status, 400);
   assert.equal(bad.json.error.code, 'invalid_autoConfirmThreshold');
+
+  const aiPatch = await a.patch(
+    '/settings',
+    { capture: { aiTrigger: 'auto', aiAutoConfirm: true, aiProviderId: 'prov-1' } },
+    { token },
+  );
+  assert.equal(aiPatch.status, 200, aiPatch.text);
+  assert.equal(aiPatch.json.capture.aiTrigger, 'auto');
+  assert.equal(aiPatch.json.capture.aiAutoConfirm, true);
+  assert.equal(aiPatch.json.capture.aiProviderId, 'prov-1');
+
+  // aiProviderId 传 null = 清回默认渠道
+  const cleared = await a.patch('/settings', { capture: { aiProviderId: null } }, { token });
+  assert.equal(cleared.json.capture.aiProviderId, null);
+
+  const badTrigger = await a.patch('/settings', { capture: { aiTrigger: 'sometimes' } }, { token });
+  assert.equal(badTrigger.status, 400);
+  assert.equal(badTrigger.json.error.code, 'invalid_aiTrigger');
 });
 
 // misc contract ---------------------------------------------------------

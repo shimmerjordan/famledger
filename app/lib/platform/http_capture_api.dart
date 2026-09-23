@@ -19,12 +19,16 @@ class CaptureNetworkException implements Exception {
 /// * `ApiException` 的网络错误 → [CaptureNetworkException]；
 /// * 其余（服务端明确回了状态码）→ [CaptureApiException]，管线按 4xx / 5xx 分流。
 class HttpCaptureApi implements CaptureApi {
-  HttpCaptureApi(this.api, {this.aiEnabled = false});
+  HttpCaptureApi(this.api, {this.aiEnabled = false, this.providerId});
 
   final ApiClient api;
 
-  /// 家庭设置里的「AI 兜底」；关着时 [aiClassify] 直接返回 null，不打网络。
+  /// 家庭设置里的「AI 兜底」不是关闭状态；关着时 [aiClassify] 直接返回
+  /// null，不打网络。
   final bool aiEnabled;
+
+  /// 记账兜底专用渠道；null = 跟聊天/月报一样用服务端默认渠道。
+  final String? providerId;
 
   @override
   Future<CaptureApiResult> createTransaction(Map<String, dynamic> body) async {
@@ -69,6 +73,7 @@ class HttpCaptureApi implements CaptureApi {
         'text': text,
         if (input['merchant'] != null && '${input['merchant']}'.isNotEmpty) 'merchant': input['merchant'],
         if (input['amountCents'] != null) 'amountCents': input['amountCents'],
+        if (providerId != null && providerId!.isNotEmpty) 'providerId': providerId,
         'candidates': {
           'categories': input['categories'] ?? const <Object>[],
           'funds': input['funds'] ?? const <Object>[],

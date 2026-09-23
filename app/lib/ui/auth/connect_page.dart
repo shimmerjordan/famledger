@@ -80,7 +80,8 @@ class _ConnectPageState extends ConsumerState<ConnectPage> {
         ),
         const SizedBox(height: 8),
         Text(
-          '不写 https:// 也行，内网地址会自动按 http 连。',
+          '不写 https:// 也行，内网地址会自动按 http 连、自动补 ${SessionRepo.defaultPort} 端口；'
+          '公网域名（一般走反代）保持 https，端口不动。',
           style: theme.textTheme.bodySmall,
         ),
         const SizedBox(height: 20),

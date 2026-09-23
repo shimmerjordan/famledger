@@ -5,7 +5,7 @@
 // the backup manifest all read them without parsing the blob.
 //
 // PATCH merges one level deep: a nested object is merged key-by-key, anything
-// else replaces. That is what the client needs (`{capture:{llmFallback:true}}`
+// else replaces. That is what the client needs (`{capture:{aiTrigger:'auto'}}`
 // must not wipe `defaultFundId`) and nothing here is deeper than two levels.
 
 const { sendJson } = require('../lib/router');
@@ -18,7 +18,9 @@ const DEFAULTS = {
     defaultFundId: null,
     defaultAccountId: null,
     autoConfirmThreshold: 0.75,
-    llmFallback: false,
+    aiTrigger: 'off',
+    aiAutoConfirm: false,
+    aiProviderId: null,
   },
   ui: {
     firstDayOfMonth: 1,
@@ -68,7 +70,9 @@ module.exports = (ctx) => {
       if (c.autoConfirmThreshold !== undefined) {
         next.capture.autoConfirmThreshold = v.num(c.autoConfirmThreshold, 'autoConfirmThreshold', { min: 0, max: 1 });
       }
-      if (c.llmFallback !== undefined) next.capture.llmFallback = v.bool(c.llmFallback, 'llmFallback');
+      if (c.aiTrigger !== undefined) next.capture.aiTrigger = v.enumOf(c.aiTrigger, 'aiTrigger', ['off', 'manual', 'auto']);
+      if (c.aiAutoConfirm !== undefined) next.capture.aiAutoConfirm = v.bool(c.aiAutoConfirm, 'aiAutoConfirm');
+      if (c.aiProviderId !== undefined) next.capture.aiProviderId = v.optStr(c.aiProviderId, 'aiProviderId', { max: 64 });
     }
     if (b.ui !== undefined) {
       const u = v.isObject(b.ui) ? b.ui : v.bad('ui', 'ui 必须是对象');

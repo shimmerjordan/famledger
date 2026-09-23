@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:math' as math;
 
+import 'accuracy_stats.dart';
 import 'capture_types.dart';
 import 'classifier.dart';
 import 'naive_bayes.dart';
@@ -17,6 +18,7 @@ const String kTransferNote = '疑似转账，请确认类型';
 /// 本地模型在 [CaptureStore] 里的键。
 const String kCategoryModelKey = 'category';
 const String kFundModelKey = 'fund';
+const String kAccuracyModelKey = 'accuracy';
 
 /// 一条通知的处理结论。
 enum CaptureDecision { recorded, pending, duplicate, ignored }
@@ -106,6 +108,7 @@ class CaptureRecord {
     this.transactionId,
     this.synced = false,
     this.syncError,
+    this.source = '',
   });
 
   final String captureId;
@@ -127,6 +130,10 @@ class CaptureRecord {
   /// 服务端明确拒绝的原因（4xx）。非空 = 别再重试，等用户处理。
   final String? syncError;
 
+  /// 这条最初判定用的是哪个 [AccuracySource]（存 `.name`）。
+  /// 空串 = 早于这个字段存在的记录，或测试直接构造——不计入命中率统计。
+  final String source;
+
   List<String> get extras => features.extras;
 
   /// outbox 该不该继续重试：没同步成功、且不是被服务端明确拒绝。
@@ -139,6 +146,7 @@ class CaptureRecord {
     bool? synced,
     String? syncError,
     bool clearSyncError = false,
+    String? source,
   }) =>
       CaptureRecord(
         captureId: captureId,
@@ -151,6 +159,7 @@ class CaptureRecord {
         transactionId: transactionId ?? this.transactionId,
         synced: synced ?? this.synced,
         syncError: clearSyncError ? null : (syncError ?? this.syncError),
+        source: source ?? this.source,
       );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -164,6 +173,7 @@ class CaptureRecord {
         if (transactionId != null) 'transactionId': transactionId,
         'synced': synced,
         if (syncError != null) 'syncError': syncError,
+        if (source.isNotEmpty) 'source': source,
       };
 
   factory CaptureRecord.fromJson(Map<String, dynamic> json) => CaptureRecord(
@@ -183,6 +193,7 @@ class CaptureRecord {
         transactionId: json['transactionId'] as String?,
         synced: (json['synced'] as bool?) ?? false,
         syncError: json['syncError'] as String?,
+        source: (json['source'] as String?) ?? '',
       );
 }
 
@@ -211,12 +222,27 @@ abstract class CaptureApi {
   Future<Map<String, dynamic>?> aiClassify(Map<String, dynamic> input);
 }
 
+/// 「AI 兜底」怎么触发。
+enum AiTrigger {
+  /// 从不调用 AI 渠道。
+  off,
+
+  /// 只标记「可以叫 AI」，等用户在快捷回复里主动要求才真的调用
+  /// （见 [CapturePipeline.applyQuickReply]）。
+  manual,
+
+  /// 置信度不够就自动调用；受 [AccuracyStats.nbIsTrusted] 校准——本地模型
+  /// 最近已经够准时，跳过这次调用，省一次 token/等待。
+  auto,
+}
+
 class CapturePipelineConfig {
   const CapturePipelineConfig({
     required this.memberId,
     this.threshold = 0.75,
     this.dedupeWindow = const Duration(minutes: 10),
-    this.aiFallback = false,
+    this.aiTrigger = AiTrigger.off,
+    this.aiAutoConfirm = false,
   });
 
   /// 记在流水上的成员。
@@ -226,8 +252,12 @@ class CapturePipelineConfig {
   final double threshold;
   final Duration dedupeWindow;
 
-  /// 低于阈值时是否调 `/ai/classify` 兜底。
-  final bool aiFallback;
+  /// 低于阈值时要不要调 `/ai/classify` 兜底、怎么调。
+  final AiTrigger aiTrigger;
+
+  /// AI 给出的结果能不能像本地模型一样参与「够阈值就自动入账」的判断；
+  /// 关闭时 AI 的判断永远压进待确认，不管置信度多高。
+  final bool aiAutoConfirm;
 }
 
 class CaptureOutcome {
@@ -270,9 +300,11 @@ class CapturePipeline {
     required this.config,
     this.parser = const NotificationParser(),
     this.quickReply = const QuickReplyInterpreter(),
+    AccuracyStats? accuracyStats,
     DateTime Function()? now,
     String Function()? idGenerator,
-  })  : _now = now ?? DateTime.now,
+  })  : accuracyStats = accuracyStats ?? AccuracyStats.empty(),
+        _now = now ?? DateTime.now,
         _newId = idGenerator ?? newCaptureId;
 
   final CaptureStore store;
@@ -281,6 +313,10 @@ class CapturePipeline {
   final CapturePipelineConfig config;
   final NotificationParser parser;
   final QuickReplyInterpreter quickReply;
+
+  /// 「最近这个来源准不准」；「自动」模式据此决定要不要省一次 AI 调用，
+  /// 设置页也拿它画那块只读小面板。
+  final AccuracyStats accuracyStats;
   final DateTime Function() _now;
   final String Function() _newId;
 
@@ -312,6 +348,10 @@ class CapturePipeline {
     final fundJson = await store.loadModel(kFundModelKey);
     final fundModel =
         fundJson == null ? NaiveBayes.empty() : NaiveBayes.fromJson(fundJson);
+    final accuracyJson = await store.loadModel(kAccuracyModelKey);
+    final accuracyStats = accuracyJson == null
+        ? AccuracyStats.empty()
+        : AccuracyStats.fromJson(accuracyJson);
 
     return CapturePipeline(
       store: store,
@@ -329,6 +369,7 @@ class CapturePipeline {
       config: config,
       parser: parser,
       quickReply: quickReply,
+      accuracyStats: accuracyStats,
       now: now,
       idGenerator: idGenerator,
     );
@@ -365,8 +406,23 @@ class CapturePipeline {
       memberId: config.memberId,
     );
     var result = classifier.classify(input);
-    if (result.confidence < config.threshold && config.aiFallback) {
-      result = await _aiFallback(input, result);
+    if (result.confidence < config.threshold) {
+      switch (config.aiTrigger) {
+        case AiTrigger.off:
+          break;
+        case AiTrigger.auto:
+          // 本地模型最近够准的话，没必要为了卡在阈值边缘再花一次 token——
+          // 直接按现在的结果走待确认，跟「模型一直很准还老问我」的体验相比，
+          // 省下的这次调用更值钱。
+          if (!accuracyStats.nbIsTrusted) {
+            result = await _aiFallback(input, result);
+          }
+          break;
+        case AiTrigger.manual:
+          // 不自动调用；这条记下来后，用户可以在「修改…」里回「AI」或
+          // 「再想想」主动叫一次（见 [applyQuickReply]）。
+          break;
+      }
     }
 
     final captureId = _newId();
@@ -376,7 +432,10 @@ class CapturePipeline {
     final confidence = suspectedTransfer
         ? math.min(result.confidence, kTransferConfidenceCap)
         : result.confidence;
-    final confirmed = confidence >= config.threshold;
+    // AI 的判断默认不能自己拍板：除非显式开了「AI 结果可以自动入账」，
+    // 不管这次置信度多高，都要停在待确认等人点头。
+    final aiForcedPending = result.reason == 'ai' && !config.aiAutoConfirm;
+    final confirmed = !aiForcedPending && confidence >= config.threshold;
     final draft = CaptureDraft(
       clientId: captureId,
       type: _typeOf(payment, rawText),
@@ -405,6 +464,7 @@ class CapturePipeline {
       learnText: Classifier.modelText(input),
       features: CaptureFeatures.of(input),
       createdAt: now,
+      source: accuracySourceOfReason(result.reason).name,
     );
 
     CaptureApiResult? apiResult;
@@ -461,18 +521,23 @@ class CapturePipeline {
 
 
 
-  Future<ClassifyResult> _aiFallback(
-    ClassifyInput input,
-    ClassifyResult local,
-  ) async {
-    Map<String, dynamic>? answer;
+  /// 拼好候选项打一次 `/ai/classify`；网络/上游出错一律返回 null，
+  /// 调用方各自决定「出错了怎么办」——自动路径悄悄保留本地结果，
+  /// 手动路径要给用户一句「AI 没回上来」。
+  Future<Map<String, dynamic>?> _requestAiClassify({
+    required String rawText,
+    required String merchant,
+    required int? amountCents,
+    required String direction,
+    required String channel,
+  }) async {
     try {
-      answer = await api.aiClassify(<String, dynamic>{
-        'text': input.rawText,
-        'merchant': input.payment.merchant,
-        'amountCents': input.payment.amountCents,
-        'direction': input.payment.direction.name,
-        'channel': input.payment.channel,
+      return await api.aiClassify(<String, dynamic>{
+        'text': rawText,
+        'merchant': merchant,
+        'amountCents': amountCents,
+        'direction': direction,
+        'channel': channel,
         'categories': <Map<String, String>>[
           for (final c in classifier.categories)
             <String, String>{'id': c.id, 'name': c.name},
@@ -483,8 +548,21 @@ class CapturePipeline {
         ],
       });
     } catch (_) {
-      return local;
+      return null;
     }
+  }
+
+  Future<ClassifyResult> _aiFallback(
+    ClassifyInput input,
+    ClassifyResult local,
+  ) async {
+    final answer = await _requestAiClassify(
+      rawText: input.rawText,
+      merchant: input.payment.merchant,
+      amountCents: input.payment.amountCents,
+      direction: input.payment.direction.name,
+      channel: input.payment.channel,
+    );
     if (answer == null) return local;
     final confidence = (answer['confidence'] as num?)?.toDouble();
     if (confidence == null || confidence <= local.confidence) return local;
@@ -496,7 +574,97 @@ class CapturePipeline {
     );
   }
 
+  /// 手动叫一次 AI（快捷回复里回「AI」/「再想想」触发）。
+  Future<CaptureActionResult> _applyAiRecourse(CaptureRecord record) async {
+    // 用户主动要求复核，本身就是在说「这次不太信」——记一次未命中。
+    await _recordAccuracy(record, hit: false);
+
+    final draft = record.draft;
+    final answer = await _requestAiClassify(
+      rawText: draft.rawText,
+      merchant: draft.merchant,
+      amountCents: draft.amountCents,
+      direction: record.features.direction,
+      channel: record.features.channel,
+    );
+    if (answer == null) {
+      return CaptureActionResult(
+        title: 'AI 没给出结果',
+        body: '渠道没配好，或者暂时联系不上，稍后再试',
+        draft: draft,
+      );
+    }
+    final confidence = (answer['confidence'] as num?)?.toDouble() ?? 0.0;
+    final categoryId = answer['categoryId'] as String? ?? draft.categoryId;
+    final fundId = answer['fundId'] as String? ?? draft.fundId;
+    final confirmed = config.aiAutoConfirm && confidence >= config.threshold;
+    final newDraft = draft.copyWith(
+      categoryId: categoryId,
+      fundId: fundId,
+      confidence: confidence,
+      status: confirmed ? 'confirmed' : 'pending',
+    );
+    var updated = record.copyWith(
+      draft: newDraft,
+      decision: confirmed ? CaptureDecision.recorded : CaptureDecision.pending,
+      synced: false,
+      clearSyncError: true,
+      source: AccuracySource.ai.name,
+    );
+    await store.saveCapture(updated);
+
+    final error = await _push(
+      updated,
+      () => api.patchTransaction(record.transactionId!, <String, dynamic>{
+        'categoryId': categoryId,
+        'fundId': fundId,
+        if (confirmed) 'status': 'confirmed',
+      }),
+    );
+    updated = error.record;
+    await store.saveCapture(updated);
+    if (error.message != null) {
+      return CaptureActionResult(
+        title: 'AI 复核未同步',
+        body: '${error.message} · 已存在本地 · 点击打开处理',
+        draft: newDraft,
+      );
+    }
+
+    return CaptureActionResult(
+      title: 'AI 复核：${_title(newDraft)}',
+      body: _body(
+        newDraft,
+        pending: !confirmed,
+        action: error.ok ? '再次点击可继续修改' : '已存本地，联网后自动同步',
+      ),
+      draft: newDraft,
+    );
+  }
+
+  /// 记一次「这个来源准不准」的样本；[CaptureRecord.source] 是空串
+  /// （老数据 / 测试直接构造）就什么都不记，不瞎猜桶。
+  Future<void> _recordAccuracy(CaptureRecord record, {required bool hit}) async {
+    if (record.source.isEmpty) return;
+    AccuracySource? source;
+    for (final s in AccuracySource.values) {
+      if (s.name == record.source) {
+        source = s;
+        break;
+      }
+    }
+    if (source == null) return;
+    accuracyStats.record(source, hit: hit);
+    await store.saveModel(kAccuracyModelKey, accuracyStats.toJson());
+  }
+
   // ------------------------------------------------------------ 通知动作
+
+  /// 「修改…」回「AI」或「再想想」（不分大小写）：转去手动叫一次 AI 复核，
+  /// 不当普通修改文本解析——这两个字母/三个字凑不成任何候选基金/类别名，
+  /// 拦在分词之前处理更干净。
+  static final RegExp _aiRecourseRe =
+      RegExp(r'^(ai|再想想)$', caseSensitive: false);
 
   /// 「修改…」的 RemoteInput 文本。
   Future<CaptureActionResult> applyQuickReply(
@@ -505,6 +673,11 @@ class CapturePipeline {
   ) async {
     final record = await store.loadCapture(captureId);
     if (record == null) return _notFound();
+
+    if (config.aiTrigger != AiTrigger.off &&
+        _aiRecourseRe.hasMatch(text.trim())) {
+      return _applyAiRecourse(record);
+    }
 
     final patch = quickReply.interpret(
       text,
@@ -518,6 +691,13 @@ class CapturePipeline {
         draft: record.draft,
       );
     }
+
+    // 真的碰了类别或基金、且改成不一样的值才算「分类错了」；只改金额/备注/
+    // 类型时没提类别基金，没证据说它错，宁可当一次隐性认可，不污染样本。
+    final categoryChanged =
+        patch.categoryId != null && patch.categoryId != record.draft.categoryId;
+    final fundChanged = patch.fundId != null && patch.fundId != record.draft.fundId;
+    await _recordAccuracy(record, hit: !(categoryChanged || fundChanged));
 
     final draft = record.draft.copyWith(
       fundId: patch.fundId,
@@ -571,6 +751,7 @@ class CapturePipeline {
   Future<CaptureActionResult> confirm(String captureId) async {
     final record = await store.loadCapture(captureId);
     if (record == null) return _notFound();
+    await _recordAccuracy(record, hit: true);
 
     final draft = record.draft.copyWith(status: 'confirmed', confidence: 1.0);
     var updated = record.copyWith(

@@ -423,7 +423,11 @@ class _UiPipeline {
     if (cached != null && stamp == _stamp) return cached;
     final pipeline = await buildPipeline(
       store: store,
-      api: HttpCaptureApi(_ref.read(apiProvider), aiEnabled: settings.llmFallback),
+      api: HttpCaptureApi(
+        _ref.read(apiProvider),
+        aiEnabled: settings.aiTrigger != 'off',
+        providerId: settings.aiProviderId,
+      ),
       ledger: ledger,
       settings: settings,
       memberId: session.me.id,

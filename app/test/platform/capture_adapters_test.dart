@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:famledger/capture/pipeline.dart';
 import 'package:famledger/capture/source_profiles.dart';
 import 'package:famledger/data/models/models.dart';
 import 'package:famledger/data/repos/ledger_repo.dart';
@@ -62,14 +63,23 @@ void main() {
     expect(resolveDefaultAccountId(ledger, const CaptureSettings()), isNull);
   });
 
-  test('管线配置取阈值与 AI 兜底', () {
+  test('管线配置取阈值与 AI 触发方式', () {
     final config = pipelineConfig(
       memberId: 'm1',
-      settings: const CaptureSettings(autoConfirmThreshold: 0.6, llmFallback: true),
+      settings: const CaptureSettings(autoConfirmThreshold: 0.6, aiTrigger: 'auto', aiAutoConfirm: true),
     );
     expect(config.memberId, 'm1');
     expect(config.threshold, 0.6);
-    expect(config.aiFallback, isTrue);
+    expect(config.aiTrigger, AiTrigger.auto);
+    expect(config.aiAutoConfirm, isTrue);
+  });
+
+  test('aiTriggerOf：认得 manual/auto，认不出的（含老数据的空串）一律当 off', () {
+    expect(aiTriggerOf('manual'), AiTrigger.manual);
+    expect(aiTriggerOf('auto'), AiTrigger.auto);
+    expect(aiTriggerOf('off'), AiTrigger.off);
+    expect(aiTriggerOf(''), AiTrigger.off);
+    expect(aiTriggerOf('随便写的'), AiTrigger.off);
   });
 
   test('Kotlin CapturePrefs.DEFAULTS 与 kDefaultAllowedPackages 一致', () {

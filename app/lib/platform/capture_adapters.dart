@@ -56,13 +56,22 @@ String? resolveDefaultAccountId(LedgerData ledger, CaptureSettings settings) {
   return ledger.activeAccounts.any((a) => a.id == configured) ? configured : null;
 }
 
+/// `CaptureSettings.aiTrigger` 是服务端的字符串；认不出的值一律当
+/// `off`（老数据、拼写错误之类），别让脏数据悄悄打开 AI 兜底。
+AiTrigger aiTriggerOf(String raw) => switch (raw) {
+  'manual' => AiTrigger.manual,
+  'auto' => AiTrigger.auto,
+  _ => AiTrigger.off,
+};
+
 CapturePipelineConfig pipelineConfig({
   required String memberId,
   required CaptureSettings settings,
 }) => CapturePipelineConfig(
   memberId: memberId,
   threshold: settings.autoConfirmThreshold.clamp(0.0, 1.0),
-  aiFallback: settings.llmFallback,
+  aiTrigger: aiTriggerOf(settings.aiTrigger),
+  aiAutoConfirm: settings.aiAutoConfirm,
 );
 
 /// 用一份主数据 + 家庭设置装配管线（模型来自 [store]，没有就种子训练并落盘）。

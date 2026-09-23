@@ -399,19 +399,27 @@ void main() {
           'defaultFundId': 'f1',
           'defaultAccountId': 'a1',
           'autoConfirmThreshold': 0.75,
-          'llmFallback': false,
+          'aiTrigger': 'auto',
+          'aiAutoConfirm': true,
+          'aiProviderId': 'prov-1',
           'allowedApps': ['com.tencent.mm'],
         },
         'ui': {'firstDayOfMonth': 1},
       };
       final s = Settings.fromJson(json);
       expect(s.capture.autoConfirmThreshold, 0.75);
+      expect(s.capture.aiTrigger, 'auto');
+      expect(s.capture.aiAutoConfirm, isTrue);
+      expect(s.capture.aiProviderId, 'prov-1');
       expect(s.ui.firstDayOfMonth, 1);
       expect(s.toJson(), json);
 
       final empty = Settings.fromJson({});
       expect(empty.currency, 'CNY');
       expect(empty.capture.autoConfirmThreshold, 0.75);
+      expect(empty.capture.aiTrigger, 'off');
+      expect(empty.capture.aiAutoConfirm, isFalse);
+      expect(empty.capture.aiProviderId, isNull);
       expect(empty.capture.allowedApps, isEmpty);
       expect(empty.ui.firstDayOfMonth, 1);
     });

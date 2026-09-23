@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  家账允许你直接填一台局域网/内网服务器的地址（没有证书的裸 http），也允许填
+  一个走 Cloudflare Tunnel 之类反代的公网域名（https）。Android 9 起，明文
+  （http）流量默认整个被系统拦掉——不区分内网外网，也没有「只放开私网网段」
+  这个选项：Network Security Config 的 <domain> 只认精确域名/子域名，不支持
+  CIDR 或 IP 通配，没法只对 10.0.0.0/8、192.168.0.0/16 这类网段放行。
+
+  所以这里在系统层面整体放开明文流量，真正的「内网用 http、公网用 https」
+  是在 Dart 侧做的（SessionRepo.normalizeUrl：只有识别成局域网/.local/.lan 地址
+  才会自动拼 http://，其余一律 https://）——放开的是「系统允不允许连」，
+  「连的时候用不用 http」仍然由 App 自己判断，不是谁都能把 App 拐去用明文连
+  一个公网地址。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

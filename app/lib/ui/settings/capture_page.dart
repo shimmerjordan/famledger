@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../app/providers.dart';
 import '../../app/theme.dart';
+import '../../capture/accuracy_stats.dart';
 import '../../capture/parser.dart';
 import '../../capture/pipeline.dart';
 import '../../data/models/models.dart';
@@ -14,6 +15,7 @@ import '../../platform/capture_dry_run.dart';
 import '../../platform/capture_providers.dart';
 import '../../platform/file_capture_store.dart';
 import '../../platform/share_import.dart';
+import '../ai/ai_controls.dart';
 import '../widgets/widgets.dart';
 import 'capture_apps_sheet.dart';
 import 'capture_widgets.dart';
@@ -500,12 +502,74 @@ class _CapturePageState extends ConsumerState<CapturePage> with WidgetsBindingOb
             onChanged: canEdit ? (v) => _patchCapture({'defaultAccountId': v}) : null,
           ),
         ),
-        SwitchListTile(
-          title: const Text('AI 兜底'),
-          subtitle: const Text('置信度不够时，让 AI 渠道再判一次类别与基金'),
-          value: capture.llmFallback,
-          onChanged: canEdit ? (v) => _patchCapture({'llmFallback': v}) : null,
+        ListTile(
+          title: const Text('AI 兜底怎么触发'),
+          subtitle: Text(_aiTriggerHint(capture.aiTrigger)),
         ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: LedgerLayout.pagePadding),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(value: 'off', label: Text('关闭')),
+                ButtonSegment(value: 'manual', label: Text('手动')),
+                ButtonSegment(value: 'auto', label: Text('自动')),
+              ],
+              selected: {capture.aiTrigger},
+              onSelectionChanged: canEdit
+                  ? (selected) => _patchCapture({'aiTrigger': selected.first})
+                  : null,
+            ),
+          ),
+        ),
+        if (capture.aiTrigger != 'off') ...[
+          SwitchListTile(
+            title: const Text('AI 结果可以自动入账'),
+            subtitle: const Text('关闭时，AI 给出的判断不管置信度多高，都会停在待确认等你点头'),
+            value: capture.aiAutoConfirm,
+            onChanged: canEdit ? (v) => _patchCapture({'aiAutoConfirm': v}) : null,
+          ),
+          Padding(
+            // AiProviderChip 内部是 Flexible + Row，塞进 ListTile.trailing 会让
+            // ListTile 去问它的固有宽度、算出 infinity，直接触发「trailing 撑满
+            // 整行」的断言——只能像聊天/月报页那样，让它当 Row 里的 Flexible。
+            padding: const EdgeInsets.fromLTRB(
+              LedgerLayout.pagePadding,
+              8,
+              LedgerLayout.pagePadding,
+              8,
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('记账兜底用哪个渠道'),
+                      const SizedBox(height: 2),
+                      Text(
+                        '不选就跟聊天/月报一样用默认渠道；本机跑的 Ollama 也算一个渠道',
+                        style: theme.textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: IgnorePointer(
+                    ignoring: !canEdit,
+                    child: AiProviderChip(
+                      providerId: capture.aiProviderId,
+                      onChanged: (id) => _patchCapture({'aiProviderId': id}),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+        _accuracyPanel(),
         if (!isAdmin)
           Padding(
             padding: const EdgeInsets.fromLTRB(LedgerLayout.pagePadding, 4, LedgerLayout.pagePadding, 0),
@@ -518,6 +582,64 @@ class _CapturePageState extends ConsumerState<CapturePage> with WidgetsBindingOb
           ),
       ],
     );
+  }
+
+  String _aiTriggerHint(String trigger) => switch (trigger) {
+        'manual' => '置信度不够时只提示；在通知「修改…」里回「AI」或「再想想」才真的调用。',
+        'auto' => '置信度不够就自动调用；本地模型最近够准时会自动跳过，省一次调用。',
+        _ => '从不调用 AI 渠道，只用本地规则和模型。',
+      };
+
+  /// 「最近这个来源准不准」的只读小面板；样本还不够的来源不显示，免得
+  /// 拿一个「3 次 3 中」的数字唬人。
+  Widget _accuracyPanel() {
+    final theme = Theme.of(context);
+    final stats = ref.watch(accuracyStatsProvider).valueOrNull;
+    if (stats == null) return const SizedBox.shrink();
+    const rows = [
+      ('本地规则', AccuracySource.rule),
+      ('本地模型', AccuracySource.nb),
+      ('AI 兜底', AccuracySource.ai),
+    ];
+    final visible = [
+      for (final row in rows)
+        if (stats.sampleCountOf(row.$2) > 0) row,
+    ];
+    if (visible.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        LedgerLayout.pagePadding,
+        LedgerLayout.itemGap,
+        LedgerLayout.pagePadding,
+        0,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('最近识别情况', style: theme.textTheme.labelLarge),
+          const SizedBox(height: 4),
+          for (final row in visible)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Row(
+                children: [
+                  SizedBox(width: 72, child: Text(row.$1, style: theme.textTheme.bodySmall)),
+                  Expanded(
+                    child: Text(_hitRateLabel(stats, row.$2), style: theme.textTheme.bodySmall),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  String _hitRateLabel(AccuracyStats stats, AccuracySource source) {
+    final count = stats.sampleCountOf(source);
+    final rate = stats.hitRateOf(source);
+    if (rate == null) return '样本还不够（$count/${AccuracyStats.minSamples}）';
+    return '${(rate * 100).round()}% 准 · 最近 $count 次';
   }
 
   Widget _dryRunSection(LedgerData? ledger) {

@@ -190,12 +190,24 @@ class SessionRepo {
     return me;
   }
 
-  /// 用户可能只输了 `nas.lan:48090`；私网地址默认 http，其余默认 https。
+  /// 服务端自己的默认端口（`deploy/Dockerfile`、`scripts/dev.sh` 都是这个值）。
+  /// 局域网直连没有反代替你把 443/80 转发过去，用户只填了 IP/主机名、没写端口
+  /// 时，不补的话会去敲 80 端口——famledger 根本不监听那，连不上还不容易看出
+  /// 是「忘写端口」，只会看到一个笼统的连接失败。
+  static const int defaultPort = 48090;
+
+  /// 用户可能只输了 `nas.lan`；私网/本地地址（含 Tailscale 等跑在
+  /// 100.64.0.0/10 共享地址空间里的 overlay 网络）默认 http 且补默认端口，
+  /// 其余（公网域名，通常走 Cloudflare Tunnel 之类反代到 443）默认 https、
+  /// 端口不动。
   static String normalizeUrl(String raw) {
     var s = raw.trim();
     if (s.isEmpty) return '';
     if (!s.contains('://')) {
-      final host = s.split('/').first.split(':').first.toLowerCase();
+      final slash = s.indexOf('/');
+      final authority = slash < 0 ? s : s.substring(0, slash);
+      final rest = slash < 0 ? '' : s.substring(slash);
+      final host = authority.split(':').first.toLowerCase();
       final isLocal =
           host == 'localhost' ||
           host == '127.0.0.1' ||
@@ -203,8 +215,13 @@ class SessionRepo {
           host.endsWith('.lan') ||
           host.startsWith('192.168.') ||
           host.startsWith('10.') ||
-          RegExp(r'^172\.(1[6-9]|2\d|3[01])\.').hasMatch(host);
-      s = '${isLocal ? 'http' : 'https'}://$s';
+          RegExp(r'^172\.(1[6-9]|2\d|3[01])\.').hasMatch(host) ||
+          // RFC 6598 CGNAT 共享地址空间（100.64.0.0/10）：Tailscale 等
+          // overlay 网络的节点地址都落在这段里，不是公网 IP。
+          RegExp(r'^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.').hasMatch(host);
+      final hasPort = authority.contains(':');
+      final withPort = (isLocal && !hasPort) ? '$authority:$defaultPort' : authority;
+      s = '${isLocal ? 'http' : 'https'}://$withPort$rest';
     }
     return ApiClient.normalizeBaseUrl(s);
   }

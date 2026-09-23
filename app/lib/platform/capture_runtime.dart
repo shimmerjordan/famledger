@@ -519,7 +519,11 @@ class CaptureRuntime {
       a.pipeline = await buildPipeline(
         store: _store,
         api: QueuedCaptureApi(
-          HttpCaptureApi(a.client, aiEnabled: a.settings.capture.llmFallback),
+          HttpCaptureApi(
+            a.client,
+            aiEnabled: a.settings.capture.aiTrigger != 'off',
+            providerId: a.settings.capture.aiProviderId,
+          ),
           _store,
           onSuccess: _scheduleReplay,
           now: _now,

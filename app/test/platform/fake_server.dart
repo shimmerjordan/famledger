@@ -82,7 +82,14 @@ class FakeServer {
       body = {
         'name': '测试家庭',
         'currency': 'CNY',
-        'capture': {'defaultFundId': null, 'defaultAccountId': null, 'autoConfirmThreshold': threshold, 'llmFallback': false},
+        'capture': {
+          'defaultFundId': null,
+          'defaultAccountId': null,
+          'autoConfirmThreshold': threshold,
+          'aiTrigger': 'off',
+          'aiAutoConfirm': false,
+          'aiProviderId': null,
+        },
         'ui': {'firstDayOfMonth': 1},
       };
     } else if (path == '/api/v1/transactions' && req.method == 'POST') {

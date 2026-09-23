@@ -135,11 +135,14 @@ MockClient api({List<http.Request>? seen, double threshold = 0.75}) => MockClien
       'defaultFundId': null,
       'defaultAccountId': null,
       'autoConfirmThreshold': threshold,
-      'llmFallback': false,
+      'aiTrigger': 'off',
+      'aiAutoConfirm': false,
+      'aiProviderId': null,
       ...?(patch['capture'] as Map<String, dynamic>?),
     };
     return jsonOk({'name': '测试家庭', 'currency': 'CNY', 'capture': capture, 'ui': {'firstDayOfMonth': 1}});
   }
+  if (path.endsWith('/ai/providers')) return jsonOk(const {'items': []});
   return jsonOk(const {});
 });
 
@@ -250,6 +253,62 @@ void main() {
     await pumpPage(tester, await boot(platform: FakeCapturePlatform(), store: store, role: 'member'));
     expect(tester.widget<Slider>(find.byType(Slider)).onChanged, isNull);
     expect(find.text('只有管理员能改识别设置。'), findsOneWidget);
+    expect(
+      tester.widget<SegmentedButton<String>>(find.byType(SegmentedButton<String>)).onSelectionChanged,
+      isNull,
+    );
+  });
+
+  testWidgets('AI 兜底默认关闭：只有触发方式选择，没有自动入账开关和渠道', (tester) async {
+    await pumpPage(tester, await boot(platform: FakeCapturePlatform(), store: store));
+    expect(find.text('AI 兜底怎么触发'), findsOneWidget);
+    final segmented = tester.widget<SegmentedButton<String>>(find.byType(SegmentedButton<String>));
+    expect(segmented.selected, {'off'});
+    expect(find.text('AI 结果可以自动入账'), findsNothing);
+    expect(find.text('记账兜底用哪个渠道'), findsNothing);
+  });
+
+  testWidgets('选「自动」→ PATCH aiTrigger，出现自动入账开关与渠道选择', (tester) async {
+    final seen = <http.Request>[];
+    await pumpPage(
+      tester,
+      await boot(platform: FakeCapturePlatform(), store: store, client: api(seen: seen)),
+    );
+
+    final segmented = tester.widget<SegmentedButton<String>>(find.byType(SegmentedButton<String>));
+    segmented.onSelectionChanged!({'auto'});
+    await tester.pumpAndSettle();
+
+    final patch = seen.lastWhere((r) => r.method == 'PATCH');
+    expect(jsonDecode(patch.body), {'capture': {'aiTrigger': 'auto'}});
+    expect(find.text('AI 结果可以自动入账'), findsOneWidget);
+    expect(find.text('记账兜底用哪个渠道'), findsOneWidget);
+
+    final autoConfirm = tester.widget<SwitchListTile>(
+      find.widgetWithText(SwitchListTile, 'AI 结果可以自动入账'),
+    );
+    expect(autoConfirm.value, isFalse);
+    autoConfirm.onChanged!(true);
+    await tester.pumpAndSettle();
+    final second = seen.lastWhere((r) => r.method == 'PATCH');
+    expect(jsonDecode(second.body), {'capture': {'aiAutoConfirm': true}});
+  });
+
+  testWidgets('最近识别情况：有样本才显示，样本不够写「样本还不够」', (tester) async {
+    await store.saveModel(kAccuracyModelKey, {
+      'nb': [for (var i = 0; i < 25; i++) i >= 5], // 5 次未命中 + 20 次命中 = 80%
+      'ai': List<bool>.filled(5, true),
+    });
+    await pumpPage(tester, await boot(platform: FakeCapturePlatform(), store: store));
+    expect(find.text('最近识别情况'), findsOneWidget);
+    expect(find.textContaining('80% 准'), findsOneWidget); // 20/25
+    expect(find.textContaining('样本还不够（5/20）'), findsOneWidget); // ai 只有 5 条
+    expect(find.text('本地规则'), findsNothing); // rule 桶一条没有，不显示这一行
+  });
+
+  testWidgets('没有任何识别记录时不显示「最近识别情况」', (tester) async {
+    await pumpPage(tester, await boot(platform: FakeCapturePlatform(), store: store));
+    expect(find.text('最近识别情况'), findsNothing);
   });
 
   testWidgets('最近捕获：显示日志与结论芯片；空态有说明', (tester) async {

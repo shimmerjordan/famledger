@@ -2,7 +2,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app/router.dart';
+import '../capture/accuracy_stats.dart';
 import '../capture/headless_main.dart';
+import '../capture/pipeline.dart' show kAccuracyModelKey;
 import 'capture_channel.dart';
 import 'file_capture_store.dart';
 
@@ -46,6 +48,13 @@ final captureStoreProvider = FutureProvider<LocalCaptureStore>((ref) => FileCapt
 final recentCapturesProvider = FutureProvider.autoDispose<List<CaptureLogEntry>>((ref) async {
   final store = await ref.watch(captureStoreProvider.future);
   return store.recent();
+});
+
+/// 「本地规则/本地模型/AI 兜底」最近谁准——设置页那块只读面板用。
+final accuracyStatsProvider = FutureProvider.autoDispose<AccuracyStats>((ref) async {
+  final store = await ref.watch(captureStoreProvider.future);
+  final json = await store.loadModel(kAccuracyModelKey);
+  return json == null ? AccuracyStats.empty() : AccuracyStats.fromJson(json);
 });
 
 final listenerEnabledProvider = FutureProvider.autoDispose<bool>(
