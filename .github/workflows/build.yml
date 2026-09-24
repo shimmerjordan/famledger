@@ -335,27 +335,65 @@ jobs:
             echo
             echo "## 一、部署（NAS / 服务器，Docker Compose 推荐）"
             echo
-            echo '```bash'
             if [ "$PUBLISH" = "true" ]; then
-              echo "# 仓库根目录下执行，拉的是本次发布的镜像"
-              echo "docker compose -f deploy/docker-compose.yml up -d"
+              echo "新建一个目录，放进下面这份 \`docker-compose.yml\`，改好数据目录和 \`SETUP_TOKEN\`，"
+              echo "然后 \`docker compose up -d\`。群晖、威联通的容器面板里直接粘贴也行。"
+              echo
+              echo '```yaml'
+              cat <<YAML
+          name: famledger
+
+          services:
+            famledger:
+              image: ghcr.io/${OWNER}/famledger:${VERSION}
+              container_name: famledger
+              restart: unless-stopped
+              ports:
+                - "48090:48090"
+              volumes:
+                - ./data:/data               # 数据目录，也可写绝对路径，如威联通 /share/Web/famledger/data
+              environment:
+                TZ: Asia/Shanghai            # 按自然月统计，时区必须对
+                TRUST_PROXY: "1"             # 走隧道或反代保持 1；局域网直连、前面没有反代时改成 0
+                SETUP_TOKEN: "改成一串随机值"   # openssl rand -hex 16 生成；初始化完就不起作用了
+          YAML
+              echo '```'
+              echo
+              echo "升级：把 \`image\` 的版本号改掉（或者一直用 \`latest\`），再 \`docker compose pull && docker compose up -d\`。"
             else
-              echo "# 这次没有推镜像到 GHCR，本地构建验证："
+              echo "这次没有推镜像到 GHCR，要验证就在仓库根目录本地构建："
+              echo
+              echo '```bash'
               echo "./scripts/build-web.sh"
               echo "docker compose -f deploy/docker-compose.build.yml up -d --build"
+              echo '```'
             fi
-            echo '```'
             echo
-            echo "浏览器打开 \`http://<NAS 内网 IP>:48090/\`，进首启向导。数据落容器 \`/data\`"
-            echo "（\`famledger.db\` + \`secret.key\`）；用 bind mount 记得先"
-            echo "\`chown -R 1000:1000\`，否则容器起来几秒就因 \`EACCES\` 退出。"
+            echo "- 浏览器打开 \`http://<NAS 内网 IP>:48090/\` 进首启向导。"
+            echo "- 数据目录不用先建也不用 chown：容器会自动把它的属主改成 1000（换用户就设 \`PUID\` / \`PGID\`）。"
+            echo "- 目录里是 \`famledger.db\` 和 \`secret.key\`，**两个要一起备份**；只用本地磁盘，别挂 NFS/SMB。"
             echo
             echo "## 二、公网访问（Cloudflare Tunnel）"
             echo
-            echo "把 \`deploy/cloudflared-ingress.example.yml\` 那一段粘进本机"
-            echo "\`~/.cloudflared/config.yml\` 的 ingress 列表（放在 catch-all **之前**），"
-            echo "重启 cloudflared。**不要**给这条隧道配 \`TUNNEL_TOKEN\`——那会切成面板"
-            echo "托管模式，本地 config.yml 直接失效。"
+            echo "- **机器上已经有 cloudflared（本地 config.yml 模式）**：把"
+            echo "  \`deploy/cloudflared-ingress.example.yml\` 那一段粘进 ingress 列表（放在 catch-all **之前**），"
+            echo "  重启 cloudflared。**别**给这个现有容器加 \`TUNNEL_TOKEN\`，否则本地 config.yml 会整个失效。"
+            echo "- **新建一条独立隧道**：在 Cloudflare Zero Trust → Networks → Tunnels 新建，复制 token；"
+            echo "  Public Hostname 的服务地址填 \`http://famledger:48090\`，再往上面的 compose 里加："
+            echo
+            echo '```yaml'
+            cat <<'YAML'
+            cloudflared:
+              image: cloudflare/cloudflared:latest
+              container_name: cloudflared-famledger
+              restart: unless-stopped
+              command: tunnel --no-autoupdate run
+              environment:
+                TUNNEL_TOKEN: "面板里复制的 token"
+              depends_on:
+                - famledger
+          YAML
+            echo '```'
             echo
             echo "## 三、首启向导"
             echo
