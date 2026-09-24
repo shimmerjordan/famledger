@@ -39,7 +39,7 @@ docker compose -f deploy/docker-compose.yml up -d
 打开 `http://<NAS 内网 IP>:48090/` 按首启向导建家庭和管理员。升级：`pull` 之后再 `up -d`。
 
 - 数据在容器的 `/data` 里，有两个文件：`famledger.db` 和 `secret.key`。**`secret.key` 要和数据库一起备份**，丢了它全家要重新登录，库里加密存的密钥也解不开了。
-- 数据要放到自己的目录：先 `chown -R 1000:1000 <目录>`，再用 `FL_DATA_PATH=<目录>` 启动。
+- 数据想放到自己的目录，用 `FL_DATA_PATH=<目录>` 启动就行。目录不用先建也不用 chown，容器会自动把属主改成 1000。
 - **只能用本地磁盘**，不要挂 NFS/SMB，SQLite 在网络盘上可能坏库。
 - 公网访问用 Cloudflare Tunnel，配置示例见 [`deploy/cloudflared-ingress.example.yml`](deploy/cloudflared-ingress.example.yml)。
 - 要是先暴露到公网再初始化，务必设置 `SETUP_TOKEN`，否则谁先打开谁就是管理员。
@@ -51,6 +51,7 @@ docker compose -f deploy/docker-compose.yml up -d
 | `TRUST_PROXY` | `1` | 在隧道或反代后面保持 1；局域网直连、前面没有反代时**改成 0**，否则限流能被伪造的请求头绕过 |
 | `SETUP_TOKEN` | 空 | 首次初始化的口令 |
 | `FL_PORT` / `FL_DATA_PATH` | `48090` / 命名卷 | compose 用：宿主机端口、数据目录 |
+| `PUID` / `PGID` | `1000` | 服务以哪个用户运行，数据目录的属主也会改成它 |
 | `LOGIN_PER_MIN` / `AI_PER_MIN` / `AI_MAX_STREAMS` | `10` / `30` / `4` | 登录、AI 限流 |
 | `CORS_ORIGINS` | 空 | 只有网页版部署在另一个域名时才需要 |
 | `LOG_LEVEL` | `info` | 设成 `debug` 会打请求日志 |

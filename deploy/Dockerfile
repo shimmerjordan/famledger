@@ -39,13 +39,13 @@ COPY server/ /app/server/
 # 服务端见 WEB_ROOT 里没有 index.html 会发一个说明页（见 src/modules/static.js）。
 COPY app/build/web/ /web/
 
-# 数据目录先建好并给 node：named volume 首次使用会继承镜像里的属主，用户零配置就能跑。
-# bind mount **不**继承（挂上来是 root:root），NAS 上挂宿主目录得自己
-# `chown -R 1000:1000`，见 docker-compose.yml 里那段。
+# 数据目录先建好并给 node：named volume 首次使用会继承镜像里的属主。
 RUN mkdir -p /data && chown node:node /data
 
-# 不用 root 跑。node 镜像自带 UID 1000 的 node 用户，正好也是 NAS 上常见的首个普通用户。
-USER node
+# 服务本身不用 root 跑，但容器以 root 入场：bind mount 的宿主目录常常是 Docker 以
+# root:root 新建的，入口脚本先把 /data 的属主修成 node（UID 1000，可用 PUID/PGID 改），
+# 再用 drop-privs.mjs 降权加载服务端。所以这里**不写** USER node。
+COPY deploy/docker-entrypoint.sh deploy/drop-privs.mjs /app/deploy/
 
 # TRUST_PROXY 默认 1：这镜像就是奔着「NAS + Cloudflare Tunnel」去的，隧道过来的请求
 # 源 IP 永远是 127.0.0.1，不认 CF-Connecting-IP 的话登录限流会把全世界塞进同一个桶 ——
@@ -68,6 +68,7 @@ EXPOSE 48090
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD curl -fsS http://127.0.0.1:48090/healthz || exit 1
 
-# 直接 exec node，不走 npm start：PID 1 是 node 本人，SIGTERM 不会被 npm 吞掉
-# （被吞掉的后果是每次 docker stop 都等满 10 s 再被 SIGKILL，WAL 恰好写到一半）。
-CMD ["node", "/app/server/src/server.js"]
+# 入口脚本最后 exec node，降权后在同一个进程里加载服务端：PID 1 仍是 node 本人，
+# SIGTERM 不会被 sh 或 npm 吞掉（被吞掉的后果是每次 docker stop 都等满 10 s 再被
+# SIGKILL，WAL 恰好写到一半）。
+ENTRYPOINT ["/app/deploy/docker-entrypoint.sh"]

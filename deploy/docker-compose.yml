@@ -38,12 +38,9 @@ services:
       #
       #       FL_DATA_PATH=/volume1/docker/famledger/data
       #
-      #     bind mount **不**继承镜像里的属主（挂上来是 root:root），而容器里是
-      #     UID 1000 的 node 在跑，所以第一次要自己来一下：
-      #
-      #       mkdir -p /volume1/docker/famledger/data && chown -R 1000:1000 $_
-      #
-      #     漏了这步表现为容器起来几秒就退，日志里是 EACCES: open '/data/secret.key'。
+      #     目录不用先建也不用 chown：宿主目录不存在时 Docker 会以 root 新建它，
+      #     容器以 root 入场后会先把属主改成 1000（node），再降权运行服务。
+      #     想让文件归宿主机上别的用户，设 PUID / PGID（见下面 environment）。
       #
       # 只用本地文件系统 —— 别指向 NFS/SMB：网络挂载上 POSIX 锁不可靠，SQLite 在
       # 那上面有把库写坏的真实风险。要异地备份就用应用内的 WebDAV 备份功能。
@@ -72,6 +69,9 @@ services:
       #   · 同时在跑的上游**流**最多几条（月报/对话是 SSE 长连接）。超了 503 ai_busy，
       #     名额在请求结束时归还，客户端半路跑了也照还。
       AI_MAX_STREAMS: "${AI_MAX_STREAMS:-4}"
+      # 服务以哪个用户运行，数据目录的属主也会改成它。默认是镜像自带的 node（1000:1000）。
+      # PUID: "${PUID:-1000}"
+      # PGID: "${PGID:-1000}"
       # debug 会打请求行与耗时；rawText 之类的敏感内容任何级别都只记长度。
       LOG_LEVEL: "${LOG_LEVEL:-info}"
       # 只有把 Web 看板单独部署到另一个域名时才需要（App 和看板同源，默认不用）：

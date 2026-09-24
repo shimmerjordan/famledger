@@ -16,6 +16,8 @@
 - **修复**：
   - 网页版随机卡死：首页停在骨架屏、账单表格出不来、登录和导入一直转圈。原因是 service worker
     换版本时，Chrome 会把 fetch 的 keepalive 请求扣着不发；现在网页端请求一律不带 keepalive。
+  - Docker 用 bind mount 挂一个还不存在的宿主目录时，容器报 `unable to open database file` 反复重启。
+    现在容器以 root 入场，先把 `/data` 的属主改成 1000（可用 `PUID` / `PGID` 改）再降权运行，不用手动 chown。
   - 局域网、Tailscale 地址自动补全端口。
   - 基金页的新建按钮和右下角的 + 重叠。
 - **文档**：README 精简并加了截图，`docs/ios.md` 也压短了。

@@ -60,7 +60,8 @@ COPY --from=web /src/app/build/web/ /web/
 
 RUN mkdir -p /data && chown node:node /data
 
-USER node
+# 以 root 入场修好 /data 属主再降权，原因见 deploy/Dockerfile 同一处。
+COPY deploy/docker-entrypoint.sh deploy/drop-privs.mjs /app/deploy/
 
 # TRUST_PROXY 默认 1：目标部署形态是 NAS + Cloudflare Tunnel，隧道来的源 IP 永远是
 # 127.0.0.1，不认 CF-Connecting-IP 的话限流等于没有。直连暴露时设回 0。
@@ -78,4 +79,4 @@ EXPOSE 48090
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD curl -fsS http://127.0.0.1:48090/healthz || exit 1
 
-CMD ["node", "/app/server/src/server.js"]
+ENTRYPOINT ["/app/deploy/docker-entrypoint.sh"]

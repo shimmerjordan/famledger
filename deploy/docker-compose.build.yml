@@ -31,7 +31,7 @@ services:
       - "${FL_PORT:-48090}:48090"
     volumes:
       # 同 docker-compose.yml：不设就是命名卷 fldata；设成绝对路径则是 bind mount，
-      # 那种情况要先 `chown -R 1000:1000` 宿主目录（容器内以 UID 1000 的 node 跑）。
+      # 目录属主由容器入口脚本自动改成 1000，不用先 chown。
       - "${FL_DATA_PATH:-fldata}:/data"
     environment:
       TZ: "${TZ:-Asia/Shanghai}"

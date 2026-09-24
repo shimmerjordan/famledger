@@ -144,10 +144,32 @@ jobs:
           echo "$body" | grep -q 'needsSetup' \
             || { echo "::error::/api/v1/setup/status 响应里没有 needsSetup 字段"; exit 1; }
 
+      # NAS 上最常见的写法：compose 里直接写一个还不存在的宿主目录，Docker 会以
+      # root:root 新建它。入口脚本得先把属主修成 1000 再降权，修不好就是
+      # "unable to open database file" 反复重启。
+      - name: 冒烟 bind mount（宿主目录由 Docker 以 root 新建）
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/fl-bind/data"
+          docker run -d --name famledger-ci-bind -p 48091:48090 -v "$dir:/data" famledger:ci
+          for _ in $(seq 1 60); do
+            [ "$(curl -fsS http://127.0.0.1:48091/healthz 2>/dev/null || true)" = ok ] && break
+            sleep 1
+          done
+          [ "$(curl -fsS http://127.0.0.1:48091/healthz)" = ok ] \
+            || { echo "::error::bind mount 下 /healthz 不是 ok"; exit 1; }
+          [ "$(stat -c %u "$dir/famledger.db")" = 1000 ] \
+            || { echo "::error::famledger.db 的属主不是 1000"; exit 1; }
+          [ "$(docker exec famledger-ci-bind awk '/^Uid:/{print $2}' /proc/1/status)" = 1000 ] \
+            || { echo "::error::服务进程没有降权到 1000"; exit 1; }
+          echo "bind mount → ok，属主 1000，进程 uid 1000"
+
       - name: 失败时打印容器日志
         if: failure()
-        run: docker logs famledger-ci || true
+        run: |
+          docker logs famledger-ci || true
+          docker logs famledger-ci-bind || true
 
       - name: 清理容器
         if: always()
-        run: docker rm -f famledger-ci >/dev/null 2>&1 || true
+        run: docker rm -f famledger-ci famledger-ci-bind >/dev/null 2>&1 || true
