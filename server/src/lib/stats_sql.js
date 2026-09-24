@@ -160,7 +160,31 @@ function dailyTotals(db, month, filter) {
   }));
 }
 
+/**
+ * 持仓市值（分）= 份额E4 × 价格E4 / 1e6，四舍五入。两个 ×10000 的数一乘就越过 2^53，
+ * 所以走 BigInt；App 端按同一个式子算，两边对得上。
+ */
+function marketCents(quantityE4, priceE4) {
+  return Number((BigInt(quantityE4) * BigInt(priceE4) + 500000n) / 1000000n);
+}
+
+/**
+ * 计入投资统计的持仓：有价格、未归档未删除、份额 > 0（清了仓的只剩已实现盈亏，不算市值）。
+ * @returns {{accountId: string|null, costCents: number, marketCents: number}[]}
+ */
+function investPositions(db) {
+  return db.all(
+    `SELECT account_id, quantity_e4, cost_cents, price_e4 FROM holdings
+      WHERE deleted_at IS NULL AND archived = 0 AND quantity_e4 > 0 AND price_e4 IS NOT NULL`,
+  ).map((r) => ({
+    accountId: r.account_id,
+    costCents: cents(r.cost_cents),
+    marketCents: marketCents(r.quantity_e4, r.price_e4),
+  }));
+}
+
 module.exports = {
   CONFIRMED, MONTH_OF, DATE_OF, EXPENSE_SUM, INCOME_SUM,
   filterClause, deltaMap, monthSums, totalsByColumn, expenseByColumn, monthlyTotals, dailyTotals,
+  marketCents, investPositions,
 };

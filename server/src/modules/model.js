@@ -271,6 +271,9 @@ module.exports = (ctx) => {
     sendJson(res, 200, { ok: true });
   }
 
+  // 导入预览要和 GET /model 走同一条懒初始化，从没同步过模型的家庭才有种子可用；
+  // imports 按字母序先加载，只能在请求时再取。
+  ctx.ensureModel = ensure;
   return {
     name: 'model',
     routes: [

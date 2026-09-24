@@ -26,6 +26,8 @@ const SYNCED = [
   ['transactions', { json: ['tags'] }],
   ['budgets', {}],
   ['rules', { bools: ['enabled'] }],
+  ['assets', { bools: ['archived'] }],
+  ['holdings', { bools: ['archived'] }],
 ];
 
 module.exports = (ctx) => {

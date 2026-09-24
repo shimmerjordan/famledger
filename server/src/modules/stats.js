@@ -17,6 +17,10 @@
 //      **千万别改成 `strftime()` 或 UTC 区间**，那等于把每天最早的 8 小时记到
 //      前一天。`month` 省略时按**服务器本地时区**算当前月（部署 `TZ=Asia/Shanghai`
 //      时正好与家人的本地日期同一套），跨月那几个小时仍建议客户端显式传 `month`。
+//   4. **投资持仓进净资产**：挂了投资账户的持仓，成本已经以转账的形式记在账户余额里，
+//      只补浮盈（市值 − 成本）；没挂账户的整份市值计入。只算有价格、未归档未删除、
+//      份额 > 0 的持仓。「成本已在余额里」这个前提由 holdings.js 守着（有成本的持仓
+//      挂账户必须同时记转账、换账户补移仓转账、不许直接解绑），这里只管照算。
 //
 // 四个 `compute*` 是纯函数（只读 db、返回可直接 JSON 化的对象），AI 模块直接
 // require 过去拼上下文，不用绕一圈 HTTP：
@@ -125,6 +129,17 @@ function computeOverview(db, month = currentMonth()) {
     else liabilitiesCents -= a.balanceCents;
   }
 
+  // 挂的账户被删了，成本也跟着从余额里消失了，只能按没挂账户整份算。调整记在资产一侧，
+  // 「净资产 = 资产 − 负债」才不会在首页对不上。
+  const liveAccounts = new Set(accounts.map((a) => a.accountId));
+  let investMarketCents = 0;
+  let investCostCents = 0;
+  for (const p of sql.investPositions(db)) {
+    investMarketCents += p.marketCents;
+    investCostCents += p.costCents;
+    assetsCents += p.accountId && liveAccounts.has(p.accountId) ? p.marketCents - p.costCents : p.marketCents;
+  }
+
   const totals = sql.monthSums(db, month);
   const fundSpent = new Map(sql.expenseByColumn(db, month, 'fund_id').map((r) => [r.ref, r.expenseCents]));
   const categorySpent = new Map(sql.expenseByColumn(db, month, 'category_id').map((r) => [r.ref, r.expenseCents]));
@@ -157,6 +172,9 @@ function computeOverview(db, month = currentMonth()) {
     netWorthCents: assetsCents - liabilitiesCents,
     assetsCents,
     liabilitiesCents,
+    investMarketCents,
+    investCostCents,
+    investGainCents: investMarketCents - investCostCents,
     month: {
       expenseCents: totals.expenseCents,
       incomeCents: totals.incomeCents,

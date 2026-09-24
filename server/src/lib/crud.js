@@ -21,11 +21,16 @@
 //   fromBody(body, isPatch, row) → extra column values, merged last
 //   canDelete(row, reqCtx)       → throw HttpError(409, …) to refuse a delete
 //   onWrite(row, {isPatch, body, reqCtx}) → runs inside the same transaction
+//
+// `idempotency: '<scope>'` makes POST honour a `clientId` in the body (lib/idempotency.js):
+// a create whose onWrite also books money must not run twice when the client retries
+// after losing the response. A replay answers 200 with the row as it is now.
 
 const crypto = require('node:crypto');
 
 const { HttpError, sendJson } = require('./router');
 const { rowToJson } = require('./db');
+const idem = require('./idempotency');
 const v = require('./validate');
 
 const snake = (s) => s.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
@@ -85,6 +90,7 @@ function makeCrud(opts) {
     fromBody = null,
     canDelete = null,
     onWrite = null,
+    idempotency = null,
     auth = 'member',
   } = opts;
 
@@ -149,6 +155,12 @@ function makeCrud(opts) {
 
   function create(req, res, reqCtx) {
     const body = v.body(reqCtx.body);
+    const clientId = idempotency ? idem.clientIdOf(body) : null;
+    // Checked before validation: the retry must still succeed if, say, the account it
+    // named has been deleted since the first attempt went through.
+    const hit = idem.lookup(db, idempotency, clientId);
+    const prev = hit && reread(hit.refId);
+    if (prev) return sendJson(res, 200, { [singular]: toJson(prev), replayed: true });
     const cols = columnsFrom(body, false, null);
     const row = db.tx(() => {
       if (sortColumn && cols[sortColumn] === undefined) cols[sortColumn] = nextSort();
@@ -160,6 +172,7 @@ function makeCrud(opts) {
         ...keys.map((k) => all[k]),
       );
       onWrite?.(reread(all.id), { isPatch: false, body, reqCtx });
+      idem.remember(db, idempotency, clientId, all.id);
       return reread(all.id);
     });
     sendJson(res, 201, { [singular]: toJson(row) });

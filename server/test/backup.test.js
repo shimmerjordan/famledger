@@ -379,7 +379,10 @@ test('POST /backup/run 上传快照 + manifest，sha256 与内容一致', async 
   assert.equal(man.encrypted, false);
   assert.equal(man.bytes, snap.length);
   assert.equal(man.sha256, sha256(snap));
-  assert.equal(man.schemaVersion, 1);
+  // 最新迁移的版本号；写死的话每加一个迁移都要回来改这里。
+  const latest = Math.max(...fs.readdirSync(path.join(__dirname, '..', 'src', 'sql'))
+    .filter((f) => /^\d+_.+\.sql$/.test(f)).map((f) => Number(f.split('_')[0])));
+  assert.equal(man.schemaVersion, latest);
   assert.ok(Date.parse(man.createdAt) > 0);
 
   const list = await a.get('/backup/list', { token });

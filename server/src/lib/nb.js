@@ -206,15 +206,22 @@ function merge(target, delta) {
 }
 
 /**
+ * @param {Set<string>} [union] `vocabulary(model)`, when the caller already has
+ *   it. Pass it when predicting a batch against one model: rebuilding the union
+ *   is O(vocab) and dwarfs the scoring itself — a 5000-row import preview spent
+ *   most of its time here. It must be the model's vocabulary *as it is now*: its
+ *   size is part of the formula, so a stale set skews every probability (only
+ *   a learn() that was handed the same set keeps it current). Omit it and the
+ *   result is identical, just slower.
  * @returns {{label:string, p:number}[]} every class, p descending
  *   (ties by label ascending). `[]` when the model has never been trained.
  */
-function predict(model, tokens) {
+function predict(model, tokens, union = null) {
   const labels = Object.keys(model.classes);
   if (labels.length === 0 || model.totalDocs <= 0) return [];
 
   // Score only what the model has seen — see the header note on length bias.
-  const vocab = vocabulary(model);
+  const vocab = union || vocabulary(model);
   const seen = tokens.filter((t) => vocab.has(t));
 
   const scores = labels.map((label) => {

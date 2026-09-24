@@ -33,6 +33,9 @@ const DEDUPE_WINDOW_MS = 180 * 1000;
 // 差一整个时区（-12:00 ~ +14:00）。粗筛放宽 26 小时，精确判定仍在 JS 里按毫秒做。
 const OFFSET_SLACK_MS = 26 * 3600 * 1000;
 const MAX_BATCH = 200;
+const MAX_BULK = 500;
+/** 批量修改只开放多选后真会一起改的几项；时间、金额这类逐条不同的不在其列。 */
+const BULK_FIELDS = ['categoryId', 'fundId', 'accountId', 'memberId', 'status'];
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 const MAX_AMOUNT = 1e14;
@@ -372,15 +375,23 @@ module.exports = (ctx) => {
     sendJson(res, 200, { transaction: txJson(mustExist(reqCtx.params.id)) });
   }
 
+  function writeCols(id, cols, now) {
+    const keys = Object.keys(cols);
+    db.run(
+      `UPDATE transactions SET ${[...keys.map((k) => `${k} = ?`), 'updated_at = ?', 'seq = ?'].join(', ')} WHERE id = ?`,
+      ...keys.map((k) => cols[k]), now, db.nextSeq(), id,
+    );
+  }
+
+  function softDelete(id, now) {
+    db.run('UPDATE transactions SET deleted_at = ?, updated_at = ?, seq = ? WHERE id = ?', now, now, db.nextSeq(), id);
+  }
+
   function patch(req, res, reqCtx) {
     const row = mustExist(reqCtx.params.id);
     const cols = normalize(reqCtx.body, { row, member: reqCtx.member });
     const next = db.tx(() => {
-      const keys = Object.keys(cols);
-      db.run(
-        `UPDATE transactions SET ${[...keys.map((k) => `${k} = ?`), 'updated_at = ?', 'seq = ?'].join(', ')} WHERE id = ?`,
-        ...keys.map((k) => cols[k]), db.now(), db.nextSeq(), row.id,
-      );
+      writeCols(row.id, cols, db.now());
       logActivity(db, { memberId: reqCtx.member.id, action: 'update', entity: 'transaction', entityId: row.id });
       return reread(row.id);
     });
@@ -391,11 +402,56 @@ module.exports = (ctx) => {
     const row = mustExist(reqCtx.params.id);
     const next = db.tx(() => {
       const now = db.now();
-      db.run('UPDATE transactions SET deleted_at = ?, updated_at = ?, seq = ? WHERE id = ?', now, now, db.nextSeq(), row.id);
+      softDelete(row.id, now);
       logActivity(db, { memberId: reqCtx.member.id, action: 'delete', entity: 'transaction', entityId: row.id, at: now });
       return reread(row.id);
     });
     sendJson(res, 200, { transaction: txJson(next) });
+  }
+
+  /**
+   * 多选后的改/删，一个事务里全成或全败。每行照走 PATCH 的 normalize，所以引用校验、
+   * 转账成对的约束都和单条修改一模一样，不会因为批量而多出一条后门。
+   */
+  function bulk(req, res, reqCtx) {
+    const b = v.body(reqCtx.body);
+    const ids = [...new Set(
+      v.list(b.ids, 'ids', { max: MAX_BULK, required: true }).map((id) => v.str(id, 'ids', { max: 64 })),
+    )];
+    if (ids.length === 0) v.bad('ids', 'ids 至少要有一项');
+    if (b.delete !== undefined && typeof b.delete !== 'boolean') {
+      throw new HttpError(400, 'invalid_bulk', 'delete 只能是 true');
+    }
+    const isDelete = b.delete === true;
+    if (v.isMissing(b.patch) === !isDelete) throw new HttpError(400, 'invalid_bulk', 'patch 和 delete 要恰好给一个');
+
+    let patchBody = null;
+    let transferBody = null;
+    if (!isDelete) {
+      const keys = v.isObject(b.patch) ? Object.keys(b.patch) : [];
+      if (keys.length === 0 || keys.some((k) => !BULK_FIELDS.includes(k))) {
+        throw new HttpError(400, 'invalid_bulk', `patch 只能改 ${BULK_FIELDS.join('/')}，且至少一项`);
+      }
+      // 批量只做「确认」：待确认一键清空是真实需求，批量标成 void/duplicate 不是。
+      if (b.patch.status !== undefined) v.enumOf(b.patch.status, 'status', ['confirmed']);
+      patchBody = b.patch;
+      // 转账没有类别，基金又是成对的：只改一边钱就凭空消失，所以这两项对转账跳过。
+      transferBody = Object.fromEntries(keys.filter((k) => k !== 'categoryId' && k !== 'fundId').map((k) => [k, b.patch[k]]));
+    }
+
+    const count = db.tx(() => {
+      const now = db.now();
+      for (const id of ids) {
+        const row = mustExist(id);
+        if (isDelete) softDelete(row.id, now);
+        else writeCols(row.id, normalize(row.type === 'transfer' ? transferBody : patchBody, { row, member: reqCtx.member }), now);
+      }
+      logActivity(db, {
+        memberId: reqCtx.member.id, action: isDelete ? 'bulk_delete' : 'bulk_update', entity: 'transaction', at: now,
+      });
+      return ids.length;
+    });
+    sendJson(res, 200, isDelete ? { deleted: count } : { updated: count });
   }
 
   /** confirm / void：状态流转是单独的接口，客户端不用拼 PATCH 体。 */
@@ -409,6 +465,8 @@ module.exports = (ctx) => {
     sendJson(res, 200, { transaction: txJson(next) });
   };
 
+  // 资产/投资模块「同时记账」要复用同一套校验与写入；它们按字母序先加载，只能在请求时再取。
+  ctx.createTransaction = createOne;
   return {
     name: 'transactions',
     routes: [
@@ -416,6 +474,8 @@ module.exports = (ctx) => {
       { method: 'POST', pattern: '/transactions', handler: create },
       // 一批 200 条，64KB 的默认上限不够。
       { method: 'POST', pattern: '/transactions/batch', handler: batch, maxBody: 2 * 1024 * 1024 },
+      // 500 个 id 约 20KB，默认上限够用。
+      { method: 'POST', pattern: '/transactions/bulk', handler: bulk },
       { method: 'GET', pattern: '/transactions/:id', handler: read, maxBody: 0 },
       { method: 'PATCH', pattern: '/transactions/:id', handler: patch },
       { method: 'DELETE', pattern: '/transactions/:id', handler: remove, maxBody: 0 },

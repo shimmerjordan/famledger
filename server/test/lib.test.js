@@ -28,8 +28,11 @@ test('db: migrations run once, seq is monotonic, tx rolls back', (t) => {
   const db = openDb(dir);
   t.after(() => db.close());
 
-  const applied = db.all('SELECT version FROM schema_migrations');
-  assert.deepEqual(applied.map((r) => Number(r.version)), [1]);
+  // 期望值跟着 src/sql 走：写死字面量的话，每加一个迁移都要回来改这里。
+  const versions = fs.readdirSync(path.join(__dirname, '..', 'src', 'sql'))
+    .filter((f) => /^\d+_.+\.sql$/.test(f)).map((f) => Number(f.split('_')[0])).sort((x, y) => x - y);
+  const applied = db.all('SELECT version FROM schema_migrations ORDER BY version');
+  assert.deepEqual(applied.map((r) => Number(r.version)), versions);
   assert.equal(db.meta('change_seq'), '0');
 
   const seqs = db.tx(() => [db.nextSeq(), db.nextSeq(), db.nextSeq()]);
@@ -57,7 +60,7 @@ test('db: migrations run once, seq is monotonic, tx rolls back', (t) => {
   db.reopen();
   assert.equal(db.meta('household_name'), '家');
   assert.equal(db.tx(() => db.nextSeq()), 4);
-  assert.deepEqual(db.all('SELECT version FROM schema_migrations').map((r) => Number(r.version)), [1]);
+  assert.deepEqual(db.all('SELECT version FROM schema_migrations ORDER BY version').map((r) => Number(r.version)), versions);
 });
 
 test('db: rowToJson converts snake_case, hides and casts columns', () => {
