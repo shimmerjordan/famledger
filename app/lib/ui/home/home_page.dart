@@ -11,6 +11,7 @@ import '../../data/models/models.dart';
 import '../../data/repos/ledger_repo.dart';
 import '../transactions/tx_providers.dart';
 import '../widgets/widgets.dart';
+import 'assets_card.dart';
 import 'fund_carousel.dart';
 import 'month_summary.dart';
 import 'pending_captures_card.dart';
@@ -19,9 +20,9 @@ import 'recent_list.dart';
 /// 首页看的是哪个月（‹ › 切换，默认当月）。
 final homeMonthProvider = StateProvider<String>((ref) => Dates.currentMonth());
 
-/// 首页：本月合计 → 基金卡片 → 预算提醒 → 待确认 → 最近流水。
+/// 首页：本月合计 → 基金卡片 → 预算提醒 → 待确认 → 资产 → 最近流水。
 ///
-/// 宽屏时右侧栏接管「基金余额 + 待确认」，主栏只留合计与流水。
+/// 宽屏时右侧栏接管「基金余额 + 待确认 + 资产」，主栏只留合计与流水。
 class HomePage extends ConsumerStatefulWidget {
   const HomePage({super.key});
 
@@ -82,6 +83,7 @@ class _HomePageState extends ConsumerState<HomePage> {
               if (!wide) ..._funds(context, data, stats.valueOrNull),
               ..._budgetAlerts(context, data, stats.valueOrNull),
               if (!wide) ..._pending(context, data, month),
+              if (!wide) const AssetsHomeCard(),
               SectionHeader(
                 '最近流水',
                 actionLabel: '全部',
@@ -113,6 +115,7 @@ class _HomePageState extends ConsumerState<HomePage> {
                     ),
                   const SizedBox(height: LedgerLayout.groupGap),
                   ..._pending(context, data, month, padding: EdgeInsets.zero),
+                  const AssetsHomeCard(padding: EdgeInsets.zero),
                 ],
               )
             : null,

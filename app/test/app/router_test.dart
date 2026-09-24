@@ -61,6 +61,13 @@ void main() {
     expect(find.text('连接你的家账服务器'), findsOneWidget);
   });
 
+  testWidgets('连接向导底部的检查地址跟着输入更新', (tester) async {
+    await pumpApp(tester, await boot());
+    await tester.enterText(find.byType(TextField), '192.168.1.5');
+    await tester.pump();
+    expect(find.text('会检查 http://192.168.1.5:48090/healthz 是否可达。'), findsOneWidget);
+  });
+
   testWidgets('连过服务器但没登录 → 登录页', (tester) async {
     await pumpApp(tester, await boot(baseUrl: 'https://ledger.example.com'));
     expect(find.text('登录'), findsWidgets);
@@ -107,8 +114,12 @@ void main() {
     );
     await tester.tap(find.text('我的').last);
     await tester.pumpAndSettle();
+    expect(find.text('妈妈'), findsOneWidget);
+    expect(find.text('资产'), findsOneWidget);
+    // 设置页是懒加载列表，靠后的分组要滚到了才会建出来。
+    await tester.dragUntilVisible(find.text('关于'), find.byType(ListView).last, const Offset(0, -200));
+    expect(find.text('导入账单'), findsOneWidget);
     expect(find.text('服务器与账号'), findsOneWidget);
     expect(find.text('关于'), findsOneWidget);
-    expect(find.text('妈妈'), findsOneWidget);
   });
 }

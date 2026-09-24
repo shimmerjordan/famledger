@@ -6,6 +6,7 @@ import '../ui/add_tx/add_tx_page.dart';
 import '../ui/ai/ai_chat_page.dart';
 import '../ui/ai/ai_report_page.dart';
 import '../ui/analysis/analysis_page.dart';
+import '../ui/assets/asset_routes.dart';
 import '../ui/auth/connect_page.dart';
 import '../ui/auth/login_page.dart';
 import '../ui/auth/setup_page.dart';
@@ -13,6 +14,9 @@ import '../ui/funds/fund_detail_page.dart';
 import '../ui/funds/fund_form_page.dart';
 import '../ui/funds/funds_page.dart';
 import '../ui/home/home_page.dart';
+import '../ui/import/import_page.dart';
+import '../ui/import/import_preview_page.dart';
+import '../ui/import/paste_import_page.dart';
 import '../ui/settings/about_page.dart';
 import '../ui/settings/accounts_page.dart';
 import '../ui/settings/ai_providers_page.dart';
@@ -127,6 +131,21 @@ final routerProvider = Provider<GoRouter>((ref) {
           ),
         ],
       ),
+      GoRoute(
+        path: '/import',
+        builder: (context, state) => const ImportPage(),
+        routes: [
+          GoRoute(
+            path: 'preview',
+            builder: (context, state) => const ImportPreviewRoute(),
+          ),
+          GoRoute(
+            path: 'paste',
+            builder: (context, state) => const PasteImportPage(),
+          ),
+        ],
+      ),
+      assetsRoute(),
       GoRoute(path: '/ai/chat', builder: (context, state) => const AiChatPage()),
       GoRoute(path: '/ai/report', builder: (context, state) => const AiReportPage()),
       GoRoute(

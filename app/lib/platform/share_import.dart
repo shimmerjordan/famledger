@@ -13,13 +13,15 @@ import '../capture/pipeline.dart';
 import '../data/models/models.dart';
 import 'capture_adapters.dart';
 import 'capture_providers.dart';
+import 'file_capture_store.dart';
 import 'http_capture_api.dart';
 import 'share_channel.dart';
 
-/// iOS 的三条「手动喂一段文本」入口（docs/ios.md §8）：分享扩展 / 快捷指令 / 剪贴板。
+/// iOS 的三条「手动喂一段文本」入口（契约见 docs/ios.md §2）：分享扩展 / 快捷指令 / 剪贴板。
 ///
 /// iOS 读不到别的 App 的通知，所以自动记账在这里退化成：
 /// 用户把支付页文本分享 / 复制过来 → 走**同一条** [CapturePipeline]，结果照常出通知。
+/// 「导入账单 → 粘贴导入」也走这条管线，所有平台都能用。
 
 const String kShareSourceShare = 'share';
 const String kShareSourceShortcut = 'shortcut';
@@ -33,19 +35,27 @@ const String kCaptureUriHost = 'capture';
 ///
 /// 管线自带的 `captureHash(packageName, normalizedText)` + 10 分钟窗口是最后一道去重，
 /// **每条入口的 packageName 必须固定**，换来换去这层就白做了。
-/// 这三个名字没登记在 `SourceProfile.all` 里，会回落到 `generic` 档 —— 正是要的通用解析。
+/// 这三个名字对应 `SourceProfile.iosShare` / `iosShortcut` / `iosClipboard`（共用 `share` 渠道）。
 String capturePackageForSource(String source) => switch (source) {
   kShareSourceShortcut => 'ios.shortcut',
   kShareSourceClipboard => 'ios.clipboard',
   _ => 'ios.share',
 };
 
+/// 粘贴导入里的一段和它的结论。
+class PastedEntry {
+  const PastedEntry({required this.text, required this.outcome});
+
+  final String text;
+  final CaptureOutcome outcome;
+}
+
 /// 取管线：没登录（或装配不出来）返回 null。注入进来，不走全局单例。
 typedef CapturePipelineGetter = Future<CapturePipeline?> Function();
 
 /// 分享 / 快捷指令 / 剪贴板 → [CapturePipeline] 的接线。
 ///
-/// 消费顺序严格按 docs/ios.md §8.3：
+/// 消费顺序（docs/ios.md §2「Dart 消费」那一行说的就是这个）：
 /// 1. 每次触发（深链到达 / 冷启动 / 从后台恢复）**先** `takePending()`（读完即清）；
 /// 2. 本次是带 `text=` 的深链 → 以 URL 里的为准导入，并丢掉 store 里那条一模一样的副本
 ///    （扩展是「既写 App Group 又带 URL」的双保险，不丢就会重复记账）；
@@ -203,37 +213,99 @@ class ShareImportService with WidgetsBindingObserver {
   /// 把一段文本喂给管线。文本是空的返回 null，其余情况总有结论（失败也给一条）。
   Future<CaptureOutcome?> importText(
     String text, {
+    String source = kShareSourceClipboard,
+    DateTime? receivedAt,
+  }) async {
+    final outcome = await _feed(text, source: source, receivedAt: receivedAt);
+    if (outcome != null && !_outcomes.isClosed) _outcomes.add(outcome);
+    return outcome;
+  }
+
+  Future<CaptureOutcome?> _feed(
+    String text, {
     required String source,
     DateTime? receivedAt,
+    String transactionSource = 'notification',
   }) async {
     final trimmed = text.trim();
     if (trimmed.isEmpty) return null;
-    CaptureOutcome outcome;
     try {
       final pipeline = await _pipeline();
-      if (pipeline == null) {
-        outcome = _notLoggedIn;
-      } else {
-        outcome = await pipeline.handle(
-          RawNotification(
-            packageName: capturePackageForSource(source),
-            title: '', // 这三条入口没有「通知标题」
-            text: trimmed,
-            bigText: '',
-            postedAt: (receivedAt ?? _now()).toLocal(),
-          ),
-        );
-      }
+      if (pipeline == null) return _notLoggedIn;
+      return await pipeline.handle(
+        RawNotification(
+          packageName: capturePackageForSource(source),
+          title: '', // 这三条入口没有「通知标题」
+          text: trimmed,
+          bigText: '',
+          postedAt: (receivedAt ?? _now()).toLocal(),
+          transactionSource: transactionSource,
+        ),
+      );
     } catch (e, st) {
       debugPrint('分享导入失败: $e\n$st');
-      outcome = CaptureOutcome(
+      return CaptureOutcome(
         decision: CaptureDecision.ignored,
         title: '导入失败',
         body: _short(e),
       );
     }
-    if (!_outcomes.isClosed) _outcomes.add(outcome);
-    return outcome;
+  }
+
+  /// 空行分开的每一段算一笔（一条短信/通知里本身不会有空行）。
+  static List<String> splitPasted(String text) => text
+      .replaceAll('\r\n', '\n')
+      .replaceAll('\r', '\n')
+      .split(RegExp(r'\n[ \t\u3000]*\n'))
+      .map((s) => s.trim())
+      .where((s) => s.isNotEmpty)
+      .toList();
+
+  /// 粘贴导入：逐段喂管线，按原顺序返回每段的结论。结论只返回、不进 [outcomes]：
+  /// 页面上自己列出来，再弹一串 SnackBar 就是重复打扰。
+  ///
+  /// 粘进来的就是剪贴板里的东西，所以借剪贴板那条入口的解析档（可信度基线、
+  /// 不拿标题当商户）和去重键；一段一段串行跑，「10 分钟内同一段只记一次」
+  /// 要靠前一段先落盘。用户已经说了「一段一笔」，所以记成 `import`，
+  /// 不让服务端按「同金额 180 秒内」把没写日期的几段并成一笔。
+  Future<List<PastedEntry>> importPasted(String text) async {
+    final out = <PastedEntry>[];
+    for (final segment in splitPasted(text)) {
+      final outcome = await _feed(
+        segment,
+        source: kShareSourceClipboard,
+        transactionSource: 'import',
+      );
+      if (outcome != null) out.add(PastedEntry(text: segment, outcome: outcome));
+    }
+    return out;
+  }
+
+  /// 粘贴导入里没送到服务端的几段再发一次（原 clientId，不会重复），其余原样返回。
+  Future<List<PastedEntry>> resendPasted(List<PastedEntry> entries) async {
+    CapturePipeline? pipeline;
+    try {
+      pipeline = await _pipeline();
+    } catch (e) {
+      debugPrint('重发粘贴导入失败: $e');
+    }
+    if (pipeline == null) return entries;
+    final out = <PastedEntry>[];
+    for (final entry in entries) {
+      final id = entry.outcome.captureId;
+      CaptureOutcome? outcome;
+      if (entry.outcome.offline && id != null) {
+        try {
+          outcome = await pipeline.resend(id);
+        } catch (e) {
+          debugPrint('重发粘贴导入失败: $e');
+        }
+      }
+      out.add(
+        outcome == null ? entry : PastedEntry(text: entry.text, outcome: outcome),
+      );
+    }
+    return out;
   }
 
   /// 处理一条深链（只认 `famledger://capture…`，别的原样放过）。
@@ -333,7 +405,7 @@ class ShareImportService with WidgetsBindingObserver {
     }
   }
 
-  /// docs 8.3 的三步走。返回这次导入了几条。
+  /// 上面那三步。返回这次导入了几条。
   Future<int> _consume({String? urlText, String source = kShareSourceShare}) async {
     // 1. 先 drain（读完即清）。
     final pending = await _channel.take();
@@ -406,11 +478,12 @@ class _UiPipeline {
   final Ref _ref;
   CapturePipeline? _pipeline;
   String? _stamp;
+  LocalCaptureStore? _memoryStore;
 
   Future<CapturePipeline?> get() async {
     final session = _ref.read(sessionProvider);
     if (session == null) return null;
-    final store = await _ref.read(captureStoreProvider.future);
+    final store = await _store();
     final ledger = await _ref.read(ledgerProvider.future);
     final settings = (await _settings()).capture;
     final stamp = <Object>[
@@ -435,6 +508,15 @@ class _UiPipeline {
     _pipeline = pipeline;
     _stamp = stamp;
     return pipeline;
+  }
+
+  /// 网页上没有文件系统，开不了本地捕获存储：退到内存里，只是去重记忆不跨刷新。
+  Future<LocalCaptureStore> _store() async {
+    try {
+      return await _ref.read(captureStoreProvider.future);
+    } catch (_) {
+      return _memoryStore ??= MemoryCaptureStore();
+    }
   }
 
   /// 设置拉不到（离线且没缓存过）就用默认值：本地记账不该被网络卡住。

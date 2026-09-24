@@ -12,6 +12,7 @@ class RawNotification {
     required this.text,
     this.bigText = '',
     required this.postedAt,
+    this.transactionSource = 'notification',
   });
 
   final String packageName;
@@ -19,6 +20,10 @@ class RawNotification {
   final String text;
   final String bigText;
   final DateTime postedAt;
+
+  /// 记成流水时的 `source`。服务端只对 notification/share 按「同金额 180 秒内」查重，
+  /// 粘贴导入一次进来好几段、没写日期的都落在同一刻，得换成不查重的 `import`。
+  final String transactionSource;
 
   /// MethodChannel 传来的 map（`{package,title,text,bigText,postedAt}`）。
   factory RawNotification.fromMap(Map<dynamic, dynamic> map) {

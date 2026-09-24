@@ -31,8 +31,15 @@ class MoneyText extends StatelessWidget {
   /// 次要信息（用 muted 色）。
   final bool muted;
 
-  @override
-  Widget build(BuildContext context) {
+  /// 与 [MoneyText] 同一套字号与配色，给需要把金额拼进 [TextSpan] 的地方用。
+  static TextStyle styleFor(
+    BuildContext context,
+    int cents, {
+    bool signed = false,
+    MoneySize size = MoneySize.body,
+    Color? color,
+    bool muted = false,
+  }) {
     final theme = Theme.of(context);
     final ledger = LedgerColors.of(context);
     final base = switch (size) {
@@ -45,14 +52,17 @@ class MoneyText extends StatelessWidget {
         (muted
             ? theme.colorScheme.onSurfaceVariant
             : (signed && cents > 0 ? ledger.income : theme.colorScheme.onSurface));
-    return Text(
-      Money.format(cents, signed: signed, showSymbol: showSymbol),
-      style: (base ?? const TextStyle()).copyWith(
-        color: resolved,
-        fontFeatures: const [FontFeature.tabularFigures()],
-      ),
-      maxLines: 1,
-      overflow: TextOverflow.ellipsis,
+    return (base ?? const TextStyle()).copyWith(
+      color: resolved,
+      fontFeatures: const [FontFeature.tabularFigures()],
     );
   }
+
+  @override
+  Widget build(BuildContext context) => Text(
+    Money.format(cents, signed: signed, showSymbol: showSymbol),
+    style: styleFor(context, cents, signed: signed, size: size, color: color, muted: muted),
+    maxLines: 1,
+    overflow: TextOverflow.ellipsis,
+  );
 }

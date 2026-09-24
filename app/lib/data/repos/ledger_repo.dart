@@ -13,6 +13,8 @@ class LedgerData {
     this.categories = const [],
     this.rules = const [],
     this.budgets = const [],
+    this.assets = const [],
+    this.holdings = const [],
     this.seq = 0,
   });
 
@@ -22,6 +24,8 @@ class LedgerData {
   final List<Category> categories;
   final List<Rule> rules;
   final List<Budget> budgets;
+  final List<Asset> assets;
+  final List<Holding> holdings;
 
   /// 已同步到的全局序号。
   final int seq;
@@ -31,6 +35,8 @@ class LedgerData {
   List<Fund> get activeFunds => funds.where((f) => !f.archived).toList();
   List<Account> get activeAccounts => accounts.where((a) => !a.archived).toList();
   List<Member> get activeMembers => members.where((m) => !m.archived).toList();
+  List<Asset> get activeAssets => assets.where((a) => !a.archived).toList();
+  List<Holding> get activeHoldings => holdings.where((h) => !h.archived).toList();
 
   List<Category> expenseCategories() =>
       categories.where((c) => !c.archived && c.kind == 'expense').toList();
@@ -42,6 +48,8 @@ class LedgerData {
   Account? account(String? id) => _find(accounts, id, (e) => e.id);
   Category? category(String? id) => _find(categories, id, (e) => e.id);
   Member? member(String? id) => _find(members, id, (e) => e.id);
+  Asset? asset(String? id) => _find(assets, id, (e) => e.id);
+  Holding? holding(String? id) => _find(holdings, id, (e) => e.id);
 
   /// 基金在 12 色盘里的位置（没设颜色时按顺序取色）。
   int fundIndex(String id) => funds.indexWhere((f) => f.id == id);
@@ -57,7 +65,7 @@ class LedgerData {
 
 /// 主数据缓存 + `GET /changes` 增量同步 + 各实体的增删改。
 ///
-/// 流水不在这里缓存（可能很多），只缓存成员/账户/基金/类别/规则/预算。
+/// 流水不在这里缓存（可能很多），只缓存成员/账户/基金/类别/规则/预算/物品/持仓。
 class LedgerRepo {
   LedgerRepo({required ApiClient api, required LocalStore store})
     : _api = api,
@@ -76,6 +84,8 @@ class LedgerRepo {
   List<Category> categories = [];
   List<Rule> rules = [];
   List<Budget> budgets = [];
+  List<Asset> assets = [];
+  List<Holding> holdings = [];
   int seq = 0;
 
   /// 任何一次本地数据变化都会打一下（UI 重新取 [snapshot]）。
@@ -88,6 +98,8 @@ class LedgerRepo {
     categories: List.unmodifiable(categories),
     rules: List.unmodifiable(rules),
     budgets: List.unmodifiable(budgets),
+    assets: List.unmodifiable(assets),
+    holdings: List.unmodifiable(holdings),
     seq: seq,
   );
 
@@ -101,9 +113,16 @@ class LedgerRepo {
     categories = jsonList(cached['categories'], Category.fromJson);
     rules = jsonList(cached['rules'], Rule.fromJson);
     budgets = jsonList(cached['budgets'], Budget.fromJson);
-    seq = jsonInt(cached['seq']);
+    assets = jsonList(cached['assets'], Asset.fromJson);
+    holdings = jsonList(cached['holdings'], Holding.fromJson);
+    // 老版本不认识的表，服务端早就把它们的行发过、游标也走过去了，接着拉永远补不回来。
+    final missesTables = _tablesAddedLater.any((key) => !cached.containsKey(key));
+    seq = missesTables ? 0 : jsonInt(cached['seq']);
     _notify();
   }
+
+  /// 后来才加进同步的表：缓存里没有这个键 = 缓存是老版本写的。
+  static const List<String> _tablesAddedLater = ['assets', 'holdings'];
 
   /// 增量同步：`GET /changes?since=`，按 id 合并，软删的直接删掉。
   ///
@@ -117,6 +136,8 @@ class LedgerRepo {
       categories = [];
       rules = [];
       budgets = [];
+      assets = [];
+      holdings = [];
     }
     var more = true;
     var guard = 0;
@@ -131,6 +152,8 @@ class LedgerRepo {
       categories = _merge(categories, res['categories'], Category.fromJson, (e) => e.id);
       rules = _merge(rules, res['rules'], Rule.fromJson, (e) => e.id);
       budgets = _merge(budgets, res['budgets'], Budget.fromJson, budgetKey);
+      assets = _merge(assets, res['assets'], Asset.fromJson, (e) => e.id);
+      holdings = _merge(holdings, res['holdings'], Holding.fromJson, (e) => e.id);
       seq = jsonInt(res['next'], seq);
       more = jsonBool(res['more']);
     }
@@ -256,6 +279,20 @@ class LedgerRepo {
     return jsonList(res['items'], Budget.fromJson);
   }
 
+  // —— 物品 / 持仓 ——
+  // 增删改走 AssetsRepo / HoldingsRepo（接口不是纯 CRUD：卖出、加减仓、刷新行情），
+  // 它们拿到服务端回的那一行后交给这里落本地，列表不用等下一次同步。
+
+  Future<void> putAsset(Asset item) =>
+      _put(assets, item, (e) => e.id);
+
+  Future<void> dropAsset(String id) => _drop(assets, id, (e) => e.id);
+
+  Future<void> putHolding(Holding item) =>
+      _put(holdings, item, (e) => e.id);
+
+  Future<void> dropHolding(String id) => _drop(holdings, id, (e) => e.id);
+
   /// 拖动排序后写回顺序。
   Future<void> reorder(String entity, List<String> ids) async {
     await _api.put('/$entity/reorder', {'ids': ids});
@@ -306,6 +343,24 @@ class LedgerRepo {
     return item;
   }
 
+  Future<void> _put<T>(List<T> list, T item, String Function(T) idOf) async {
+    final index = list.indexWhere((e) => idOf(e) == idOf(item));
+    if (index < 0) {
+      list.add(item);
+    } else {
+      list[index] = item;
+    }
+    _sort();
+    await _persist();
+    _notify();
+  }
+
+  Future<void> _drop<T>(List<T> list, String id, String Function(T) idOf) async {
+    list.removeWhere((e) => idOf(e) == id);
+    await _persist();
+    _notify();
+  }
+
   Future<void> _delete<T>(
     String path,
     String id,
@@ -351,6 +406,8 @@ class LedgerRepo {
     funds.sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
     categories.sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
     rules.sort((a, b) => b.priority.compareTo(a.priority));
+    assets.sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+    holdings.sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
   }
 
   Future<void> _persist() async {
@@ -361,6 +418,8 @@ class LedgerRepo {
       'categories': categories.map((e) => e.toJson()).toList(),
       'rules': rules.map((e) => e.toJson()).toList(),
       'budgets': budgets.map((e) => e.toJson()).toList(),
+      'assets': assets.map((e) => e.toJson()).toList(),
+      'holdings': holdings.map((e) => e.toJson()).toList(),
       'seq': seq,
     });
   }

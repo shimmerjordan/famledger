@@ -58,6 +58,10 @@ class TransactionsRepo {
   /// 被拒记录只留最近这些条，别让它无限长。
   static const int maxFailed = 100;
 
+  /// `POST /transactions/bulk` 一次最多收这么多 id（服务端 MAX_BULK）。
+  /// 不替调用方分批：分了批就不再是「全成或全败」。
+  static const int maxBulk = 500;
+
   /// 「服务端就是不收」的状态码：重发多少次都一样，出队记账。
   ///
   /// 其余一律当暂时性问题**留在队列里**：401/403（令牌过期，重登后还要发）、
@@ -185,6 +189,26 @@ class TransactionsRepo {
 
   Future<void> voidTx(String id) async {
     await _api.post('/transactions/$id/void', null);
+  }
+
+  /// 多选后一起改（[patch]）或一起删（[delete]），二者恰好给一个。返回服务端
+  /// 说的改了/删了几笔。
+  ///
+  /// 服务端一个事务里全成或全败，所以断网不入队：半截排在队列里、之后又撞上
+  /// 404 整批作废，还不如当场告诉用户没改成。
+  Future<int> bulk(
+    List<String> ids, {
+    Map<String, dynamic>? patch,
+    bool delete = false,
+  }) async {
+    if ((patch == null) == !delete) {
+      throw ArgumentError('patch 和 delete 要恰好给一个');
+    }
+    final res = await _api.post('/transactions/bulk', {
+      'ids': ids,
+      if (delete) 'delete': true else 'patch': patch,
+    });
+    return jsonInt(res[delete ? 'deleted' : 'updated']);
   }
 
   /// 自动记账被人工改正后，把样本送去训练全家共享的模型。

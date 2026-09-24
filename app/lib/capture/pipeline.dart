@@ -267,10 +267,19 @@ class CaptureOutcome {
     required this.body,
     this.draft,
     this.captureId,
+    this.offline = false,
+    this.transactionId,
   });
 
   final CaptureDecision decision;
   final CaptureDraft? draft;
+
+  /// 服务端给这笔流水的 id；送到了才有。通知点开时靠捕获记录去查它，
+  /// 粘贴导入页没有通知可点，直接拿它打开那一笔。
+  final String? transactionId;
+
+  /// 流水没送到服务端（断网/超时/5xx/429），只在本地留着等重发（[CapturePipeline.resend]）。
+  final bool offline;
 
   /// 结果通知标题，如「支付宝 −¥35.00 · 餐饮 → 家庭公共基金」。
   final String title;
@@ -447,6 +456,7 @@ class CapturePipeline {
       memberId: config.memberId,
       merchant: payment.merchant,
       note: suspectedTransfer ? kTransferNote : '',
+      source: notification.transactionSource,
       status: confirmed ? 'confirmed' : 'pending',
       confidence: confidence,
       rawText: rawText,
@@ -516,7 +526,70 @@ class CapturePipeline {
       title: _title(draft),
       body: _body(draft,
           pending: !confirmed, extra: suspectedTransfer ? '疑似转账' : null),
+      offline: apiResult == null,
+      transactionId: record.transactionId,
     );
+  }
+
+  /// 把 [CaptureOutcome.offline] 的那条用原来的 clientId 再发一次：服务端按它幂等，
+  /// 上次其实送到了（超时）也不会记两笔。本地记录已经没了返回 null。
+  Future<CaptureOutcome?> resend(String captureId) async {
+    final record = await store.loadCapture(captureId);
+    if (record == null) return null;
+    final draft = record.draft;
+    CaptureOutcome outcome({required bool offline, String? transactionId}) =>
+        CaptureOutcome(
+          decision: record.decision,
+          draft: draft,
+          captureId: captureId,
+          title: _title(draft),
+          body: _body(draft,
+              pending: record.decision == CaptureDecision.pending,
+              extra: draft.note == kTransferNote ? '疑似转账' : null),
+          offline: offline,
+          transactionId: offline ? null : transactionId ?? record.transactionId,
+        );
+    CaptureOutcome rejected(String message) => CaptureOutcome(
+          decision: CaptureDecision.pending,
+          draft: draft.copyWith(status: 'pending'),
+          captureId: captureId,
+          title: '记账未成功',
+          body: '$message · 点击打开处理',
+        );
+
+    // Android 上后台的离线重放可能已经替它补上了。
+    if (record.synced) return outcome(offline: false);
+    final syncError = record.syncError;
+    if (syncError != null) return rejected(syncError);
+
+    final CaptureApiResult result;
+    try {
+      result = await api.createTransaction(draft.toJson());
+    } on CaptureApiException catch (e) {
+      if (!e.isClientError) return outcome(offline: true);
+      await store.saveCapture(record.copyWith(
+        decision: CaptureDecision.pending,
+        draft: draft.copyWith(status: 'pending'),
+        syncError: e.message,
+      ));
+      return rejected(e.message);
+    } catch (_) {
+      return outcome(offline: true);
+    }
+
+    if (result.duplicate) {
+      // 和 handle 里服务端判重一样：不留本地记录，免得对一笔作废的流水做纠正。
+      await store.deleteCapture(captureId);
+      return CaptureOutcome(
+        decision: CaptureDecision.duplicate,
+        title: '${_sourceName(draft.sourceApp)} '
+            '${_signed(draft.type, draft.amountCents)} · 重复流水',
+        body: '服务端已有同一笔，已忽略',
+      );
+    }
+    await store.saveCapture(
+        record.copyWith(transactionId: result.id, synced: true));
+    return outcome(offline: false, transactionId: result.id);
   }
 
 

@@ -71,6 +71,8 @@ class _ConnectPageState extends ConsumerState<ConnectPage> {
           keyboardType: TextInputType.url,
           autocorrect: false,
           textInputAction: TextInputAction.go,
+          // 底下那行「会检查 …」跟着输入走，不然填完还显示旧地址。
+          onChanged: (_) => setState(() {}),
           onSubmitted: (_) => _submit(),
           decoration: const InputDecoration(
             labelText: '服务器地址',
