@@ -2,7 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 /// `com.famledger/share` —— 与 `ios/Runner/AppDelegate.swift` 里的 `PendingShareStore` 一一对应
-/// （契约见 `docs/ios.md` §2、§8.2）。只有 iOS 注册了这个通道。
+/// （契约见 `docs/ios.md` §2）。只有 iOS 注册了这个通道。
 const String kShareChannelName = 'com.famledger/share';
 
 /// App Group 里攒着的一条待导入文本。
@@ -66,7 +66,7 @@ class SharePendingChannel {
   bool get isSupported =>
       _supported ?? (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS);
 
-  /// `takePending`：读完即清。每次触发导入都必须先调它（docs 8.3 第 1 步）。
+  /// `takePending`：读完即清。每次触发导入都必须先调它（`ShareImportService` 消费顺序第 1 步）。
   Future<List<PendingShare>> take() => _list('takePending');
 
   /// `peekPending`：只看不清，设置页排查 App Group 有没有打通时用。

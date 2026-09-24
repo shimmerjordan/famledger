@@ -324,7 +324,7 @@ class _CapturePageState extends ConsumerState<CapturePage> with WidgetsBindingOb
           subtitle: Text.rich(
             TextSpan(
               children: [
-                const TextSpan(text: '在支付 App 的分享面板里选「家账」，或用快捷指令「记一笔」把文字送进来；配置步骤见 '),
+                const TextSpan(text: '在支付 App 的分享面板里选「发送到家账」，或用快捷指令「记一笔」把文字送进来；配置步骤见 '),
                 TextSpan(
                   text: 'docs/ios.md',
                   style: TextStyle(
