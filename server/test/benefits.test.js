@@ -2,14 +2,12 @@
 
 // 权益：CRUD 与校验（额度、限制条件、链接、有效期、领取平台）、N 选 1 的父子规则（只许一层、选项不设额度、
 // flow 跟父权益、父权益换卡选项跟着搬、有选项时不能改类型）、删除（有选项 409、?cascade=1 一起删）、同步墓碑；
-// 以及本阶段的验收：手工建出 88VIP 和它的 3 项权益，其中 1 项去优酷领。
-// 打卡事件的接口在 P3，这里的事件是停服务后直接写进库里的（perks_fixtures.js）。
+// 以及 P2 的验收：手工建出 88VIP 和它的 3 项权益，其中 1 项去优酷领。打卡事件走真的 /benefit-events。
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { household } = require('./fixtures');
-const { restartWithEvents } = require('./perks_fixtures');
 
 const pad = (n) => String(n).padStart(2, '0');
 function localDay(days = 0) {
@@ -205,11 +203,12 @@ test('删权益：有选项时 409 has_children；?cascade=1 连选项一起软�
 });
 
 test('删权益：有打卡事件时 409 has_children；?cascade=1 连选项的事件一起软删', async (t) => {
-  const { srv, auth, post } = await withVip(t);
+  const { a, auth, post } = await withVip(t);
   const lone = (await post({ name: '贵宾厅' })).json.benefit;
   const choice = (await post({ name: '二选一', kind: 'choice' })).json.benefit;
   const option = (await post({ name: '芒果', parentId: choice.id })).json.benefit;
-  const a = await restartWithEvents(t, srv, [{ id: 'e1', benefitId: lone.id }, { id: 'e2', benefitId: option.id }]);
+  const e1 = (await a.post('/benefit-events', { benefitId: lone.id, kind: 'use' }, auth)).json.event;
+  const e2 = (await a.post('/benefit-events', { benefitId: option.id }, auth)).json.event;
 
   const refused = await a.del(`/benefits/${lone.id}`, auth);
   assert.equal(refused.status, 409, refused.text);
@@ -221,7 +220,7 @@ test('删权益：有打卡事件时 409 has_children；?cascade=1 连选项的�
   assert.equal((await a.del(`/benefits/${lone.id}?cascade=1`, auth)).status, 200);
   assert.equal((await a.del(`/benefits/${choice.id}?cascade=1`, auth)).status, 200);
   const delta = (await a.get(`/changes?since=${before}`, auth)).json;
-  assert.deepEqual(delta.benefit_events.filter((e) => e.deletedAt).map((e) => e.id).sort(), ['e1', 'e2']);
+  assert.deepEqual(delta.benefit_events.filter((e) => e.deletedAt).map((e) => e.id).sort(), [e1.id, e2.id].sort());
   assert.deepEqual(delta.benefits.filter((b) => b.deletedAt).map((b) => b.id).sort(), [lone.id, choice.id, option.id].sort());
 });
 

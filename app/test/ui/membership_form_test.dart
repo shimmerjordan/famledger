@@ -52,6 +52,22 @@ void main() {
       expect(find.text('记好了，接着加权益吧'), findsOneWidget);
     });
 
+    testWidgets('打卡后建子会员的入口：预填平台、来源权益、本期实付 0，存的请求体带上它们', (tester) async {
+      final backend = withPlatforms(
+        memberships: [membershipJson('vip')],
+        benefits: [benefitJson('b1', name: '优酷年卡', kind: 'subscription', claimPlatformId: 'yk')],
+      );
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets/memberships/new?platformId=yk&sourceBenefitId=b1&termPaid=0', size: tall);
+      expect(onPlatformButton('Youku 优酷'), findsOneWidget);
+      expect(tester.widget<TextField>(find.byKey(const ValueKey('membership-paid'))).controller!.text, '0.00');
+      expect(find.text('88VIP · 优酷年卡'), findsOneWidget);
+      await tester.enterText(find.byKey(const ValueKey('membership-name')), '优酷VIP');
+      await tapVisible(tester, find.widgetWithText(FilledButton, '记好了'));
+      final body = backend.lastBody('POST', '/memberships');
+      expect((body['platformId'], body['sourceBenefitId'], body['termPaidCents']), ('yk', 'b1', 0));
+      expect(body.containsKey('recordTransaction'), isFalse, reason: '实付 0 不给「同时记一笔」');
+    });
+
     testWidgets('没选平台、没写名字：行内说清楚，不发请求', (tester) async {
       final backend = withPlatforms();
       await pumpAssetsAt(tester, bootAssets(backend), '/assets/memberships/new', size: tall);

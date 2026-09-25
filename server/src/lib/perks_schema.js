@@ -22,6 +22,10 @@ const FLOWS = ['claim', 'use', 'claim_use'];
 const ANCHORS = ['calendar', 'term'];
 const QUOTA_PERIODS = ['day', 'week', 'month', 'quarter', 'year', 'term', 'total'];
 const LIMIT_TYPES = ['min_spend', 'scope', 'channel', 'holder', 'device', 'time', 'region', 'stacking', 'other'];
+// 打卡事件：领了 / 用了 / 本期跳过。以后做发放批次再加 'grant'（spec §2「扩展位」）。
+const EVENT_KINDS = ['claim', 'use', 'skip'];
+/** 能续费的周期各是几个月；once / none 不在表里 = 不能续（renew 回 409 not_renewable）。 */
+const PERIOD_MONTHS = { month: 1, quarter: 3, year: 12 };
 
 const MAX_ALIASES = 20;
 const MAX_QUOTA = 3;
@@ -123,6 +127,31 @@ function dateOrder(from, until, field, message) {
   if (from && until && until < from) v.bad(field, message);
 }
 
+const pad2 = (n) => String(n).padStart(2, '0');
+const dayOf = (d) => `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
+
+/** `YYYY-MM-DD` 加 [n] 天（按 UTC 日历数，不碰时区；n 可以是负数）。 */
+function addDays(day, n) {
+  const d = new Date(`${day}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return dayOf(d);
+}
+
+/**
+ * `YYYY-MM-DD` 往后 [k] 个续费周期（month / quarter / year；k 可以是负数）。日号从起点重新夹取：
+ * 1/31 + 1 月 = 2/28，+ 2 月 = 3/31，不做链式累加。App 的 perk_math.dart addMonthsClamped 是同一个口径。
+ * 不能续的周期（once / none）返回 null。
+ */
+function addPeriod(day, feePeriod, k = 1) {
+  const months = PERIOD_MONTHS[feePeriod];
+  if (!months) return null;
+  const [y, m, d] = day.split('-').map(Number);
+  const first = new Date(Date.UTC(y, m - 1 + months * k, 1));
+  const last = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0)).getUTCDate();
+  first.setUTCDate(Math.min(d, last));
+  return dayOf(first);
+}
+
 /** JSON 列（字符串）或已经解析好的值 → 数组；坏值按空数组。 */
 function asList(raw) {
   if (Array.isArray(raw)) return raw;
@@ -222,6 +251,8 @@ module.exports = {
   ANCHORS,
   QUOTA_PERIODS,
   LIMIT_TYPES,
+  EVENT_KINDS,
+  PERIOD_MONTHS,
   MAX_ALIASES,
   MAX_SOURCE_DEPTH,
   normalizeName,
@@ -231,6 +262,8 @@ module.exports = {
   originOf,
   httpUrl,
   dateOrder,
+  addDays,
+  addPeriod,
   asList,
   benefitParentRules,
   checkSourceChain,

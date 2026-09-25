@@ -26,6 +26,14 @@ String? claimElsewhere(LedgerData data, Benefit b, Membership m, [Benefit? paren
   return platformLabel(data.platform(id));
 }
 
+/// 本期进度的一行：「本月 1/4 · 还剩 7 天」「本月 0/4 · 待领 · 还剩 7 天」「本月 5/4 · 超额 1」「不限次」「已过期」。
+/// 可用 N 次时进度已经说清楚了，不再重复状态；不限次的不写截止（那只是卡的到期日）。
+String perkStatusLine(PerkStatus s) => [
+  ?perkProgressLabel(s),
+  if (s.state != PerkState.available || s.limit == null) perkStateLabel(s),
+  if (s.open && s.limit != null) ?perkDeadlineLabel(s),
+].join(' · ');
+
 /// 平台的圆底首字头像（和物品、流水的圆底图标一个样子）。
 class PlatformAvatar extends StatelessWidget {
   const PlatformAvatar(this.platform, {super.key, this.muted = false, this.size = 40});
@@ -80,6 +88,19 @@ class ClaimBadge extends StatelessWidget {
   Widget build(BuildContext context) => TagLabel('去$platformName领');
 }
 
+/// 把领取链接 / 平台链接交给外部浏览器或对应的 App；打不开时说一句。
+Future<void> openPerkLink(BuildContext context, WidgetRef ref, String url) async {
+  final messenger = ScaffoldMessenger.of(context);
+  var opened = false;
+  try {
+    final uri = Uri.tryParse(url);
+    if (uri != null) opened = await ref.read(perkUrlOpenerProvider)(uri);
+  } catch (_) {
+    opened = false;
+  }
+  if (!opened) messenger.showSnackBar(const SnackBar(content: Text('打不开这个链接，可以复制到浏览器里试试')));
+}
+
 /// 「打开领取链接」：权益填了 claimUrl 才有，点了交给外部浏览器 / 对应的 App。
 class ClaimLinkButton extends ConsumerWidget {
   const ClaimLinkButton(this.url, {super.key});
@@ -90,17 +111,7 @@ class ClaimLinkButton extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) => IconButton(
     tooltip: '打开领取链接',
     icon: const Icon(Icons.open_in_new),
-    onPressed: () async {
-      final messenger = ScaffoldMessenger.of(context);
-      var opened = false;
-      try {
-        final uri = Uri.tryParse(url);
-        if (uri != null) opened = await ref.read(perkUrlOpenerProvider)(uri);
-      } catch (_) {
-        opened = false;
-      }
-      if (!opened) messenger.showSnackBar(const SnackBar(content: Text('打不开这个链接，可以复制到浏览器里试试')));
-    },
+    onPressed: () => openPerkLink(context, ref, url),
   );
 }
 
@@ -147,7 +158,7 @@ class OptionalDayButton extends StatelessWidget {
 /// 一项权益：名字、「去优酷领」、类型 · 额度；N 选 1 下面一排选项。点开编辑。
 ///
 /// [detailed] 为真（会员详情）时再写领取路径、有效期、面值、限制条件、它带出的派生会员和备注，
-/// 填了领取链接的右边有「打开领取链接」。
+/// 填了领取链接的右边有「打开领取链接」。给了 [status] 再单独一行写本期进度（「本月 1/4 · 可用 3 次」）。
 class BenefitTile extends StatelessWidget {
   const BenefitTile({
     super.key,
@@ -156,6 +167,7 @@ class BenefitTile extends StatelessWidget {
     required this.membership,
     this.detailed = false,
     this.indent = LedgerLayout.pagePadding,
+    this.status,
   });
 
   final LedgerData data;
@@ -163,6 +175,7 @@ class BenefitTile extends StatelessWidget {
   final Membership membership;
   final bool detailed;
   final double indent;
+  final PerkStatus? status;
 
   @override
   Widget build(BuildContext context) {
@@ -195,6 +208,15 @@ class BenefitTile extends StatelessWidget {
           subtitle: Text(lines.join('\n'), style: theme.textTheme.bodySmall),
           trailing: detailed && b.claimUrl != null ? ClaimLinkButton(b.claimUrl!, key: ValueKey('claim-link-${b.id}')) : null,
         ),
+        if (status != null)
+          Padding(
+            padding: EdgeInsets.fromLTRB(indent, 0, LedgerLayout.pagePadding, 8),
+            child: Text(
+              perkStatusLine(status!),
+              key: ValueKey('benefit-status-${b.id}'),
+              style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.primary),
+            ),
+          ),
         if (detailed && b.limits.isNotEmpty)
           Padding(
             padding: EdgeInsets.fromLTRB(indent, 0, LedgerLayout.pagePadding, 8),

@@ -237,7 +237,7 @@ class AssetsBackend {
     final clientId = body['clientId'];
     final replyKey = clientId is String ? '${req.method} $path|$clientId' : null;
     final first = replyKey == null ? null : _replies[replyKey];
-    if (first != null) return _ok({...first, 'replayed': true});
+    if (first != null) return _ok({...perks.reread(path, first), 'replayed': true});
 
     final http.Response res;
     if (req.method == 'GET' && path == '/changes') {

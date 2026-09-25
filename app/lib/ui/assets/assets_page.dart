@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../../app/providers.dart';
 import '../../data/repos/holdings_repo.dart';
 import 'asset_providers.dart';
+import '../perks/perk_providers.dart';
 import '../perks/perks_tab.dart';
 import 'invest_tab.dart';
 import 'items_tab.dart';
@@ -17,10 +18,14 @@ import 'net_worth_strip.dart';
 ///
 /// 入口在首页的资产卡片和「我的」，不占底部导航。
 class AssetsPage extends ConsumerStatefulWidget {
-  const AssetsPage({super.key, this.initialTab = 0});
+  const AssetsPage({super.key, this.initialTab = 0, this.perksView, this.perksScope});
 
   /// 0 = 物品，1 = 投资（`/assets?tab=invest`），2 = 会员权益（`/assets?tab=perks`）。
   final int initialTab;
+
+  /// 会员权益 tab 先打开哪一种（`&view=current&scope=mine`，首页和提醒带过来）；见 [PerksTab.view]。
+  final PerkView? perksView;
+  final PerkScope? perksScope;
 
   static const int investTab = 1;
   static const int perksTab = 2;
@@ -37,6 +42,10 @@ class _AssetsPageState extends ConsumerState<AssetsPage>
     initialIndex: widget.initialTab.clamp(0, 2),
   );
   late int _index = _tabs.index;
+
+  /// 首页带来的会员权益视图；用户一动分段就忘掉（PerksTab.onPrefsTouched）。
+  late PerkView? _perksView = widget.perksView;
+  late PerkScope? _perksScope = widget.perksScope;
 
   /// 这次进投资页已经判断过要不要顺手刷行情了。
   bool _autoChecked = false;
@@ -136,7 +145,20 @@ class _AssetsPageState extends ConsumerState<AssetsPage>
             Expanded(
               child: TabBarView(
                 controller: _tabs,
-                children: const [ItemsTab(), InvestTab(), PerksTab()],
+                children: [
+                  const ItemsTab(),
+                  const InvestTab(),
+                  PerksTab(
+                    view: _perksView,
+                    scope: _perksScope,
+                    onPrefsTouched: _perksView == null && _perksScope == null
+                        ? null
+                        : () => setState(() {
+                            _perksView = null;
+                            _perksScope = null;
+                          }),
+                  ),
+                ],
               ),
             ),
           ],

@@ -11,15 +11,23 @@ import '../assets/asset_providers.dart';
 import '../assets/asset_widgets.dart';
 import '../widgets/widgets.dart';
 import 'membership_detail_page.dart';
+import 'perk_progress.dart';
 import 'perk_providers.dart';
 import 'perk_widgets.dart';
+import 'perks_current_view.dart';
 
-/// 会员权益 tab 的「全部」视图（spec §5）：按会员看每张卡有哪些权益，或按领取平台看「去哪领什么」。
-/// 归档的卡收在底部。宽屏（≥ 840）左边列表、右边会员详情。
-///
-/// 「本期」分段、我/全家过滤、一键打卡在 P3 加在这一页的顶上。
+/// 会员权益 tab（spec §5）：顶上「本期 | 全部」分段和「我 / 全家」过滤（上次的选择记在本机）。
+/// 「本期」见 perks_current_view.dart；「全部」按会员看每张卡有哪些权益（带到期进度和回本条），
+/// 或按领取平台看「去哪领什么」，归档的卡收在底部。宽屏（≥ 840）左边列表、右边会员详情。
 class PerksTab extends ConsumerStatefulWidget {
-  const PerksTab({super.key});
+  const PerksTab({super.key, this.view, this.scope, this.onPrefsTouched});
+
+  /// 从首页、提醒点进来时先打开哪一种（`/assets?tab=perks&view=current&scope=mine`，见 perk_alert_tile.dart
+  /// 的 perkAgendaLocation）：盖在本机记的选择上，但不写回去；用户一动分段就以用户选的为准，[onPrefsTouched]
+  /// 让资产页忘掉这两个参数（切到别的 tab 再切回来也不再盖）。
+  final PerkView? view;
+  final PerkScope? scope;
+  final VoidCallback? onPrefsTouched;
 
   @override
   ConsumerState<PerksTab> createState() => _PerksTabState();
@@ -48,11 +56,30 @@ class _PerksTabState extends ConsumerState<PerksTab> {
     if (mounted) setState(() => _syncError = error);
   }
 
+  /// 用户动了分段：以这一次看到的样子为底记进本机，不再盖首页带来的参数。
+  void _setPrefs(PerkViewPrefs next) {
+    widget.onPrefsTouched?.call();
+    ref.read(perkViewPrefsProvider.notifier).set(next);
+  }
+
+  /// 打开一张卡：宽屏换右栏，手机推详情页。
+  void _open(String id, bool wide) {
+    if (wide) {
+      ref.read(selectedMembershipProvider.notifier).state = id;
+    } else {
+      context.push('/assets/memberships/$id');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final ledger = ref.watch(ledgerProvider);
     final wide = widthClassOf(context) == WidthClass.expanded;
     final banner = SyncErrorBanner(error: _syncError, onRetry: _refresh);
+    final prefs = ref.watch(perkViewPrefsProvider).copyWith(view: widget.view, scope: widget.scope);
+    final me = ref.watch(perkMeProvider);
+    // 没登录（不知道「我」是谁）时按全家看，也不给「我 / 全家」。
+    final memberId = prefs.scope == PerkScope.mine ? me : null;
 
     return RefreshIndicator(
       onRefresh: _refresh,
@@ -76,25 +103,48 @@ class _PerksTabState extends ConsumerState<PerksTab> {
               ],
             );
           }
+          final cards = [
+            for (final m in data.memberships)
+              if (memberId == null || m.memberId == null || m.memberId == memberId) m,
+          ];
           final active = groupByMembership(
-            memberships: data.memberships,
+            memberships: cards,
             benefits: data.benefits,
             platforms: data.platforms,
           );
           final selected = ref.watch(selectedMembershipProvider);
+          // 右栏只画「我 / 全家」过滤后还在的卡：切到「我」时不能还停在爸爸的卡上。
           final shown = wide
-              ? (data.membership(selected) != null ? selected : (active.isEmpty ? null : active.first.membership.id))
+              ? (cards.any((m) => m.id == selected) ? selected : (active.isEmpty ? null : active.first.membership.id))
               : null;
           // 右栏实际画的那张写回去：不然默认看第一张时一归档它，第一张就换成了别的卡，右栏跟着跳走
           // （同一个位置的「归档」按钮已经属于另一张卡了）。
           if (wide && shown != selected) _pin(shown);
-          final list = _PerksList(
-            data: data,
-            active: active,
-            banner: banner,
-            wide: wide,
-            selectedId: shown,
+          final header = Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [banner, _PerkTopBar(prefs: prefs, showScope: me != null, onChanged: _setPrefs)],
           );
+          final list = prefs.view == PerkView.current
+              ? PerksCurrentView(
+                  data: data,
+                  header: header,
+                  memberId: memberId,
+                  wide: wide,
+                  onOpen: (id) => _open(id, wide),
+                )
+              : _PerksList(
+                  data: data,
+                  cards: cards,
+                  active: active,
+                  // 「我」名下一张在用的都没有，但全家还有：别说成「都归档了」。
+                  filteredOut: memberId != null && active.isEmpty && data.memberships.any((m) => !m.archived),
+                  header: header,
+                  wide: wide,
+                  selectedId: shown,
+                  prefs: prefs,
+                  onPrefsChanged: _setPrefs,
+                  onOpen: (id) => _open(id, wide),
+                );
           if (!wide) return list;
           return AdaptiveTwoPane(
             main: list,
@@ -116,44 +166,94 @@ class _PerksTabState extends ConsumerState<PerksTab> {
   }
 }
 
+/// 顶上一行：「本期 | 全部」，登录了再加「我 / 全家」。选了就记进本机。
+class _PerkTopBar extends StatelessWidget {
+  const _PerkTopBar({required this.prefs, required this.showScope, required this.onChanged});
+
+  final PerkViewPrefs prefs;
+  final bool showScope;
+  final ValueChanged<PerkViewPrefs> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(LedgerLayout.pagePadding, LedgerLayout.itemGap, LedgerLayout.pagePadding, 0),
+      child: Wrap(
+        spacing: LedgerLayout.itemGap,
+        runSpacing: 8,
+        children: [
+          SegmentedButton<PerkView>(
+            key: const ValueKey('perk-view'),
+            showSelectedIcon: false,
+            segments: const [
+              ButtonSegment(value: PerkView.current, label: Text('本期', key: ValueKey('perk-view-current'))),
+              ButtonSegment(value: PerkView.all, label: Text('全部', key: ValueKey('perk-view-all'))),
+            ],
+            selected: {prefs.view},
+            onSelectionChanged: (s) => onChanged(prefs.copyWith(view: s.first)),
+          ),
+          if (showScope)
+            SegmentedButton<PerkScope>(
+              key: const ValueKey('perk-scope'),
+              showSelectedIcon: false,
+              segments: const [
+                ButtonSegment(value: PerkScope.mine, label: Text('我', key: ValueKey('perk-scope-mine'))),
+                ButtonSegment(value: PerkScope.family, label: Text('全家', key: ValueKey('perk-scope-family'))),
+              ],
+              selected: {prefs.scope},
+              onSelectionChanged: (s) => onChanged(prefs.copyWith(scope: s.first)),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
 class _PerksList extends ConsumerWidget {
   const _PerksList({
     required this.data,
+    required this.cards,
     required this.active,
-    required this.banner,
+    required this.filteredOut,
+    required this.header,
     required this.wide,
     required this.selectedId,
+    required this.prefs,
+    required this.onPrefsChanged,
+    required this.onOpen,
   });
 
   final LedgerData data;
+
+  /// 「我 / 全家」过滤后的卡（含归档的）。
+  final List<Membership> cards;
   final List<MembershipGroup> active;
-  final Widget banner;
+
+  /// 在用的卡全被「我」滤掉了（全家还有）。
+  final bool filteredOut;
+  final Widget header;
   final bool wide;
   final String? selectedId;
+  final PerkViewPrefs prefs;
+  final ValueChanged<PerkViewPrefs> onPrefsChanged;
+  final void Function(String id) onOpen;
+
+  PerkGrouping get grouping => prefs.grouping;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final grouping = ref.watch(perkGroupingProvider);
     final now = ref.watch(assetClockProvider)();
     final archived = groupByMembership(
-      memberships: data.memberships,
+      memberships: cards,
       benefits: data.benefits,
       platforms: data.platforms,
       archived: true,
     );
-    void open(String id) {
-      if (wide) {
-        ref.read(selectedMembershipProvider.notifier).state = id;
-      } else {
-        context.push('/assets/memberships/$id');
-      }
-    }
-
     return LayoutBuilder(
       builder: (context, box) => ListView(
         padding: (wide ? EdgeInsets.zero : readableInsets(box.maxWidth)).copyWith(bottom: 96),
         children: [
-          banner,
+          header,
           Padding(
             padding: const EdgeInsets.fromLTRB(
               LedgerLayout.pagePadding,
@@ -169,26 +269,28 @@ class _PerksList extends ConsumerWidget {
                 ButtonSegment(value: PerkGrouping.byClaimPlatform, label: Text('按领取平台')),
               ],
               selected: {grouping},
-              onSelectionChanged: (s) => ref.read(perkGroupingProvider.notifier).state = s.first,
+              onSelectionChanged: (s) => onPrefsChanged(prefs.copyWith(grouping: s.first)),
             ),
           ),
           if (grouping == PerkGrouping.byMembership) ...[
             if (active.isEmpty)
-              const EmptyState(title: '在用的卡都归档了', message: '归档的卡在下面，点开能取消归档。', compact: true),
+              filteredOut
+                  ? const EmptyState(title: '你名下还没有卡', message: '家人的卡切到「全家」看。', compact: true)
+                  : const EmptyState(title: '在用的卡都归档了', message: '归档的卡在下面，点开能取消归档。', compact: true),
             for (final g in active) ...[
               MembershipTile(
                 data: data,
                 group: g,
                 now: now,
                 selected: g.membership.id == selectedId,
-                onTap: () => open(g.membership.id),
+                onTap: () => onOpen(g.membership.id),
               ),
               for (final node in g.benefits)
                 BenefitTile(data: data, node: node, membership: g.membership, indent: 72),
               const SizedBox(height: LedgerLayout.itemGap),
             ],
           ] else
-            ..._byPlatform(context, open),
+            ..._byPlatform(context, onOpen),
           if (archived.isNotEmpty)
             ExpansionTile(
               key: const ValueKey('perks-archived'),
@@ -207,7 +309,7 @@ class _PerksList extends ConsumerWidget {
                     group: g,
                     now: now,
                     selected: g.membership.id == selectedId,
-                    onTap: () => open(g.membership.id),
+                    onTap: () => onOpen(g.membership.id),
                   ),
               ],
             ),
@@ -219,7 +321,7 @@ class _PerksList extends ConsumerWidget {
   /// 按领取平台：组头「优酷 · 3 项」，每行写来自哪张卡；点一行打开那张卡。
   List<Widget> _byPlatform(BuildContext context, void Function(String id) open) {
     final theme = Theme.of(context);
-    final groups = groupByClaimPlatform(memberships: data.memberships, benefits: data.benefits, platforms: data.platforms);
+    final groups = groupByClaimPlatform(memberships: cards, benefits: data.benefits, platforms: data.platforms);
     if (groups.isEmpty) {
       return const [EmptyState(title: '还没记权益', message: '到会员详情里给卡加上权益，这里就按领取平台排好。', compact: true)];
     }
@@ -254,7 +356,8 @@ class _PerksList extends ConsumerWidget {
   }
 }
 
-/// 一张卡：平台头像、名字 · 档位、平台 · 持有人 · 几项权益 · 到期，右边续费价。
+/// 一张卡：平台头像、名字 · 档位、平台 · 持有人 · 几项权益 · 到期，右边续费价；
+/// 下面一根回本条，竖刻度是本期时间过了几成（免费、没填费用的卡只有时间刻度，见 [PaybackBar]）。
 class MembershipTile extends StatelessWidget {
   const MembershipTile({
     super.key,
@@ -276,6 +379,18 @@ class MembershipTile extends StatelessWidget {
     final theme = Theme.of(context);
     final m = group.membership;
     final fee = feeLabel(m);
+    final payback = data.paybackOf(m, localDay(now));
+    final line = Text(
+      [
+        platformLabel(group.platform),
+        holderLabel(data, m),
+        '${group.itemCount} 项权益',
+        expiryLabel(m, now),
+      ].join(' · '),
+      maxLines: 2,
+      overflow: TextOverflow.ellipsis,
+      style: theme.textTheme.bodySmall,
+    );
     return ListTile(
       key: ValueKey('membership-${m.id}'),
       selected: selected,
@@ -283,17 +398,16 @@ class MembershipTile extends StatelessWidget {
       contentPadding: const EdgeInsets.symmetric(horizontal: LedgerLayout.pagePadding, vertical: 4),
       leading: PlatformAvatar(group.platform, muted: m.archived),
       title: Text(m.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.titleMedium),
-      subtitle: Text(
-        [
-          platformLabel(group.platform),
-          holderLabel(data, m),
-          '${group.itemCount} 项权益',
-          expiryLabel(m, now),
-        ].join(' · '),
-        maxLines: 2,
-        overflow: TextOverflow.ellipsis,
-        style: theme.textTheme.bodySmall,
-      ),
+      subtitle: paybackBarShown(payback)
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                line,
+                const SizedBox(height: 6),
+                PaybackBar(payback, key: ValueKey('payback-${m.id}')),
+              ],
+            )
+          : line,
       trailing: fee == null ? null : PerkMoneyText(fee),
     );
   }

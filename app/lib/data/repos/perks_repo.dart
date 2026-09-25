@@ -2,7 +2,7 @@ import '../api/api_client.dart';
 import '../models/models.dart';
 import 'ledger_repo.dart';
 
-/// 会员权益的增删改（`server/src/modules/platforms.js`、`memberships.js`、`benefits.js`）。
+/// 会员权益的增删改（`server/src/modules/platforms.js`、`memberships.js`、`benefits.js`、`benefit_events.js`）。
 ///
 /// 和 `AssetsRepo`（assets_repo.dart）一个路数：写成功后先把服务端回的那行落进 [LedgerRepo]，再做一次增量同步 ——
 /// 级联删除、平台合并会改到别的行（选项跟着搬、派生会员解开、引用改到目标平台），都得跟着过来。
@@ -59,6 +59,12 @@ class PerksRepo {
     await _syncQuietly();
   }
 
+  /// `POST /memberships/:id/renew`：续一期。[body] 里可以带 `clientId`（幂等）、`expiresOn`（不给按原到期日 + 一个周期）、
+  /// `paidCents`、`chargeTransactionId`（只关联那笔流水、不另记账）、`recordTransaction`。
+  /// once / none 的卡服务端回 409 `not_renewable`，原样抛出。
+  Future<Membership> renewMembership(String id, Map<String, dynamic> body) async =>
+      _putMembership(await _api.post('/memberships/$id/renew', body));
+
   // —— 权益 ——
 
   Future<Benefit> createBenefit(Map<String, dynamic> body) async =>
@@ -71,6 +77,31 @@ class PerksRepo {
   Future<void> deleteBenefit(String id, {bool cascade = false}) async {
     await _api.delete(cascade ? '/benefits/$id?cascade=1' : '/benefits/$id');
     await _ledger.dropBenefit(id, cascade: cascade);
+    await _syncQuietly();
+  }
+
+  // —— 打卡 ——
+
+  /// 打一次卡（领了 / 用了 / 本期跳过）。[body] 带 `clientId`：回应丢了再点，服务端只记一条。
+  /// N 选 1 的父权益服务端回 400（要打在选项上）。
+  ///
+  /// 重发时服务端原样回第一次记的那条；那条要是在这期间被删了（撤销、别的设备删的），回来的是墓碑：
+  /// 不能当成活的放回本地（墓碑的 seq 已经同步过，之后不会再下发，本地就一直多一条），抛 409 `replayed_deleted`。
+  Future<BenefitEvent> createBenefitEvent(Map<String, dynamic> body) async {
+    final raw = unwrap(await _api.post('/benefit-events', body), 'event');
+    if (raw['deletedAt'] != null) {
+      throw const ApiException(409, 'replayed_deleted', '这一次其实之前已经记上了，后来又被删掉；要记就再点一次');
+    }
+    final item = BenefitEvent.fromJson(raw);
+    await _ledger.putBenefitEvent(item);
+    await _syncQuietly();
+    return item;
+  }
+
+  /// 撤销打卡（软删）。
+  Future<void> deleteBenefitEvent(String id) async {
+    await _api.delete('/benefit-events/$id');
+    await _ledger.dropBenefitEvent(id);
     await _syncQuietly();
   }
 
@@ -94,6 +125,9 @@ class PerksRepo {
     await _syncQuietly();
     return item;
   }
+
+  /// 拉一次增量、失败不抛：本地的样子过时了（「续了」撞上别的设备刚续过）时用。
+  Future<void> refresh() => _syncQuietly();
 
   Future<void> _syncQuietly() async {
     try {

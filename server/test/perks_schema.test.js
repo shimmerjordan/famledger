@@ -198,6 +198,19 @@ test('checkBenefitMove：权益（连选项）不能挪进由它带出来的卡�
   assert.equal(check(['x'], 'k7', bs, ms), '400 invalid_membershipId', '查了 5 层还没到头');
 });
 
+test('addDays / addPeriod：按 UTC 日历数；续费周期的日号从起点重新夹取（月末截断），once/none 不能续', () => {
+  assert.equal(perks.addDays('2026-12-31', 1), '2027-01-01');
+  assert.equal(perks.addDays('2026-03-01', -1), '2026-02-28');
+  assert.equal(perks.addPeriod('2026-01-31', 'month'), '2026-02-28', '31 号遇到 2 月取月末');
+  assert.equal(perks.addPeriod('2026-01-31', 'month', 2), '2026-03-31', '从起点重新夹取，不是 2/28 再加一个月');
+  assert.equal(perks.addPeriod('2026-03-31', 'month', -1), '2026-02-28', '往回推也一样');
+  assert.equal(perks.addPeriod('2026-11-30', 'quarter'), '2027-02-28');
+  assert.equal(perks.addPeriod('2024-02-29', 'year'), '2025-02-28', '闰日');
+  assert.equal(perks.addPeriod('2026-09-15', 'year'), '2027-09-15');
+  assert.equal(perks.addPeriod('2026-09-15', 'once'), null);
+  assert.equal(perks.addPeriod('2026-09-15', 'none'), null);
+});
+
 test('取值表：spec §2 列出的枚举一个不少', () => {
   assert.deepEqual(perks.PLATFORM_KINDS, ['shopping', 'video', 'music', 'reading', 'cloud', 'food', 'travel', 'bank', 'telecom', 'game', 'tool', 'other']);
   assert.deepEqual(perks.MEMBERSHIP_KINDS, ['membership', 'subscription', 'credit_card', 'bundle', 'other']);
@@ -208,4 +221,6 @@ test('取值表：spec §2 列出的枚举一个不少', () => {
   assert.deepEqual(perks.ANCHORS, ['calendar', 'term']);
   assert.deepEqual(perks.QUOTA_PERIODS, ['day', 'week', 'month', 'quarter', 'year', 'term', 'total']);
   assert.deepEqual(perks.LIMIT_TYPES, ['min_spend', 'scope', 'channel', 'holder', 'device', 'time', 'region', 'stacking', 'other']);
+  assert.deepEqual(perks.EVENT_KINDS, ['claim', 'use', 'skip']);
+  assert.deepEqual(perks.PERIOD_MONTHS, { month: 1, quarter: 3, year: 12 });
 });

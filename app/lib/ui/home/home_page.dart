@@ -9,6 +9,9 @@ import '../../core/dates.dart';
 import '../../core/money.dart';
 import '../../data/models/models.dart';
 import '../../data/repos/ledger_repo.dart';
+import '../assets/asset_providers.dart';
+import '../perks/perk_alert_tile.dart';
+import '../perks/perk_providers.dart';
 import '../transactions/tx_providers.dart';
 import '../widgets/widgets.dart';
 import 'assets_card.dart';
@@ -20,9 +23,9 @@ import 'recent_list.dart';
 /// 首页看的是哪个月（‹ › 切换，默认当月）。
 final homeMonthProvider = StateProvider<String>((ref) => Dates.currentMonth());
 
-/// 首页：本月合计 → 基金卡片 → 预算提醒 → 待确认 → 资产 → 最近流水。
+/// 首页：本月合计 → 基金卡片 → 预算提醒 → 待确认 → 会员权益提醒 → 资产 → 最近流水。
 ///
-/// 宽屏时右侧栏接管「基金余额 + 待确认 + 资产」，主栏只留合计与流水。
+/// 宽屏时右侧栏接管「会员权益提醒 + 基金余额 + 待确认 + 资产」，主栏只留合计与流水。
 class HomePage extends ConsumerStatefulWidget {
   const HomePage({super.key});
 
@@ -83,6 +86,7 @@ class _HomePageState extends ConsumerState<HomePage> {
               if (!wide) ..._funds(context, data, stats.valueOrNull),
               ..._budgetAlerts(context, data, stats.valueOrNull),
               if (!wide) ..._pending(context, data, month),
+              if (!wide) ..._perkAlerts(context, data),
               if (!wide) const AssetsHomeCard(),
               SectionHeader(
                 '最近流水',
@@ -97,6 +101,7 @@ class _HomePageState extends ConsumerState<HomePage> {
             ? ListView(
                 padding: const EdgeInsets.only(top: 8, bottom: 96),
                 children: [
+                  ..._perkAlerts(context, data, padding: EdgeInsets.zero),
                   SectionHeader(
                     '基金余额',
                     padding: const EdgeInsets.only(bottom: 8),
@@ -191,6 +196,36 @@ class _HomePageState extends ConsumerState<HomePage> {
           ],
         ),
       ),
+      const SizedBox(height: LedgerLayout.groupGap),
+    ];
+  }
+
+  /// 会员权益提醒（spec §5）：写法照 [_budgetAlerts]，只在有事时出现。只看「我的」加上全家共用的，点过「知道了」的不再出现；
+  /// 最多 3 行，权益行直接点 ✓，续费行有「续了」；段头「全部 N 项」去会员权益 tab 的「本期」（同样按「我」看）。
+  List<Widget> _perkAlerts(
+    BuildContext context,
+    LedgerData? data, {
+    EdgeInsetsGeometry? padding,
+  }) {
+    if (data == null) return const [];
+    final today = localDay(ref.watch(assetClockProvider)());
+    final dismissed = ref.watch(perkDismissedProvider);
+    final alerts = [
+      for (final a in data.perkAlerts(today, memberId: ref.watch(perkMeProvider)))
+        if (!dismissed.contains(a.key)) a,
+    ];
+    if (alerts.isEmpty) return const [];
+    return [
+      SectionHeader(
+        '会员权益',
+        key: const ValueKey('home-perks'),
+        padding: padding == null ? null : const EdgeInsets.only(bottom: 8),
+        actionLabel: '全部 ${alerts.length} 项',
+        // 过去先打开「本期」、按「我」看：和这里同一张单子，说几项就看得到几项。
+        onAction: () => context.push(perkAgendaLocation),
+      ),
+      for (final alert in alerts.take(3))
+        PerkAlertTile(alert: alert, data: data, padding: padding),
       const SizedBox(height: LedgerLayout.groupGap),
     ];
   }

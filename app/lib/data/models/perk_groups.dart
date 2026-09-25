@@ -7,10 +7,13 @@ import 'perks.dart';
 
 /// 一条顶层权益；N 选 1 的父权益带着它的选项。
 class BenefitNode {
-  const BenefitNode(this.benefit, [this.options = const []]);
+  const BenefitNode(this.benefit, [this.options = const [], this.archivedOptions = const []]);
 
   final Benefit benefit;
   final List<Benefit> options;
+
+  /// N 选 1 下面单独归档了的选项：不画、不挑，但以前选过它的打卡照样占这一期的额度（perk_math.dart）。
+  final List<Benefit> archivedOptions;
 }
 
 /// 「按会员」的一组：一张卡、它的平台（找不到是 null）、它名下的顶层权益。
@@ -69,7 +72,7 @@ List<Benefit> _benefitsOf(String membershipId, List<Benefit> benefits) => [
 /// 归档 = 隐藏（spec §2）：自己归档了，或者它的 N 选 1 归档了（选项跟着藏进「已归档」）。
 bool _hidden(Benefit b, Map<String, Benefit> byId) => b.archived || (b.parentId != null && byId[b.parentId]?.archived == true);
 
-/// 某张卡名下看得见的顶层权益（按 sortOrder），choice 带上它看得见的选项。
+/// 某张卡名下看得见的顶层权益（按 sortOrder），choice 带上它看得见的选项（和单独归档了的选项，只用来数用量）。
 List<BenefitNode> benefitTree(String membershipId, List<Benefit> benefits) {
   final all = _benefitsOf(membershipId, benefits);
   final byId = {for (final b in all) b.id: b};
@@ -81,10 +84,17 @@ List<BenefitNode> benefitTree(String membershipId, List<Benefit> benefits) {
     for (final b in mine)
       // 选项挂在找不到的父权益下（本地还没同步到父权益）时当顶层画，别让它消失。
       if (b.parentId == null || !byId.containsKey(b.parentId))
-        BenefitNode(b, [
-          for (final o in mine)
-            if (o.parentId == b.id) o,
-        ]),
+        BenefitNode(
+          b,
+          [
+            for (final o in mine)
+              if (o.parentId == b.id) o,
+          ],
+          [
+            for (final o in all)
+              if (o.parentId == b.id && o.archived) o,
+          ],
+        ),
   ];
 }
 

@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../app/providers.dart';
 import '../../app/theme.dart';
+import '../../core/dates.dart';
 import '../../core/money.dart';
 import '../../data/api/api_client.dart';
 import '../../data/models/models.dart';
@@ -11,11 +12,14 @@ import '../../data/repos/ledger_repo.dart';
 import '../assets/asset_providers.dart';
 import '../assets/asset_widgets.dart';
 import '../widgets/widgets.dart';
+import 'perk_actions.dart';
+import 'perk_progress.dart';
 import 'perk_providers.dart';
 import 'perk_widgets.dart';
 
-/// 会员详情（`/assets/memberships/:id`）：头部信息、权益列表（「去优酷领」、限制条件、有效期、面值、领取链接）、
-/// 收起来的「已归档」权益、加权益、编辑、归档、删除。回本卡、本期进度、历史打卡在 P3；「AI 补充权益」在 P4。
+/// 会员详情（`/assets/memberships/:id`）：头部信息、本期回本（回本条、潜在额度）、权益列表（「去优酷领」、限制条件、
+/// 有效期、面值、领取链接、本期进度）、收起来的「已归档」权益、打卡记录（可删、能撤销）、加权益、续了一期、编辑、归档、删除。
+/// 「AI 补充权益」在 P4。
 class MembershipDetailPage extends ConsumerWidget {
   const MembershipDetailPage(this.id, {super.key});
 
@@ -66,6 +70,10 @@ class _MembershipDetailViewState extends ConsumerState<MembershipDetailView> {
   /// 删掉时本地先拿掉、同步完才退出去，这中间照旧画删之前的样子，不闪「已经不在了」。
   bool _deleting = false;
   Membership? _last;
+
+  /// 打卡记录默认只列最近这么多条。
+  static const int _historyPreview = 10;
+  bool _allHistory = false;
 
   Future<void> _archive(Membership m) async {
     setState(() {
@@ -168,10 +176,17 @@ class _MembershipDetailViewState extends ConsumerState<MembershipDetailView> {
     if (data == null) return const SkeletonList(rows: 5);
     if (m == null) return const InlineError(message: '这张卡已经不在了。');
     final now = ref.watch(assetClockProvider)();
+    final today = localDay(now);
     final platform = data.platform(m.platformId);
     final tree = benefitTree(m.id, data.benefits);
     final archivedTree = archivedBenefitTree(m.id, data.benefits);
     final theme = Theme.of(context);
+    final statuses = {for (final node in tree) node.benefit.id: data.statusOf(node, m, today)};
+    final payback = data.paybackOf(m, today);
+    final term = effectiveTerm(m, today);
+    // 已经提前续上了下一期（还没开始）就不再给「续了一期」：再点就是一口气续两期，还在跑的这一期也跟着算不出来。
+    final renewable = !m.archived && renewPeriodMonths.containsKey(m.feePeriod) && term.nextStart == null;
+    final renewing = ref.watch(perkBusyProvider).contains(perkCardBusyKey(m.id));
 
     return LayoutBuilder(
       builder: (context, box) => ListView(
@@ -190,7 +205,11 @@ class _MembershipDetailViewState extends ConsumerState<MembershipDetailView> {
                   )
                 : null,
           ),
-          ..._info(context, data, m, now),
+          ..._info(context, data, m, now, term),
+          if (paybackWorthShowing(payback) || payback.potentialCents > 0) ...[
+            const SizedBox(height: LedgerLayout.groupGap),
+            ..._payback(context, payback),
+          ],
           const SizedBox(height: LedgerLayout.groupGap),
           SectionHeader(
             '权益 · ${perkItemCount(tree)} 项',
@@ -202,8 +221,29 @@ class _MembershipDetailViewState extends ConsumerState<MembershipDetailView> {
               padding: const EdgeInsets.symmetric(horizontal: LedgerLayout.pagePadding),
               child: Text('还没记权益：年卡、券、贵宾厅……每一样记一项，写清去哪领。', style: theme.textTheme.bodySmall),
             ),
+          if (statuses.values.any((st) => st.anchorFallback) || (term.guessedStart && tree.isNotEmpty))
+            Padding(
+              padding: const EdgeInsets.fromLTRB(LedgerLayout.pagePadding, 0, 8, 0),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      statuses.values.any((st) => st.anchorFallback)
+                          ? '有权益按会员本期起算，这张卡没填本期开始，先按自然周期算'
+                          : '这张卡没填本期开始，本期先按到期日往前推一期算',
+                      style: theme.textTheme.bodySmall?.copyWith(color: LedgerColors.of(context).warning),
+                    ),
+                  ),
+                  TextButton(
+                    key: const ValueKey('anchor-fallback-fix'),
+                    onPressed: () => context.push('/assets/memberships/${m.id}/edit'),
+                    child: const Text('去补'),
+                  ),
+                ],
+              ),
+            ),
           for (final node in tree) ...[
-            BenefitTile(data: data, node: node, membership: m, detailed: true),
+            BenefitTile(data: data, node: node, membership: m, detailed: true, status: statuses[node.benefit.id]),
             if (node.benefit.isChoice)
               Padding(
                 padding: const EdgeInsets.only(left: LedgerLayout.pagePadding),
@@ -233,6 +273,7 @@ class _MembershipDetailViewState extends ConsumerState<MembershipDetailView> {
                 for (final node in archivedTree) BenefitTile(data: data, node: node, membership: m, detailed: true),
               ],
             ),
+          ..._history(context, data, m),
           const SizedBox(height: LedgerLayout.groupGap),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: LedgerLayout.pagePadding),
@@ -240,6 +281,12 @@ class _MembershipDetailViewState extends ConsumerState<MembershipDetailView> {
               spacing: 8,
               runSpacing: 8,
               children: [
+                if (renewable)
+                  FilledButton.tonal(
+                    key: const ValueKey('membership-renew'),
+                    onPressed: _busy || renewing ? null : () => renewNow(context, ref, m),
+                    child: const Text('续了一期'),
+                  ),
                 FilledButton.tonal(
                   key: const ValueKey('membership-archive'),
                   onPressed: _busy ? null : () => _archive(m),
@@ -263,14 +310,106 @@ class _MembershipDetailViewState extends ConsumerState<MembershipDetailView> {
     );
   }
 
-  List<Widget> _info(BuildContext context, LedgerData data, Membership m, DateTime now) {
+  /// 本期回本：回本条（叠加时间进度）、潜在额度，以及「含面值估算」「N 项未估值」「按自动续费推算」这几句。
+  List<Widget> _payback(BuildContext context, PerkPayback p) => [
+    const SectionHeader('本期回本'),
+    Padding(
+      padding: const EdgeInsets.symmetric(horizontal: LedgerLayout.pagePadding),
+      child: PaybackBar(p, key: const ValueKey('detail-payback')),
+    ),
+    if (p.potentialCents > 0)
+      InfoRow('还能再享', PerkMoneyText(Money.format(p.potentialCents)), key: const ValueKey('detail-potential')),
+    if (p.usesFaceValue || p.unvalued > 0 || p.projected)
+      Padding(
+        padding: const EdgeInsets.fromLTRB(LedgerLayout.pagePadding, 8, LedgerLayout.pagePadding, 0),
+        child: Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            if (p.usesFaceValue) const TagLabel('含面值估算'),
+            if (p.unvalued > 0) TagLabel('${p.unvalued} 项未估值', tone: TagTone.warning),
+            if (p.projected) const TagLabel('按自动续费推算的本期', tone: TagTone.warning),
+          ],
+        ),
+      ),
+  ];
+
+  /// 打卡记录（这张卡所有权益的，新的在前），每条能删、删了能撤销。
+  List<Widget> _history(BuildContext context, LedgerData data, Membership m) {
+    final byId = {
+      for (final b in data.benefits)
+        if (b.membershipId == m.id) b.id: b,
+    };
+    // 本地缓存按日子排好了（新的在前）。
+    final history = [
+      for (final e in data.benefitEvents)
+        if (byId.containsKey(e.benefitId)) e,
+    ];
+    if (history.isEmpty) return const [];
+    final shown = _allHistory ? history : history.take(_historyPreview);
+    return [
+      const SizedBox(height: LedgerLayout.groupGap),
+      SectionHeader('打卡记录 · ${history.length} 条'),
+      for (final e in shown) _eventTile(context, e, byId[e.benefitId]!, byId),
+      if (!_allHistory && history.length > _historyPreview)
+        Padding(
+          padding: const EdgeInsets.only(left: 8),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton(
+              key: const ValueKey('history-more'),
+              onPressed: () => setState(() => _allHistory = true),
+              child: Text('再看 ${history.length - _historyPreview} 条'),
+            ),
+          ),
+        ),
+    ];
+  }
+
+  Widget _eventTile(BuildContext context, BenefitEvent e, Benefit b, Map<String, Benefit> byId) {
+    final day = parseDay(e.occurredOn);
+    final unit = perkUnitValue(b, parent: byId[b.parentId], override: e.valueCents);
+    final what = switch (e.kind) {
+      'skip' => '本期跳过',
+      'use' => '用了',
+      _ => '领了',
+    };
+    return ListTile(
+      key: ValueKey('event-${e.id}'),
+      visualDensity: VisualDensity.compact,
+      contentPadding: const EdgeInsets.only(left: LedgerLayout.pagePadding, right: 4),
+      title: Text(b.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text(
+        [
+          day == null ? e.occurredOn : perkShortDay(day),
+          e.count > 1 ? '$what ×${e.count}' : what,
+          // 只有计额度的那种才写价值（和回本一个算法）：先领再用的「领了」不算钱，「用了」才算。
+          if (e.kind == countedKind(b) && unit.known) Money.format(unit.cents * e.count),
+        ].join(' · '),
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(fontFeatures: const [FontFeature.tabularFigures()]),
+      ),
+      trailing: IconButton(
+        key: ValueKey('event-delete-${e.id}'),
+        tooltip: '删掉这条',
+        icon: const Icon(Icons.delete_outline),
+        onPressed: () => deleteCheckIn(context, ref, e),
+      ),
+    );
+  }
+
+  List<Widget> _info(BuildContext context, LedgerData data, Membership m, DateTime now, PerkTerm effective) {
     final fee = feeLabel(m);
-    final term = switch ((m.termStartOn, m.expiresOn)) {
+    String? span(String? from, String? until) => switch ((from, until)) {
       (null, null) => null,
       (final from?, null) => '$from 起',
       (null, final until?) => '至 $until',
       (final from?, final until?) => '$from 至 $until',
     };
+    // 到期前就续上了：眼下还在跑的是上一期，存的那一期写成「下一期」。
+    final running = effective.nextStart != null && effective.start != null && effective.end != null;
+    final term = running
+        ? span(Dates.isoDate(effective.start!), Dates.isoDate(effective.end!))
+        : span(m.termStartOn, m.expiresOn);
     final source = data.benefit(m.sourceBenefitId);
     final sourceCard = source == null ? null : data.membership(source.membershipId);
     final remind = switch (m.remindDays) {
@@ -282,6 +421,7 @@ class _MembershipDetailViewState extends ConsumerState<MembershipDetailView> {
       InfoRow('持有人', InfoText(holderLabel(data, m))),
       InfoRow('到期', InfoText(expiryLabel(m, now))),
       if (term != null) InfoRow('本期', InfoText(term)),
+      if (running) InfoRow('下一期', InfoText(span(m.termStartOn, m.expiresOn)!), key: const ValueKey('membership-next-term')),
       if (fee != null) InfoRow('续费价', PerkMoneyText(fee)),
       if (m.termPaidCents != null)
         InfoRow('本期实付', PerkMoneyText(m.termPaidCents == 0 ? '免费' : Money.format(m.termPaidCents!))),

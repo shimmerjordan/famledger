@@ -2,14 +2,11 @@
 
 // 会员权益的跨表关系：派生会员（source_benefit_id）不成环；删会员时有权益 409、?cascade=1 在同一事务里
 // 连权益、选项、打卡事件一起软删；删掉的权益若带出过派生会员，那张卡的 sourceBenefitId 置空；备份带上新表。
-// P2 还没有 /benefit-events 接口：打卡事件用 perks_fixtures.js 的 restartWithEvents 直接写进库里。
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { household } = require('./fixtures');
-const { api } = require('./helpers');
-const { restartWithEvents } = require('./perks_fixtures');
 
 /** 一户人家 + 淘宝 / 优酷 + 88VIP 和它的「优酷年卡」+ 由这条权益带出来的优酷VIP。 */
 async function withDerived(t) {
@@ -85,8 +82,7 @@ test('权益换卡也不能成环：挪进由它自己（或它的选项）带�
 });
 
 test('删会员：名下有权益时 409 has_children；?cascade=1 连权益、选项、打卡事件一起删，派生会员解开', async (t) => {
-  const { srv, auth, vip, card, derived } = await withDerived(t);
-  let a = api(srv.base);
+  const { a, auth, vip, card, derived } = await withDerived(t);
   const choice = (await a.post('/benefits', { membershipId: vip.id, name: '二选一', kind: 'choice' }, auth)).json.benefit;
   const option = (await a.post('/benefits', { membershipId: vip.id, name: '芒果', parentId: choice.id }, auth)).json.benefit;
 
@@ -95,7 +91,8 @@ test('删会员：名下有权益时 409 has_children；?cascade=1 连权益、�
   assert.equal(refused.json.error.code, 'has_children');
   assert.deepEqual(refused.json.error.details, { benefits: 3 });
 
-  a = await restartWithEvents(t, srv, [{ id: 'e1', benefitId: card.id }, { id: 'e2', benefitId: option.id }]);
+  const e1 = (await a.post('/benefit-events', { benefitId: card.id }, auth)).json.event;
+  const e2 = (await a.post('/benefit-events', { benefitId: option.id, kind: 'skip' }, auth)).json.event;
   const before = (await a.get('/changes?since=0', auth)).json.next;
   const r = await a.del(`/memberships/${vip.id}?cascade=1`, auth);
   assert.equal(r.status, 200, r.text);
@@ -103,7 +100,7 @@ test('删会员：名下有权益时 409 has_children；?cascade=1 连权益、�
   const delta = (await a.get(`/changes?since=${before}`, auth)).json;
   assert.ok(delta.memberships.find((m) => m.id === vip.id).deletedAt);
   assert.deepEqual(delta.benefits.filter((b) => b.deletedAt).map((b) => b.id).sort(), [card.id, choice.id, option.id].sort());
-  assert.deepEqual(delta.benefit_events.filter((e) => e.deletedAt).map((e) => e.id).sort(), ['e1', 'e2']);
+  assert.deepEqual(delta.benefit_events.filter((e) => e.deletedAt).map((e) => e.id).sort(), [e1.id, e2.id].sort());
   const unlinked = delta.memberships.find((m) => m.id === derived.id);
   assert.equal(unlinked.sourceBenefitId, null, '派生会员还在，只是不再指向被删的权益');
   assert.equal(unlinked.deletedAt, null);
@@ -118,14 +115,15 @@ test('删权益（有没有 cascade 都一样）会解开它带出的派生会�
   assert.equal(m.sourceBenefitId, null);
 });
 
-test('备份导出/导入带上平台、会员、权益', async (t) => {
+test('备份导出/导入带上平台、会员、权益、打卡事件', async (t) => {
   const { srv, a, auth, token, tb, vip, card } = await withDerived(t);
+  const event = (await a.post('/benefit-events', { benefitId: card.id }, auth)).json.event;
   const dump = await fetch(`${srv.base}/api/v1/backup/export`, { headers: { authorization: `Bearer ${token}` } });
   assert.equal(dump.status, 200);
   const gz = Buffer.from(await dump.arrayBuffer());
 
   await a.post('/platforms', { name: '导出之后建的' }, auth);
-  await a.del(`/benefits/${card.id}`, auth);
+  await a.del(`/benefits/${card.id}?cascade=1`, auth);
   const r = await fetch(`${srv.base}/api/v1/backup/import`, {
     method: 'POST',
     headers: { authorization: `Bearer ${token}`, 'content-type': 'application/gzip' },
@@ -135,4 +133,5 @@ test('备份导出/导入带上平台、会员、权益', async (t) => {
   assert.deepEqual((await a.get('/platforms', auth)).json.items.map((p) => p.name), ['淘宝', '优酷']);
   assert.ok((await a.get('/memberships', auth)).json.items.find((m) => m.id === vip.id && m.platformId === tb.id));
   assert.deepEqual((await a.get('/benefits', auth)).json.items.map((b) => b.id), [card.id], '导出之后删的回来了');
+  assert.deepEqual((await a.get('/benefit-events', auth)).json.items.map((e) => e.id), [event.id], '打卡记录跟着回来');
 });

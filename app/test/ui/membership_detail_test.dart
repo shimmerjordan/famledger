@@ -32,7 +32,166 @@ AssetsBackend detailBackend() => AssetsBackend(
   ),
 );
 
+/// 88VIP（本期 3/1 ~ 明年 2/28，¥88/年）：优酷年卡（面值 ¥248）9/20 领了；购物券（每月 4 张，没估值）9/21 领了一张；
+/// 「年卡二选一」的选项芒果年卡面值 ¥198。
+AssetsBackend paybackBackend() => AssetsBackend(
+  perks: PerksFake(
+    platforms: [platformJson('tb', name: '淘宝'), platformJson('yk', name: '优酷', sort: 1)],
+    memberships: [membershipJson('vip', feeCents: 8800, termStartOn: '2026-03-01', expiresOn: '2027-02-28')],
+    benefits: [
+      benefitJson('b1', name: '优酷年卡', kind: 'subscription', claimPlatformId: 'yk', faceValueCents: 24800, quota: [
+        {'p': 'term', 'n': 1},
+      ]),
+      benefitJson('b2', name: '购物券', kind: 'coupon', quota: [
+        {'p': 'month', 'n': 4},
+      ], sort: 1),
+      benefitJson('c1', name: '年卡二选一', kind: 'choice', quota: [
+        {'p': 'year', 'n': 1},
+      ], sort: 2),
+      benefitJson('o1', parentId: 'c1', name: '芒果年卡', faceValueCents: 19800, sort: 3),
+    ],
+    events: [eventJson('e1', 'b1', occurredOn: '2026-09-20'), eventJson('e2', 'b2', occurredOn: '2026-09-21')],
+  ),
+);
+
 void main() {
+  group('会员详情：回本、本期进度、打卡记录、续了', () {
+    testWidgets('本期回本：已回本 · 时间进度、还能再享（N 选 1 取最贵的）、含面值估算、N 项未估值；每项权益一行本期进度', (tester) async {
+      await pumpAssetsAt(tester, bootAssets(paybackBackend()), '/assets/memberships/vip', size: tall);
+      expect(find.text('本期回本'), findsOneWidget);
+      expect(find.text('已回本 282% · ¥248.00 / ¥88.00'), findsOneWidget);
+      expect(find.text('时间已过 57%'), findsOneWidget);
+      expect(find.text('¥396.00'), findsOneWidget, reason: '二选一今年、明年 1 月各挑一次芒果年卡；购物券没估值不算');
+      expect(find.text('含面值估算'), findsOneWidget);
+      expect(find.text('1 项未估值'), findsOneWidget, reason: '购物券打过卡但没填价值');
+      expect(find.byKey(const ValueKey('benefit-status-b1')), findsOneWidget);
+      expect(find.text('本期 1/1 · 本期用完'), findsOneWidget);
+      expect(find.text('本月 1/4 · 还剩 7 天'), findsOneWidget);
+      expect(find.text('本年 0/1 · 还剩 99 天'), findsOneWidget);
+    });
+
+    testWidgets('打卡记录：新的在前，写日期、领了/用了、价值；删一条回本跟着变，snackbar 撤销照原样再记一条', (tester) async {
+      final backend = paybackBackend();
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets/memberships/vip', size: tall);
+      expect(find.text('打卡记录 · 2 条'), findsOneWidget);
+      expect(find.text('9月21日 · 领了'), findsOneWidget, reason: '没估值的不写价值');
+      expect(find.text('9月20日 · 领了 · ¥248.00'), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.byKey(const ValueKey('event-e2'))).dy,
+        lessThan(tester.getTopLeft(find.byKey(const ValueKey('event-e1'))).dy),
+        reason: '新的在前',
+      );
+
+      await tapVisible(tester, find.byKey(const ValueKey('event-delete-e1')));
+      expect(backend.requests('DELETE', '/benefit-events/e1'), hasLength(1));
+      expect(find.text('已删掉这条打卡'), findsOneWidget);
+      expect(find.text('已回本 0% · ¥0.00 / ¥88.00'), findsOneWidget);
+
+      await tester.tap(find.text('撤销'));
+      await settle(tester);
+      final body = backend.lastBody('POST', '/benefit-events');
+      expect((body['benefitId'], body['kind'], body['count'], body['occurredOn']), ('b1', 'claim', 1, '2026-09-20'));
+      expect(find.text('已回本 282% · ¥248.00 / ¥88.00'), findsOneWidget);
+    });
+
+    testWidgets('打卡记录超过 10 条先收着，点「再看 N 条」全部列出', (tester) async {
+      final backend = paybackBackend();
+      for (var i = 1; i <= 12; i++) {
+        backend.perks.events['m$i'] = eventJson('m$i', 'b2', occurredOn: '2026-08-${i.toString().padLeft(2, '0')}');
+      }
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets/memberships/vip', size: const Size(400, 4000));
+      expect(find.text('打卡记录 · 14 条'), findsOneWidget);
+      expect(find.byKey(const ValueKey('event-m1')), findsNothing, reason: '最早的那几条先收着');
+      await tapVisible(tester, find.byKey(const ValueKey('history-more')));
+      expect(find.byKey(const ValueKey('event-m1')), findsOneWidget);
+    });
+
+    testWidgets('「续了一期」（到期前就点）：POST renew，到期日跟着变；还在跑的这一期照旧 —— 回本、进度、时间都不变，存的那期写成「下一期」；一次性的卡没有这个按钮', (tester) async {
+      final backend = paybackBackend();
+      backend.perks.memberships['course'] = membershipJson('course', name: '网课', feePeriod: 'once', expiresOn: '2026-12-31', sort: 1);
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets/memberships/vip', size: tall);
+      await tapVisible(tester, find.byKey(const ValueKey('membership-renew')));
+      expect(backend.requests('POST', '/memberships/vip/renew'), hasLength(1));
+      expect(find.text('已续到 2028-02-28：88VIP'), findsOneWidget);
+      expect(find.text('还有 523 天到期'), findsOneWidget);
+      expect(backend.perks.memberships['vip']!['termStartOn'], '2027-03-01', reason: '服务端把本期开始挪到原到期日次日');
+      expect(find.text('已回本 282% · ¥248.00 / ¥88.00'), findsOneWidget, reason: '回本没清零');
+      expect(find.text('时间已过 57%'), findsOneWidget);
+      expect(find.text('本期 1/1 · 本期用完'), findsOneWidget);
+      expect(find.text('本月 1/4 · 还剩 7 天'), findsOneWidget, reason: '没变成「未生效」');
+      expect(find.text('2026-03-01 至 2027-02-28'), findsOneWidget, reason: '本期写还在跑的这一期');
+      expect(find.text('2027-03-01 至 2028-02-28'), findsOneWidget, reason: '下一期');
+      expect(find.byKey(const ValueKey('membership-renew')), findsNothing, reason: '下一期已经续上了，不再给「续了一期」');
+
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets/memberships/course', size: tall);
+      expect(find.byKey(const ValueKey('membership-renew')), findsNothing);
+    });
+
+    testWidgets('按会员本期起算的权益、卡却没填本期开始：说一句先按自然周期算，「去补」到编辑页', (tester) async {
+      final backend = AssetsBackend(
+        perks: PerksFake(
+          platforms: [platformJson('tb', name: '淘宝')],
+          memberships: [membershipJson('vip', expiresOn: '2027-02-28')],
+          benefits: [
+            benefitJson('b1', name: '贵宾厅', anchor: 'term', quota: [
+              {'p': 'month', 'n': 1},
+            ]),
+          ],
+        ),
+      );
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets/memberships/vip', size: tall);
+      expect(find.text('有权益按会员本期起算，这张卡没填本期开始，先按自然周期算'), findsOneWidget);
+      await tapVisible(tester, find.byKey(const ValueKey('anchor-fallback-fix')));
+      expect(find.text('编辑会员卡'), findsOneWidget);
+    });
+
+    testWidgets('先领再用的打卡记录：「领了」不写价值（回本不算它），「用了」才写', (tester) async {
+      final backend = AssetsBackend(
+        perks: PerksFake(
+          platforms: [platformJson('tb', name: '淘宝')],
+          memberships: [membershipJson('vip', feeCents: 8800, termStartOn: '2026-03-01', expiresOn: '2027-02-28')],
+          benefits: [
+            benefitJson('r1', name: '红包', flow: 'claim_use', faceValueCents: 500, quota: [
+              {'p': 'month', 'n': 4},
+            ]),
+          ],
+          events: [eventJson('e1', 'r1', occurredOn: '2026-09-20'), eventJson('e2', 'r1', kind: 'use', occurredOn: '2026-09-21')],
+        ),
+      );
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets/memberships/vip', size: tall);
+      expect(find.text('9月20日 · 领了'), findsOneWidget);
+      expect(find.text('9月21日 · 用了 · ¥5.00'), findsOneWidget);
+      expect(find.text('已回本 6% · ¥5.00 / ¥88.00'), findsOneWidget, reason: '和记录上的价值加起来对得上');
+    });
+
+    testWidgets('没填本期开始的卡：本期按到期日往前推一期算，说一句、「去补」', (tester) async {
+      final backend = AssetsBackend(
+        perks: PerksFake(
+          platforms: [platformJson('tb', name: '淘宝')],
+          memberships: [membershipJson('vip', feeCents: 8800, expiresOn: '2027-02-28')],
+          benefits: [
+            benefitJson('b1', name: '年卡', kind: 'subscription', faceValueCents: 24800, quota: [
+              {'p': 'term', 'n': 1},
+            ]),
+          ],
+          events: [eventJson('e1', 'b1', occurredOn: '2025-03-10')],
+        ),
+      );
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets/memberships/vip', size: tall);
+      expect(find.text('这张卡没填本期开始，本期先按到期日往前推一期算'), findsOneWidget);
+      expect(find.text('本期 0/1 · 还剩 158 天'), findsOneWidget, reason: '去年那次不算这一期');
+      expect(find.text('已回本 0% · ¥0.00 / ¥88.00'), findsOneWidget);
+      expect(find.byKey(const ValueKey('anchor-fallback-fix')), findsOneWidget);
+    });
+
+    for (final size in kWidths) {
+      testWidgets('${size.width.toInt()} 宽：回本、进度、打卡记录都不溢出', (tester) async {
+        await pumpAssetsAt(tester, bootAssets(paybackBackend()), '/assets/memberships/vip', size: Size(size.width, 2400));
+        expect(tester.takeException(), isNull);
+      });
+    }
+  });
+
   group('会员详情', () {
     testWidgets('头部信息、权益（去优酷领、领取路径、有效期、面值、限制、已带出的卡）、N 选 1 的选项', (tester) async {
       await pumpAssetsAt(tester, bootAssets(detailBackend()), '/assets/memberships/vip', size: tall);

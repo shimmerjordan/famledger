@@ -65,9 +65,10 @@ void main() {
     expect(perks.every((b) => b['membershipId'] == vip['id']), isTrue);
     expect(perks.where((b) => b['claimPlatformId'] == platforms['优酷']).map((b) => b['name']), ['优酷年卡']);
 
-    // 3. 回到会员权益 tab：按会员、按领取平台都看得到。
+    // 3. 回到会员权益 tab（默认是「本期」），切到「全部」：按会员、按领取平台都看得到。
     await tester.pageBack();
     await settle(tester);
+    await tapVisible(tester, find.byKey(const ValueKey('perk-view-all')));
     expect(find.text('淘宝 · 全家共用 · 3 项权益 · 长期有效'), findsOneWidget);
     expect(find.text('去优酷领'), findsOneWidget);
     await tapVisible(tester, find.text('按领取平台'));

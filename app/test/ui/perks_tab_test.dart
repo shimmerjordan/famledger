@@ -1,3 +1,4 @@
+import 'package:famledger/data/local/local_store.dart';
 import 'package:famledger/ui/perks/membership_detail_page.dart';
 import 'package:famledger/ui/perks/perk_providers.dart';
 import 'package:flutter/material.dart';
@@ -53,7 +54,7 @@ void main() {
     });
 
     testWidgets('按会员：卡的标题、平台 · 持有人 · 几项 · 到期、续费价；权益行带「去优酷领」；N 选 1 带选项', (tester) async {
-      await pumpAssetsAt(tester, bootAssets(perksBackend()), '/assets?tab=perks');
+      await pumpAssetsAt(tester, bootAssets(perksBackend(), store: allViewStore()), '/assets?tab=perks');
 
       expect(find.text('88VIP'), findsOneWidget);
       expect(find.text('淘宝 · 全家共用 · 4 项权益 · 还有 158 天到期'), findsOneWidget);
@@ -77,7 +78,7 @@ void main() {
     });
 
     testWidgets('按领取平台：组头「优酷 · 1 项」，每行写来自哪张卡；选项按自己的领取平台归组', (tester) async {
-      await pumpAssetsAt(tester, bootAssets(perksBackend()), '/assets?tab=perks');
+      await pumpAssetsAt(tester, bootAssets(perksBackend(), store: allViewStore()), '/assets?tab=perks');
       await tapVisible(tester, find.text('按领取平台'));
 
       expect(find.text('淘宝 · 2 项'), findsOneWidget);
@@ -93,7 +94,7 @@ void main() {
     });
 
     testWidgets('AppBar：这个 tab 的「+」是记会员卡，溢出菜单里有「平台管理」', (tester) async {
-      await pumpAssetsAt(tester, bootAssets(perksBackend()), '/assets?tab=perks');
+      await pumpAssetsAt(tester, bootAssets(perksBackend(), store: allViewStore()), '/assets?tab=perks');
       await tester.tap(find.byTooltip('记一张会员卡'));
       await settle(tester);
       expect(find.text('记一张会员卡'), findsOneWidget);
@@ -116,7 +117,7 @@ void main() {
           benefits: [benefitJson('b9', membershipId: 'ghost', name: '孤儿券', claimPlatformId: 'gone-too')],
         ),
       );
-      await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=perks');
+      await pumpAssetsAt(tester, bootAssets(backend, store: allViewStore()), '/assets?tab=perks');
       expect(find.text('平台已删除 · 成员已删除 · 1 项权益 · 长期有效'), findsOneWidget);
       expect(find.text('去平台已删除领'), findsOneWidget);
       await tapVisible(tester, find.text('按领取平台'));
@@ -125,7 +126,7 @@ void main() {
     });
 
     testWidgets('宽屏（≥ 840）：左边列表、右边详情；点另一张卡换右栏，不跳页', (tester) async {
-      await pumpAssetsAt(tester, bootAssets(perksBackend()), '/assets?tab=perks', size: const Size(1400, 900));
+      await pumpAssetsAt(tester, bootAssets(perksBackend(), store: allViewStore()), '/assets?tab=perks', size: const Size(1400, 900));
       expect(find.byType(MembershipDetailView), findsOneWidget);
       expect(find.byKey(const ValueKey('perks-side-vip')), findsOneWidget, reason: '默认看第一张');
 
@@ -137,7 +138,7 @@ void main() {
 
     testWidgets('宽屏：默认看第一张时在右栏归档它，右栏仍停在这张卡上，提示照样出来', (tester) async {
       final backend = perksBackend();
-      await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=perks', size: const Size(1400, 2000));
+      await pumpAssetsAt(tester, bootAssets(backend, store: allViewStore()), '/assets?tab=perks', size: const Size(1400, 2000));
       expect(find.byKey(const ValueKey('perks-side-vip')), findsOneWidget);
       backend.delayNext['GET /changes'] = const Duration(milliseconds: 300);
       await tapVisible(tester, find.byKey(const ValueKey('membership-archive')));
@@ -150,7 +151,7 @@ void main() {
 
     testWidgets('宽屏：在右栏删掉这张卡（同步还在路上），「已删掉」照样提示，右栏换到剩下的第一张', (tester) async {
       final backend = perksBackend();
-      await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=perks', size: const Size(1400, 2000));
+      await pumpAssetsAt(tester, bootAssets(backend, store: allViewStore()), '/assets?tab=perks', size: const Size(1400, 2000));
       await tapVisible(tester, find.byKey(const ValueKey('membership-delete')));
       backend.delayNext['GET /changes'] = const Duration(milliseconds: 500);
       await tester.tap(find.widgetWithText(FilledButton, '删掉'));
@@ -164,9 +165,9 @@ void main() {
     testWidgets('宽屏：右栏里「来自」换成来源那张卡，不盖一整页上来', (tester) async {
       final backend = perksBackend();
       backend.perks.memberships['ykvip'] = membershipJson('ykvip', platformId: 'yk', name: '优酷VIP', sourceBenefitId: 'b1', sort: 3);
-      await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=perks', size: const Size(1400, 900));
-      await tester.tap(find.byKey(const ValueKey('membership-ykvip')));
-      await settle(tester);
+      await pumpAssetsAt(tester, bootAssets(backend, store: allViewStore()), '/assets?tab=perks', size: const Size(1400, 900));
+      // 顶上多了「本期 | 全部」，这张卡在 900 高的窗口里要先滚到。
+      await tapVisible(tester, find.byKey(const ValueKey('membership-ykvip')));
       await tapVisible(tester, find.byKey(const ValueKey('membership-source')));
       expect(find.byKey(const ValueKey('perks-side-vip')), findsOneWidget);
       expect(find.byType(MembershipDetailPage), findsNothing);
@@ -178,6 +179,7 @@ void main() {
       final opened = <Uri>[];
       final container = bootAssets(
         backend,
+        store: allViewStore(),
         overrides: [
           perkUrlOpenerProvider.overrideWithValue((uri) async {
             opened.add(uri);
@@ -192,6 +194,82 @@ void main() {
       expect(opened, [Uri.parse('https://www.mgtv.com/vip')]);
     });
 
+    testWidgets('「按会员 / 按领取平台」也记进本机：切过去，下次打开还是按领取平台', (tester) async {
+      final store = allViewStore();
+      await pumpAssetsAt(tester, bootAssets(perksBackend(), store: store), '/assets?tab=perks');
+      await tapVisible(tester, find.text('按领取平台'));
+      expect(await store.read<Map<String, dynamic>>(PerkViewPrefsController.storeKey), {'view': 'all', 'scope': 'family', 'grouping': 'byClaimPlatform'});
+
+      await pumpAssetsAt(tester, bootAssets(perksBackend(), store: store), '/assets?tab=perks');
+      expect(find.text('淘宝 · 2 项'), findsOneWidget, reason: '重开直接是按领取平台');
+    });
+
+    testWidgets('「本期 | 全部」记在本机：切到「本期」再重开还是「本期」', (tester) async {
+      final store = allViewStore();
+      await pumpAssetsAt(tester, bootAssets(perksBackend(), store: store), '/assets?tab=perks');
+      expect(find.text('按领取平台'), findsOneWidget);
+      await tapVisible(tester, find.byKey(const ValueKey('perk-view-current')));
+      expect(find.textContaining('本期待领'), findsOneWidget);
+      await pumpAssetsAt(tester, bootAssets(perksBackend(), store: store), '/assets?tab=perks');
+      expect(find.text('按领取平台'), findsNothing);
+      expect(find.textContaining('本期待领'), findsOneWidget);
+    });
+
+    testWidgets('会员行带回本条：已回本几成 · 已兑现 / 本期实付，竖刻度是时间过了几成；缺本期开始不画刻度；免费又没享受到的不画', (tester) async {
+      final backend = perksBackend();
+      backend.perks.memberships['vip']!['termStartOn'] = '2026-03-01';
+      backend.perks.benefits['b1']!['faceValueCents'] = 24800;
+      backend.perks.events['e1'] = eventJson('e1', 'b1', occurredOn: '2026-09-20');
+      backend.perks.memberships['free'] = membershipJson('free', name: '免费卡', sort: 3);
+      await pumpAssetsAt(tester, bootAssets(backend, store: allViewStore()), '/assets?tab=perks', size: const Size(400, 2000));
+
+      expect(find.text('已回本 282% · ¥248.00 / ¥88.00'), findsOneWidget);
+      expect(find.text('时间已过 57%'), findsOneWidget, reason: '3/1 ~ 明年 2/28，今天是第 207 天');
+      expect(find.descendant(of: find.byKey(const ValueKey('payback-vip')), matching: find.byKey(const ValueKey('payback-time-tick'))), findsOneWidget);
+      expect(find.text('已回本 0% · ¥0.00 / ¥198.00'), findsOneWidget, reason: '京东 PLUS：还没兑现');
+      expect(find.descendant(of: find.byKey(const ValueKey('payback-plus')), matching: find.byKey(const ValueKey('payback-time-tick'))), findsNothing, reason: '没填本期开始，不画时间刻度');
+      expect(find.byKey(const ValueKey('payback-free')), findsNothing);
+    });
+
+    testWidgets('免费、没填费用的卡也有到期进度：空条上画时间刻度；免费又享受到了的写「免费 · 已享」', (tester) async {
+      final backend = perksBackend();
+      // 88VIP 带出来的优酷VIP：本期实付 0；另一张没填费用的月卡。
+      backend.perks.memberships['ykvip'] = membershipJson('ykvip', platformId: 'yk', name: '优酷VIP', sourceBenefitId: 'b1', termPaidCents: 0, termStartOn: '2026-03-01', expiresOn: '2027-02-28', sort: 3);
+      backend.perks.memberships['nofee'] = membershipJson('nofee', name: '月卡', feePeriod: 'month', termStartOn: '2026-09-01', expiresOn: '2026-09-30', sort: 4);
+      backend.perks.benefits['v1'] = benefitJson('v1', membershipId: 'ykvip', name: '观影券', faceValueCents: 500, quota: [
+        {'p': 'month', 'n': 1},
+      ]);
+      backend.perks.events['e1'] = eventJson('e1', 'v1', occurredOn: '2026-09-10');
+      await pumpAssetsAt(tester, bootAssets(backend, store: allViewStore()), '/assets?tab=perks', size: const Size(400, 2400));
+      Finder tick(String id) => find.descendant(of: find.byKey(ValueKey('payback-$id')), matching: find.byKey(const ValueKey('payback-time-tick')));
+      expect(find.descendant(of: find.byKey(const ValueKey('payback-ykvip')), matching: find.text('免费 · 已享 ¥5.00')), findsOneWidget);
+      expect(tick('ykvip'), findsOneWidget);
+      expect(find.descendant(of: find.byKey(const ValueKey('payback-nofee')), matching: find.text('时间已过 77%')), findsOneWidget);
+      expect(find.descendant(of: find.byKey(const ValueKey('payback-nofee')), matching: find.textContaining('免费')), findsNothing, reason: '没填费用不说成免费');
+      expect(tick('nofee'), findsOneWidget);
+    });
+
+    testWidgets('选「我」而名下一张卡都没有：说「你名下还没有卡」，不说「都归档了」；宽屏右栏不停在别人的卡上', (tester) async {
+      final backend = AssetsBackend(
+        perks: PerksFake(
+          platforms: [platformJson('jd', name: '京东')],
+          memberships: [membershipJson('plus', platformId: 'jd', name: '京东PLUS', memberId: 'u1', feeCents: 19800)],
+        ),
+        members: const [
+          {'id': 'u1', 'username': 'baba', 'displayName': '爸爸', 'role': 'member'},
+        ],
+      );
+      final store = MemoryLocalStore()..write(PerkViewPrefsController.storeKey, {'view': 'all', 'scope': 'family'});
+      final container = bootAssets(backend, store: store, session: await sessionAs('member'));
+      await pumpAssetsAt(tester, container, '/assets?tab=perks', size: const Size(1400, 1000));
+      expect(find.byKey(const ValueKey('perks-side-plus')), findsOneWidget, reason: '全家：右栏看爸爸的卡');
+      await tapVisible(tester, find.byKey(const ValueKey('perk-scope-mine')));
+      expect(find.text('你名下还没有卡'), findsOneWidget);
+      expect(find.text('在用的卡都归档了'), findsNothing);
+      expect(find.byKey(const ValueKey('perks-side-plus')), findsNothing, reason: '切到「我」，右栏不再停在爸爸的卡上');
+      expect(find.text('选一张卡看详情'), findsOneWidget);
+    });
+
     for (final size in kWidths) {
       testWidgets('${size.width.toInt()} 宽、字号放大 1.5 倍、40 字的平台名：两种分组都不溢出', (tester) async {
         tester.platformDispatcher.textScaleFactorTestValue = 1.5;
@@ -199,7 +277,7 @@ void main() {
         final backend = perksBackend();
         backend.perks.platforms['yk']!['name'] = '优酷'.padRight(40, '长');
         backend.perks.platforms['mg']!['name'] = '芒果TV'.padRight(40, '长');
-        await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=perks', size: size);
+        await pumpAssetsAt(tester, bootAssets(backend, store: allViewStore()), '/assets?tab=perks', size: size);
         // 宽屏右栏的详情里也有一份，所以是「至少一个」。
         expect(find.byKey(const ValueKey('claim-badge-b1')), findsWidgets);
         expect(find.textContaining('去芒果TV长'), findsWidgets);
@@ -209,7 +287,7 @@ void main() {
       });
 
       testWidgets('${size.width.toInt()} 宽：两种分组都不溢出', (tester) async {
-        await pumpAssetsAt(tester, bootAssets(perksBackend()), '/assets?tab=perks', size: size);
+        await pumpAssetsAt(tester, bootAssets(perksBackend(), store: allViewStore()), '/assets?tab=perks', size: size);
         expect(tester.takeException(), isNull);
         await tester.tap(find.text('按领取平台'));
         await settle(tester);

@@ -95,6 +95,43 @@ void main() {
       expect(rig.ledger.benefits.map((b) => b.id), ['c1', 'o1']);
     });
 
+    test('打卡：POST /benefit-events 原样发（带 clientId），回来的事件先落本地；撤销走 DELETE 并从本地拿掉', () async {
+      final rig = Rig({
+        'POST $api/benefit-events': [
+          {'event': eventRow('e1', 'b1')},
+        ],
+        'DELETE $api/benefit-events/e1': [
+          {'event': {...eventRow('e1', 'b1'), 'deletedAt': '2026-09-23T02:00:00.000Z'}},
+        ],
+        'GET $api/changes': [changes(next: 3)],
+      });
+      final body = {'benefitId': 'b1', 'kind': 'claim', 'count': 1, 'occurredOn': '2026-09-23', 'clientId': 'tap-1'};
+      final e = await rig.perks.createBenefitEvent(body);
+      expect(rig.server.bodyOf('POST', '$api/benefit-events'), body);
+      expect((e.id, e.benefitId), ('e1', 'b1'));
+      expect(rig.ledger.benefitEvents.map((x) => x.id), ['e1']);
+      await rig.perks.deleteBenefitEvent('e1');
+      expect(rig.ledger.benefitEvents, isEmpty);
+    });
+
+    test('续费：POST /memberships/:id/renew 原样发，回来的卡落本地；not_renewable 原样抛出', () async {
+      final rig = Rig({
+        'POST $api/memberships/vip/renew': [
+          {'membership': {...membershipRow('vip'), 'expiresOn': '2027-12-31', 'termStartOn': '2027-01-01'}},
+          apiError(409, 'not_renewable', '一次性或不收费的卡没有下一期，不用续费'),
+        ],
+        'GET $api/changes': [changes(next: 3)],
+      });
+      final m = await rig.perks.renewMembership('vip', {'clientId': 'r-1'});
+      expect(rig.server.bodyOf('POST', '$api/memberships/vip/renew'), {'clientId': 'r-1'});
+      expect(m.expiresOn, '2027-12-31');
+      expect(rig.ledger.memberships.single.termStartOn, '2027-01-01');
+      await expectLater(
+        rig.perks.renewMembership('vip', {'clientId': 'r-2'}),
+        throwsA(isA<ApiException>().having((e) => e.code, 'code', 'not_renewable')),
+      );
+    });
+
     test('权益：新建走 POST，编辑走 PATCH，都落本地', () async {
       final rig = Rig({
         'POST $api/benefits': [

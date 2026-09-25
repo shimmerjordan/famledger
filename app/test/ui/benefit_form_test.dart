@@ -297,7 +297,7 @@ void main() {
     testWidgets('服务端有本地不知道的打卡记录（409 has_children）：按服务端的数说一句陈述，再确认就带 cascade', (tester) async {
       final backend = vipBackend();
       backend.perks.benefits['b9'] = benefitJson('b9', name: '贵宾厅', sort: 2);
-      backend.perks.events['b9'] = 3;
+      backend.perks.unsyncedEvents['b9'] = 3;
       await pumpAssetsAt(tester, bootAssets(backend), '/assets/benefits/b9/edit', size: tall);
       await tester.tap(find.byKey(const ValueKey('benefit-delete')));
       await settle(tester);
@@ -312,10 +312,25 @@ void main() {
       expect(backend.perks.benefits.containsKey('b9'), isFalse);
     });
 
+    testWidgets('本地已经同步到打卡记录：确认里直接说有几条，一次带 cascade 删掉（不先挨一个 409）', (tester) async {
+      final backend = vipBackend();
+      backend.perks.benefits['b9'] = benefitJson('b9', name: '贵宾厅', sort: 2);
+      backend.perks.events['e1'] = eventJson('e1', 'b9');
+      backend.perks.events['e2'] = eventJson('e2', 'b9', kind: 'skip');
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets/benefits/b9/edit', size: tall);
+      await tester.tap(find.byKey(const ValueKey('benefit-delete')));
+      await settle(tester);
+      expect(find.text('它下面的 2 条打卡记录会一起删掉。'), findsOneWidget);
+      await tester.tap(find.widgetWithText(FilledButton, '删掉'));
+      await settle(tester);
+      expect(backend.requests('DELETE', '/benefits/b9').map((r) => r.url.queryParameters), [{'cascade': '1'}]);
+      expect(backend.perks.events, isEmpty);
+    });
+
     testWidgets('409 之后第二次点「算了」：什么都不删，删除按钮恢复可点', (tester) async {
       final backend = vipBackend();
       backend.perks.benefits['b9'] = benefitJson('b9', name: '贵宾厅', sort: 2);
-      backend.perks.events['b9'] = 1;
+      backend.perks.unsyncedEvents['b9'] = 1;
       await pumpAssetsAt(tester, bootAssets(backend), '/assets/benefits/b9/edit', size: tall);
       await tester.tap(find.byKey(const ValueKey('benefit-delete')));
       await settle(tester);

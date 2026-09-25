@@ -23,14 +23,22 @@ import 'platform_picker.dart';
 /// 新建 / 编辑会员卡（spec §5「表单」）。只必填平台和名称；到期日可以留空（长期有效）；
 /// 其余收进「更多」。日期都能选将来（[pickAnyDay]）。新建可选「同时记一笔支出」，默认不记。
 class MembershipFormPage extends ConsumerStatefulWidget {
-  const MembershipFormPage({super.key, this.id, this.initialPlatformId, this.initialSourceBenefitId});
+  const MembershipFormPage({
+    super.key,
+    this.id,
+    this.initialPlatformId,
+    this.initialSourceBenefitId,
+    this.initialTermPaidCents,
+  });
 
   /// null = 新建。
   final String? id;
 
-  /// 新建时预填（`/assets/memberships/new?platformId=&sourceBenefitId=`；P3「打卡后建子会员」从这进来）。
+  /// 新建时预填（`/assets/memberships/new?platformId=&sourceBenefitId=&termPaid=`）：
+  /// 「打卡后建子会员」从这进来，预填领取平台、来源权益和本期实付 0（spec §5）。
   final String? initialPlatformId;
   final String? initialSourceBenefitId;
+  final int? initialTermPaidCents;
 
   @override
   ConsumerState<MembershipFormPage> createState() => _MembershipFormPageState();
@@ -69,6 +77,13 @@ class _MembershipFormPageState extends ConsumerState<MembershipFormPage> {
   final String _clientId = newClientId();
 
   bool get _editing => widget.id != null;
+
+  @override
+  void initState() {
+    super.initState();
+    final paid = widget.initialTermPaidCents;
+    if (paid != null) _paid.text = Money.plain(paid).replaceAll(',', '');
+  }
 
   @override
   void dispose() {
