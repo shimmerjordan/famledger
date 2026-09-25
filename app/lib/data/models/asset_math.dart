@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import '../../core/money.dart';
 import 'asset.dart';
+import 'asset_valuation.dart';
 import 'holding.dart';
 
 // 物品与投资的派生数（spec B3 / C3）。服务端不算这些，两边口径不会分叉。
@@ -77,6 +78,7 @@ class AssetSummary {
     this.idleCount = 0,
     this.priceCents = 0,
     this.dailyCents = 0,
+    this.valueCents = 0,
   });
 
   /// 在用 + 闲置的件数。
@@ -89,6 +91,12 @@ class AssetSummary {
   /// 每天花费合计。
   final double dailyCents;
 
+  /// 估值合计（asset_valuation.dart 的 [currentValue]），和日均是两套数。
+  final int valueCents;
+
+  /// 已折旧 = 原价合计 − 估值合计；手动估值高过原价时是负数（界面改说「比原价高」）。
+  int get depreciationCents => priceCents - valueCents;
+
   bool get isEmpty => count == 0;
 }
 
@@ -98,30 +106,37 @@ AssetSummary summarizeAssets(Iterable<Asset> assets, DateTime now) {
   var idle = 0;
   var price = 0;
   var daily = 0.0;
+  var value = 0;
   for (final asset in assets) {
     if (asset.archived || !asset.isHeld) continue;
     count++;
     if (asset.status == Asset.statusIdle) idle++;
     price += asset.priceCents;
     daily += assetUsage(asset, now).dailyCents;
+    value += currentValue(asset, now);
   }
   return AssetSummary(
     count: count,
     idleCount: idle,
     priceCents: price,
     dailyCents: daily,
+    valueCents: value,
   );
 }
 
-enum AssetSort { daily, days, price }
+enum AssetSort { daily, days, price, value }
 
 /// 一律从大到小；一样大的按用户自己的排序。
 List<Asset> sortAssets(Iterable<Asset> assets, AssetSort by, DateTime now) {
   final usage = {for (final a in assets) a.id: assetUsage(a, now)};
+  final values = by == AssetSort.value
+      ? {for (final a in assets) a.id: currentValue(a, now)}
+      : const <String, int>{};
   num key(Asset a) => switch (by) {
     AssetSort.daily => usage[a.id]!.dailyCents,
     AssetSort.days => usage[a.id]!.days,
     AssetSort.price => a.priceCents,
+    AssetSort.value => values[a.id]!,
   };
   return assets.toList()..sort((a, b) {
     final c = key(b).compareTo(key(a));

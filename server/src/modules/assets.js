@@ -4,13 +4,17 @@
 // 这里守住的是日期与状态之间不能自相矛盾、「同时记账」和资产同生共死，以及一件东西
 // 最多挂着一笔还算数的卖出收入。新建和卖出都收 clientId 做幂等（lib/idempotency.js）：
 // 回应丢了 App 重发，不能多出一件物品、多记一笔支出。
+// 估值字段（方式、年折率、残值、手动锚点、计入净资产三态）这里只校验，估值本身在 lib/valuation.js 现算。
 
 const { HttpError, sendJson } = require('../lib/router');
 const { makeCrud } = require('../lib/crud');
 const idem = require('../lib/idempotency');
 const v = require('../lib/validate');
+const valuation = require('../lib/valuation');
 
-const CATEGORIES = ['digital', 'appliance', 'furniture', 'clothing', 'vehicle', 'sports', 'other'];
+// 类别名单就是估值默认表的键（顺序也是）：加类别在 lib/valuation.js 加一行，
+// App 那边同改 asset.dart、asset_widgets.dart 的图标和 asset_valuation.dart 的默认表。
+const CATEGORIES = Object.keys(valuation.CATEGORY_DEFAULTS);
 const STATUSES = ['in_use', 'idle', 'retired', 'sold'];
 const ENDED = new Set(['retired', 'sold']);
 const MAX_AMOUNT = 1e14;
@@ -76,6 +80,12 @@ module.exports = (ctx) => {
       expectedDays: { type: 'int', min: 1, max: 36500 },
       note: { type: 'string', max: 500 },
       memberId: { type: 'id' },
+      // 估值（spec §2）：只存用户的选择。年折率、残值 null = 跟随类别默认。
+      valuationMethod: { type: 'enum', values: valuation.METHODS, default: 'auto' },
+      rateBp: { type: 'int', min: 0, max: 9000 },
+      residualBp: { type: 'int', min: 0, max: 10000 },
+      manualValueCents: { type: 'int', min: 0, max: MAX_AMOUNT },
+      netWorth: { type: 'enum', values: valuation.NET_WORTH, default: 'auto' },
     },
 
     /** 字段已各自校验过；这里只管跨字段的规则，比的是「旧行 + 本次改动」合并后的结果。 */
@@ -115,6 +125,21 @@ module.exports = (ctx) => {
           out.sale_transaction_id = null;
         }
       }
+
+      // 手动估值是一个锚点：金额和日期成对，清也要一起清；日期不晚于今天、不早于买入。
+      // 金额可以高于原价（保值款、升值的表），这里不拦。
+      const anchorCents = given('manualValueCents')
+        ? (blank('manualValueCents') ? null : body.manualValueCents)
+        : (row ? row.manual_value_cents : null);
+      let anchorOn;
+      if (!blank('manualValueOn')) anchorOn = pastDate(body.manualValueOn, 'manualValueOn');
+      else anchorOn = (given('manualValueOn') || !row) ? null : row.manual_value_on;
+      if (anchorCents === null && anchorOn !== null) v.bad('manualValueCents', '手动估值的金额和日期要一起填，清也要一起清');
+      if (anchorCents !== null && anchorOn === null) v.bad('manualValueOn', '手动估值的金额和日期要一起填，清也要一起清');
+      if (anchorOn && anchorOn < purchasedOn) {
+        v.bad(given('manualValueOn') ? 'manualValueOn' : 'purchasedOn', '估值日期不能早于买入日期');
+      }
+      out.manual_value_on = anchorOn;
 
       if (!blank('memberId') && !memberAlive(String(body.memberId).trim())) v.bad('memberId', '成员不存在');
       return out;

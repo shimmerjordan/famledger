@@ -32,3 +32,11 @@ void refreshMoneyViews(WidgetRef ref) {
   ref.invalidate(recentTxProvider);
   ref.invalidate(txListProvider);
 }
+
+/// 物品、投资页下拉刷新（同步成功后）顺带刷资产页顶上的净资产：总览重取，家庭设置也重拉 ——
+/// 「实物计入净资产」的总开关不走 /changes，别的设备改了只能靠这一下。同步拉到新数据时总览
+/// 本来就会作废（NetWorthStrip 盯着 seq），和这里落在同一帧，只取一遍。
+void refreshNetWorth(WidgetRef ref) {
+  ref.invalidate(statsProvider);
+  ref.invalidate(settingsProvider);
+}

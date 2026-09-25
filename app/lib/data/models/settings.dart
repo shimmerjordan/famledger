@@ -7,18 +7,21 @@ class Settings {
     this.currency = 'CNY',
     this.capture = const CaptureSettings(),
     this.ui = const UiSettings(),
+    this.assets = const AssetsSettings(),
   });
 
   final String name;
   final String currency;
   final CaptureSettings capture;
   final UiSettings ui;
+  final AssetsSettings assets;
 
   factory Settings.fromJson(Map<String, dynamic> json) => Settings(
     name: jsonString(json['name']),
     currency: jsonString(json['currency'], 'CNY'),
     capture: CaptureSettings.fromJson(jsonMap(json['capture'])),
     ui: UiSettings.fromJson(jsonMap(json['ui'])),
+    assets: AssetsSettings.fromJson(jsonMap(json['assets'])),
   );
 
   Map<String, dynamic> toJson() => {
@@ -26,6 +29,7 @@ class Settings {
     'currency': currency,
     'capture': capture.toJson(),
     'ui': ui.toJson(),
+    'assets': assets.toJson(),
   };
 
   Settings copyWith({
@@ -33,11 +37,13 @@ class Settings {
     String? currency,
     CaptureSettings? capture,
     UiSettings? ui,
+    AssetsSettings? assets,
   }) => Settings(
     name: name ?? this.name,
     currency: currency ?? this.currency,
     capture: capture ?? this.capture,
     ui: ui ?? this.ui,
+    assets: assets ?? this.assets,
   );
 }
 
@@ -123,4 +129,18 @@ class UiSettings {
       UiSettings(firstDayOfMonth: jsonInt(json['firstDayOfMonth'], 1));
 
   Map<String, dynamic> toJson() => {'firstDayOfMonth': firstDayOfMonth};
+}
+
+/// 资产相关的家庭设置（spec §2）。
+class AssetsSettings {
+  const AssetsSettings({this.netWorthIncludesPhysical = true});
+
+  /// 实物估值计不计入净资产的全局开关，默认计入（按类别；单件在物品上改）。只有管理员能改。
+  final bool netWorthIncludesPhysical;
+
+  factory AssetsSettings.fromJson(Map<String, dynamic> json) => AssetsSettings(
+    netWorthIncludesPhysical: jsonBool(json['netWorthIncludesPhysical'], true),
+  );
+
+  Map<String, dynamic> toJson() => {'netWorthIncludesPhysical': netWorthIncludesPhysical};
 }

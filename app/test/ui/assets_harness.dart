@@ -38,6 +38,12 @@ Map<String, dynamic> assetJson(
   String? transactionId,
   String? saleTransactionId,
   int sort = 0,
+  String? valuationMethod,
+  int? rateBp,
+  int? residualBp,
+  int? manualValueCents,
+  String? manualValueOn,
+  String? netWorth,
 }) => {
   'id': id,
   'name': name,
@@ -56,7 +62,24 @@ Map<String, dynamic> assetJson(
   'sortOrder': sort,
   'archived': false,
   'deletedAt': null,
+  // 估值字段：不给就不带这个键 —— 和 005 之前写下的老行一个样子，客户端得按 auto 兜底。
+  if (valuationMethod != null) 'valuationMethod': valuationMethod,
+  if (rateBp != null) 'rateBp': rateBp,
+  if (residualBp != null) 'residualBp': residualBp,
+  if (manualValueCents != null) 'manualValueCents': manualValueCents,
+  if (manualValueOn != null) 'manualValueOn': manualValueOn,
+  if (netWorth != null) 'netWorth': netWorth,
 };
+
+/// 物品接口认的估值字段（server/src/modules/assets.js）。
+const List<String> kValuationKeys = [
+  'valuationMethod',
+  'rateBp',
+  'residualBp',
+  'manualValueCents',
+  'manualValueOn',
+  'netWorth',
+];
 
 Map<String, dynamic> holdingJson(
   String id, {
@@ -127,12 +150,43 @@ class AssetsBackend {
   /// 下一次打到这个 `METHOD /path`（不带 /api/v1）就回这个错误。
   final Map<String, (int, String, String)> failNext = {};
 
+  /// 打到这个 `METHOD /path` 一直回这个错误，拿掉之前每次都是（重试也是）。
+  final Map<String, (int, String, String)> failAlways = {};
+
+  /// 打到这个 `METHOD /path` 一直连不上（网络错误），拿掉之前每次都是。
+  final Set<String> offline = {};
+
+  /// 下一次打到这个 `METHOD /path` 先等这么久再回（看「请求还在路上」那几帧）。
+  final Map<String, Duration> delayNext = {};
+
+  /// 为真时 `/changes` 的 next 不往前走 —— 像真服务端那样「没有新数据」。
+  bool frozenSeq = false;
+
   /// 下一次打到这个 `METHOD /path` 时照常处理、落库，但回应丢在路上（连接被重置）——
   /// App 那边拿到的是「可能已经送到」的网络错误。
   final Set<String> dropResponseNext = {};
 
   /// 照 server/src/lib/idempotency.js：同一个接口、同一个 clientId 再来，回第一次的结果并标 replayed。
   final Map<String, Map<String, dynamic>> _replies = {};
+
+  /// `GET /stats/overview` 按下面几样现拼（照 server/src/modules/stats.js 的口径）。
+  Map<String, int> accountBalances = {'bank': 1000000};
+  int investNetCents = 0;
+
+  /// 持仓总市值；null = 不回这个键。比 [investNetCents] 大出来的就是挂了账户的持仓成本。
+  int? investMarketCents;
+
+  /// `{valueCents, includedCents, count}`；null = 老服务端，不回 physical / netWorthExPhysicalCents。
+  Map<String, dynamic>? physical;
+
+  /// `GET /settings` 回它，`PATCH /settings` 一层深合并进来。
+  final Map<String, dynamic> settings = {
+    'name': '小明家',
+    'currency': 'CNY',
+    'capture': <String, dynamic>{},
+    'ui': <String, dynamic>{'firstDayOfMonth': 1},
+    'assets': <String, dynamic>{'netWorthIncludesPhysical': true},
+  };
 
   /// `POST /holdings/refresh` 回什么。
   Map<String, dynamic> refreshResult = {
@@ -156,7 +210,13 @@ class AssetsBackend {
   http.Client get client => MockClient((req) async {
     seen.add(req);
     final path = req.url.path.replaceFirst('/api/v1', '');
-    final fail = failNext.remove('${req.method} $path');
+    final key = '${req.method} $path';
+    final delay = delayNext.remove(key);
+    if (delay != null) await Future<void>.delayed(delay);
+    if (offline.contains(key)) {
+      throw http.ClientException('Network is unreachable', req.url);
+    }
+    final fail = failNext.remove(key) ?? failAlways[key];
     if (fail != null) return _error(fail.$1, fail.$2, fail.$3);
     final body = req.body.isEmpty
         ? <String, dynamic>{}
@@ -171,6 +231,10 @@ class AssetsBackend {
     final http.Response res;
     if (req.method == 'GET' && path == '/changes') {
       res = _ok(_changes());
+    } else if (req.method == 'GET' && path == '/stats/overview') {
+      res = _ok(overview());
+    } else if (path == '/settings') {
+      res = _settings(req.method, body);
     } else if (seg.isNotEmpty && seg.first == 'assets') {
       res = _assets(req.method, seg, body);
     } else if (seg.isNotEmpty && seg.first == 'holdings') {
@@ -189,7 +253,7 @@ class AssetsBackend {
 
   Map<String, dynamic> _changes() => {
     'since': 0,
-    'next': ++_seq,
+    'next': frozenSeq ? _seq : ++_seq,
     'more': false,
     'members': <Object>[],
     'accounts': accounts,
@@ -208,6 +272,50 @@ class AssetsBackend {
     ],
   };
 
+  Map<String, dynamic> overview() {
+    final accountsNet = accountBalances.values.fold<int>(0, (sum, v) => sum + v);
+    final exPhysical = accountsNet + investNetCents;
+    final counted = (settings['assets'] as Map)['netWorthIncludesPhysical'] == true;
+    final p = physical;
+    final included = p == null || !counted ? 0 : p['includedCents'] as int;
+    return {
+      'netWorthCents': exPhysical + included,
+      'assetsCents': exPhysical + included,
+      'liabilitiesCents': 0,
+      'month': {
+        'expenseCents': 0,
+        'incomeCents': 0,
+        'byFund': <Object>[],
+        'byCategory': <Object>[],
+        'byMember': <Object>[],
+        'budgets': <Object>[],
+      },
+      'pendingCount': 0,
+      'funds': <Object>[],
+      'accounts': [
+        for (final e in accountBalances.entries)
+          {'accountId': e.key, 'balanceCents': e.value},
+      ],
+      if (investMarketCents != null) 'investMarketCents': investMarketCents,
+      if (p != null) 'netWorthExPhysicalCents': exPhysical,
+      if (p != null) 'physical': {...p, 'counted': counted},
+    };
+  }
+
+  http.Response _settings(String method, Map<String, dynamic> body) {
+    if (method == 'PATCH') {
+      body.forEach((key, value) {
+        final current = settings[key];
+        if (value is Map && current is Map) {
+          current.addAll(value);
+        } else {
+          settings[key] = value;
+        }
+      });
+    }
+    return _ok(settings);
+  }
+
   String _id(String prefix) => '$prefix-new${++_ids}';
 
   http.Response _assets(String method, List<String> seg, Map<String, dynamic> body) {
@@ -225,6 +333,9 @@ class AssetsBackend {
         transactionId: record ? 'tx-buy' : null,
         sort: assets.length,
       );
+      for (final key in kValuationKeys) {
+        if (body.containsKey(key)) row[key] = body[key];
+      }
       assets[row['id'] as String] = row;
       return _ok({'asset': row}, 201);
     }
@@ -350,13 +461,31 @@ class AssetsBackend {
       );
 }
 
-ProviderContainer bootAssets(AssetsBackend backend, {LocalStore? store}) =>
-    ProviderContainer(
+/// 已登录的会话：[role] 是 admin 还是 member（净资产开关只有管理员能动）。
+Future<SessionRepo> sessionAs(String role) async {
+  final secure = MemorySecureStore();
+  secure.data[SessionRepo.sessionKey] = jsonEncode({
+    'baseUrl': 'https://x.dev',
+    'token': 'tok',
+    'deviceId': 'dev',
+    'me': {'id': 'm1', 'username': 'mama', 'displayName': '妈妈', 'role': role},
+  });
+  final repo = SessionRepo(secure: secure);
+  await repo.restore();
+  return repo;
+}
+
+/// [session] 不给 = 没登录（不是管理员）。
+ProviderContainer bootAssets(
+  AssetsBackend backend, {
+  LocalStore? store,
+  SessionRepo? session,
+}) => ProviderContainer(
       overrides: [
         localStoreProvider.overrideWithValue(store ?? MemoryLocalStore()),
         secureStoreProvider.overrideWithValue(MemorySecureStore()),
         sessionRepoProvider.overrideWithValue(
-          SessionRepo(secure: MemorySecureStore()),
+          session ?? SessionRepo(secure: MemorySecureStore()),
         ),
         apiProvider.overrideWithValue(
           ApiClient(baseUrl: 'https://x.dev', token: 'tok', inner: backend.client),

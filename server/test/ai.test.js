@@ -623,3 +623,31 @@ test('短密钥不回显尾号：hasKey 仍为 true，keyTail 是空串', async 
   assert.ok(!list.text.includes('abc123'), '短密钥居然出现在列表里');
   assert.ok(!list.text.includes('sk-12345678'));
 });
+
+test('POST /ai/chat：财务上下文带一行实物估值，计入额跟着全局开关走；没有物品不写', async (t) => {
+  const up = await startFakeAnthropic({ key: ANT_KEY });
+  t.after(() => up.stop());
+  const h = await household(t);
+  await addProvider(h, antProvider(up));
+  const d = new Date();
+  const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const system = async () => {
+    const r = await sse(h.srv.base, '/ai/chat', { token: h.token, body: { messages: [{ role: 'user', content: '家里的东西值多少？' }] } });
+    assert.equal(r.status, 200, r.text);
+    return up.lastBody().system;
+  };
+
+  assert.ok(!(await system()).includes('【实物估值】'), '一件物品都没有就不写');
+
+  // 今天买的：估值 = 原价。数码按类别计入，家电不计入。
+  ok(await h.a.post('/assets', { name: '手机', category: 'digital', priceCents: 599900, purchasedOn: today }, h.auth), '手机');
+  ok(await h.a.post('/assets', { name: '冰箱', category: 'appliance', priceCents: 320000, purchasedOn: today }, h.auth), '冰箱');
+  const on = await system();
+  assert.ok(on.includes('【实物估值】¥9,199.00（计入 ¥5,999.00）'), on);
+  assert.ok(on.includes('【净资产】¥5,999.00'), '净资产里含计入的那部分');
+
+  ok(await h.a.patch('/settings', { assets: { netWorthIncludesPhysical: false } }, h.auth), '关掉全局开关');
+  const off = await system();
+  assert.ok(off.includes('【实物估值】¥9,199.00（计入 ¥0.00）'), off);
+  assert.ok(off.includes('【净资产】¥0.00'), off);
+});

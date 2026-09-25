@@ -7,8 +7,11 @@ import '../../data/repos/holdings_repo.dart';
 import 'asset_providers.dart';
 import 'invest_tab.dart';
 import 'items_tab.dart';
+import 'net_worth_strip.dart';
 
-/// 资产：「物品」看每天花多少，「投资」看市值和收益。
+/// 资产：顶上一行净资产总览，下面「物品」看每天花多少和估值，「投资」看市值和收益。
+///
+/// TabBar 放在页面里（不挂在 AppBar.bottom）：它上面的净资产总览能展开，高度不固定。
 ///
 /// 入口在首页的资产卡片和「我的」，不占底部导航。
 class AssetsPage extends ConsumerStatefulWidget {
@@ -99,17 +102,31 @@ class _AssetsPageState extends ConsumerState<AssetsPage>
             ),
           ),
         ],
-        bottom: TabBar(
-          controller: _tabs,
-          tabs: const [
-            Tab(text: '物品'),
-            Tab(text: '投资'),
+      ),
+      body: LayoutBuilder(
+        builder: (context, box) => Column(
+          children: [
+            // 手机横放、分屏时页面很矮：展开的明细最多占一半高，多出来的在总览里自己滚，
+            // 不把下面的 Tab 和列表挤没。
+            ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: box.maxHeight / 2),
+              child: const SingleChildScrollView(child: NetWorthStrip()),
+            ),
+            TabBar(
+              controller: _tabs,
+              tabs: const [
+                Tab(text: '物品'),
+                Tab(text: '投资'),
+              ],
+            ),
+            Expanded(
+              child: TabBarView(
+                controller: _tabs,
+                children: const [ItemsTab(), InvestTab()],
+              ),
+            ),
           ],
         ),
-      ),
-      body: TabBarView(
-        controller: _tabs,
-        children: const [ItemsTab(), InvestTab()],
       ),
     );
   }

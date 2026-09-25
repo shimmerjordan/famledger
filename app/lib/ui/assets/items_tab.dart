@@ -18,6 +18,7 @@ const Map<AssetSort, String> _sortLabels = {
   AssetSort.daily: '按日均',
   AssetSort.days: '按天数',
   AssetSort.price: '按价格',
+  AssetSort.value: '按估值',
 };
 
 /// 物品：每天花多少钱。在用/闲置在前，退役/卖出的收在后面。
@@ -35,6 +36,7 @@ class _ItemsTabState extends ConsumerState<ItemsTab> {
     Object? error;
     try {
       await ref.read(ledgerProvider.notifier).sync();
+      if (mounted) refreshNetWorth(ref);
     } catch (e) {
       error = e;
     }
@@ -53,7 +55,8 @@ class _ItemsTabState extends ConsumerState<ItemsTab> {
       child: LayoutBuilder(
         builder: (context, box) => AsyncValueView<LedgerData>(
           value: ledger,
-          loading: const SkeletonList(rows: 5),
+          // 骨架也放进可滚的列表：上面有净资产总览，矮屏（分屏、平板横放）时放不下 5 行。
+          loading: ListView(children: const [SkeletonList(rows: 5)]),
           onRetry: () => ref.invalidate(ledgerProvider),
           data: (data) {
             final assets = data.activeAssets;
@@ -147,13 +150,28 @@ class _Summary extends StatelessWidget {
                 : '在用和闲置 ${summary.count} 件 · 原价合计 ${Money.format(summary.priceCents)}',
             style: theme.textTheme.bodySmall,
           ),
+          if (!summary.isEmpty) ...[
+            const SizedBox(height: 2),
+            Text(
+              _valuationLine(summary),
+              key: const ValueKey('assets-valuation-summary'),
+              style: theme.textTheme.bodySmall,
+            ),
+          ],
         ],
       ),
     );
   }
 }
 
-/// 一件物品：分类图标、名字、用了几天、每天多少钱、状态。
+/// 「估值 ¥X · 已折旧 ¥Z」；手动估值抬过原价时改说「比原价高」，不写「已折旧 −¥…」。
+String _valuationLine(AssetSummary summary) {
+  final lost = summary.depreciationCents;
+  final tail = lost >= 0 ? '已折旧 ${Money.format(lost)}' : '比原价高 ${Money.format(-lost)}';
+  return '估值 ${Money.format(summary.valueCents)} · $tail';
+}
+
+/// 一件物品：分类图标、名字、用了几天、估值、每天多少钱、状态。
 class AssetTile extends StatelessWidget {
   const AssetTile({super.key, required this.asset, required this.now});
 
@@ -187,25 +205,38 @@ class AssetTile extends StatelessWidget {
       ),
       subtitle: Padding(
         padding: const EdgeInsets.only(top: 2),
-        child: Row(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Flexible(
-              child: Text(
-                days,
+            Row(
+              children: [
+                Flexible(
+                  child: Text(
+                    days,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ),
+                if (asset.status != Asset.statusInUse) ...[
+                  const SizedBox(width: 6),
+                  TagLabel(
+                    asset.statusLabel,
+                    tone: asset.status == Asset.statusIdle
+                        ? TagTone.warning
+                        : TagTone.neutral,
+                  ),
+                ],
+              ],
+            ),
+            // 卖掉、退役的估值归零、退出汇总，这一行不写（处置盈亏在详情页）。
+            if (asset.isHeld)
+              Text(
+                assetValueLine(asset, now),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: theme.textTheme.bodySmall,
               ),
-            ),
-            if (asset.status != Asset.statusInUse) ...[
-              const SizedBox(width: 6),
-              TagLabel(
-                asset.statusLabel,
-                tone: asset.status == Asset.statusIdle
-                    ? TagTone.warning
-                    : TagTone.neutral,
-              ),
-            ],
           ],
         ),
       ),

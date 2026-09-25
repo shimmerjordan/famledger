@@ -5,13 +5,14 @@ import 'package:go_router/go_router.dart';
 import '../../app/providers.dart';
 import '../../app/theme.dart';
 import '../../core/dates.dart';
+import '../../core/money.dart';
 import '../../data/models/models.dart';
 import '../widgets/widgets.dart';
 import 'asset_providers.dart';
 import 'asset_widgets.dart';
 import 'sell_sheet.dart';
 
-/// 物品详情：每天花多少、离预期还有多远；标记闲置、退役、卖出、编辑、删除。
+/// 物品详情：每天花多少、离预期还有多远、现在值多少；标记闲置、退役、卖出、编辑、删除。
 class AssetDetailPage extends ConsumerStatefulWidget {
   const AssetDetailPage(this.id, {super.key});
 
@@ -159,6 +160,7 @@ class _AssetDetailPageState extends ConsumerState<AssetDetailPage> {
               .copyWith(bottom: 96),
           children: [
             _Hero(asset: asset, usage: usage),
+            ..._valuation(context, asset, now),
             ..._details(context, asset, usage),
             const SizedBox(height: LedgerLayout.groupGap),
             Padding(
@@ -220,6 +222,101 @@ class _AssetDetailPageState extends ConsumerState<AssetDetailPage> {
       Asset.statusRetired => [back, sell],
       _ => [back],
     };
+  }
+
+  /// 估值卡（spec §5）：现在估值与较原价、怎么算的、1/2/3 年后、计入净资产；
+  /// 卖掉或退役的估值归零，只给处置盈亏（只展示，不记账）。
+  List<Widget> _valuation(BuildContext context, Asset asset, DateTime now) {
+    final theme = Theme.of(context);
+    Widget note(String text, {Key? key}) => Padding(
+      key: key,
+      padding: const EdgeInsets.fromLTRB(
+        LedgerLayout.pagePadding,
+        0,
+        LedgerLayout.pagePadding,
+        8,
+      ),
+      child: Text(text, style: theme.textTheme.bodySmall),
+    );
+
+    if (asset.isEnded) {
+      final gain = disposalGain(asset);
+      final endedAt = endedValue(asset);
+      if (gain == null || endedAt == null) return const [];
+      final at = Money.format(endedAt);
+      final String how;
+      if (asset.status == Asset.statusSold) {
+        how = '卖出价 − 卖出那天的估值 $at，只展示，不记账';
+      } else if (asset.saleCents == null) {
+        how = '退役没卖钱：少了退役那天的估值 $at，只展示，不记账';
+      } else {
+        how = '卖出价 − 退役那天的估值 $at，只展示，不记账';
+      }
+      return [
+        const SectionHeader('估值'),
+        InfoRow('处置盈亏', MoneyText(gain, signed: true)),
+        note(how),
+        const SizedBox(height: LedgerLayout.itemGap),
+      ];
+    }
+
+    final value = currentValue(asset, now);
+    final change = valueChangeLabel(value, asset.priceCents);
+    final stale = anchorStaleMonths(asset, now);
+    // 总开关的原始值在家庭设置里（有本地缓存）；还没拉到就按默认的「开」。
+    final switchOn =
+        ref.watch(settingsProvider).valueOrNull?.assets.netWorthIncludesPhysical ?? true;
+    // 不折旧的东西 1/2/3 年后还是这个数，不列。
+    final forecast = resolveValuation(asset).method == Asset.methodLocked
+        ? const <int>[]
+        : valueForecast(asset, now);
+    return [
+      const SectionHeader('估值'),
+      InfoRow(
+        '现在估值',
+        // 大字号时标签、较原价和金额放不下一行就折到下一行（Row 会溢出）。
+        Wrap(
+          alignment: WrapAlignment.end,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 6,
+          runSpacing: 4,
+          children: [
+            if (valuationUncertain(asset)) const TagLabel('估值不确定', tone: TagTone.warning),
+            if (change != null) Text(change, style: theme.textTheme.bodySmall),
+            MoneyText(value),
+          ],
+        ),
+      ),
+      note(valuationExplain(asset), key: const ValueKey('valuation-explain')),
+      // 一整句提醒会折行（长辈大字号也不丢字），后面直接给去改的入口。
+      if (stale != null)
+        Padding(
+          key: const ValueKey('valuation-stale'),
+          padding: const EdgeInsets.fromLTRB(LedgerLayout.pagePadding, 0, 8, 8),
+          child: Row(
+            children: [
+              Icon(Icons.update, size: 16, color: LedgerColors.of(context).warning),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text('估值已 $stale 个月没更新', style: theme.textTheme.bodySmall),
+              ),
+              TextButton(
+                onPressed: () => context.push('/assets/items/${asset.id}/edit'),
+                child: const Text('更新估值'),
+              ),
+            ],
+          ),
+        ),
+      for (var i = 0; i < forecast.length; i++)
+        InfoRow('${i + 1} 年后', MoneyText(forecast[i], muted: true)),
+      InfoRow('计入净资产', InfoText(netWorthLabel(asset, switchOn: switchOn))),
+      if (!switchOn && countsInNetWorth(asset))
+        note(
+          '资产页顶上净资产里的「实物计入净资产」关着，打开后这件就计入',
+          key: const ValueKey('valuation-networth-switch-off'),
+        ),
+      const SizedBox(height: LedgerLayout.itemGap),
+    ];
   }
 
   List<Widget> _details(BuildContext context, Asset asset, AssetUsage usage) {

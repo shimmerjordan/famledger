@@ -31,6 +31,7 @@ class _InvestTabState extends ConsumerState<InvestTab> {
     Object? error;
     try {
       await ref.read(ledgerProvider.notifier).sync();
+      if (mounted) refreshNetWorth(ref);
     } catch (e) {
       error = e;
     }
@@ -76,7 +77,8 @@ class _InvestTabState extends ConsumerState<InvestTab> {
       child: LayoutBuilder(
         builder: (context, box) => AsyncValueView<LedgerData>(
           value: ledger,
-          loading: const SkeletonList(rows: 5),
+          // 骨架也放进可滚的列表：上面有净资产总览，矮屏（分屏、平板横放）时放不下 5 行。
+          loading: ListView(children: const [SkeletonList(rows: 5)]),
           onRetry: () => ref.invalidate(ledgerProvider),
           data: (data) {
             final holdings = data.activeHoldings;

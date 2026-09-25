@@ -7,6 +7,9 @@
 // PATCH merges one level deep: a nested object is merged key-by-key, anything
 // else replaces. That is what the client needs (`{capture:{aiTrigger:'auto'}}`
 // must not wipe `defaultFundId`) and nothing here is deeper than two levels.
+//
+// `currentSettings(db)` is exported so stats.js can read `assets` (whether the
+// physical valuation counts towards net worth) without going through HTTP.
 
 const { sendJson } = require('../lib/router');
 const v = require('../lib/validate');
@@ -25,38 +28,44 @@ const DEFAULTS = {
   ui: {
     firstDayOfMonth: 1,
   },
+  // spec §2: physical items count towards net worth by default (per category,
+  // overridable per item); this is the household-wide switch.
+  assets: {
+    netWorthIncludesPhysical: true,
+  },
 };
+
+function storedSettings(db) {
+  try {
+    const raw = JSON.parse(db.meta('settings', '{}'));
+    return v.isObject(raw) ? raw : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Defaults ← stored blob ← the authoritative meta keys. */
+function currentSettings(db) {
+  const s = storedSettings(db);
+  return {
+    name: db.meta('household_name', DEFAULTS.name),
+    currency: db.meta('currency', DEFAULTS.currency),
+    capture: { ...DEFAULTS.capture, ...(v.isObject(s.capture) ? s.capture : {}) },
+    ui: { ...DEFAULTS.ui, ...(v.isObject(s.ui) ? s.ui : {}) },
+    assets: { ...DEFAULTS.assets, ...(v.isObject(s.assets) ? s.assets : {}) },
+  };
+}
 
 module.exports = (ctx) => {
   const { db } = ctx;
 
-  function stored() {
-    try {
-      const raw = JSON.parse(db.meta('settings', '{}'));
-      return v.isObject(raw) ? raw : {};
-    } catch {
-      return {};
-    }
-  }
-
-  /** Defaults ← stored blob ← the authoritative meta keys. */
-  function current() {
-    const s = stored();
-    return {
-      name: db.meta('household_name', DEFAULTS.name),
-      currency: db.meta('currency', DEFAULTS.currency),
-      capture: { ...DEFAULTS.capture, ...(v.isObject(s.capture) ? s.capture : {}) },
-      ui: { ...DEFAULTS.ui, ...(v.isObject(s.ui) ? s.ui : {}) },
-    };
-  }
-
   function read(req, res) {
-    sendJson(res, 200, current());
+    sendJson(res, 200, currentSettings(db));
   }
 
   function patch(req, res, reqCtx) {
     const b = v.body(reqCtx.body);
-    const next = current();
+    const next = currentSettings(db);
 
     if (b.name !== undefined) next.name = v.str(b.name, 'name', { max: 60 });
     if (b.currency !== undefined) {
@@ -80,13 +89,19 @@ module.exports = (ctx) => {
         next.ui.firstDayOfMonth = v.int(u.firstDayOfMonth, 'firstDayOfMonth', { min: 1, max: 28 });
       }
     }
+    if (b.assets !== undefined) {
+      const x = v.isObject(b.assets) ? b.assets : v.bad('assets', 'assets 必须是对象');
+      if (x.netWorthIncludesPhysical !== undefined) {
+        next.assets.netWorthIncludesPhysical = v.bool(x.netWorthIncludesPhysical, 'netWorthIncludesPhysical');
+      }
+    }
 
     db.tx(() => {
       db.setMeta('household_name', next.name);
       db.setMeta('currency', next.currency);
-      db.setMeta('settings', JSON.stringify({ capture: next.capture, ui: next.ui }));
+      db.setMeta('settings', JSON.stringify({ capture: next.capture, ui: next.ui, assets: next.assets }));
     });
-    sendJson(res, 200, current());
+    sendJson(res, 200, currentSettings(db));
   }
 
   return {
@@ -97,3 +112,5 @@ module.exports = (ctx) => {
     ],
   };
 };
+// Attached to the factory: the module loader only checks that the export is a function.
+module.exports.currentSettings = currentSettings;

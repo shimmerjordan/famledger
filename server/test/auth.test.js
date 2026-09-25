@@ -311,6 +311,7 @@ test('⑧ GET /settings 默认 currency:CNY；PATCH 深合并生效', async (t) 
       aiProviderId: null,
     },
     ui: { firstDayOfMonth: 1 },
+    assets: { netWorthIncludesPhysical: true },
   });
 
   const p = await a.patch('/settings', { capture: { autoConfirmThreshold: 0.8 } }, { token });
@@ -352,6 +353,37 @@ test('⑧ GET /settings 默认 currency:CNY；PATCH 深合并生效', async (t) 
   const badTrigger = await a.patch('/settings', { capture: { aiTrigger: 'sometimes' } }, { token });
   assert.equal(badTrigger.status, 400);
   assert.equal(badTrigger.json.error.code, 'invalid_aiTrigger');
+});
+
+// ⑧b --------------------------------------------------------------------
+test('⑧b settings.assets：实物默认计入净资产；PATCH 只收布尔、一层深合并；成员能读不能改', async (t) => {
+  const { a, token } = await bootstrapped(t);
+  assert.deepEqual((await a.get('/settings', { token })).json.assets, { netWorthIncludesPhysical: true });
+
+  const off = await a.patch('/settings', { assets: { netWorthIncludesPhysical: false } }, { token });
+  assert.equal(off.status, 200, off.text);
+  assert.equal(off.json.assets.netWorthIncludesPhysical, false);
+  assert.equal(off.json.capture.autoConfirmThreshold, 0.75, '改 assets 不碰 capture');
+  const ui = await a.patch('/settings', { ui: { firstDayOfMonth: 3 } }, { token });
+  assert.equal(ui.json.assets.netWorthIncludesPhysical, false, '改别的段不把 assets 冲回默认');
+  assert.equal((await a.get('/settings', { token })).json.assets.netWorthIncludesPhysical, false, '落库了');
+
+  for (const [body, code] of [
+    [{ assets: 'off' }, 'invalid_assets'],
+    [{ assets: { netWorthIncludesPhysical: 'nope' } }, 'invalid_netWorthIncludesPhysical'],
+  ]) {
+    const r = await a.patch('/settings', body, { token });
+    assert.equal(r.status, 400, `${JSON.stringify(body)} → ${r.text}`);
+    assert.equal(r.json.error.code, code);
+  }
+
+  const made = await a.post('/members', { username: 'xiaohong', password: 'hunter22', displayName: '小红', role: 'member' }, { token });
+  assert.equal(made.status, 201, made.text);
+  const memberToken = (await a.post('/auth/login', { username: 'xiaohong', password: 'hunter22' })).json.token;
+  assert.equal((await a.get('/settings', { token: memberToken })).json.assets.netWorthIncludesPhysical, false, '成员能读');
+  const denied = await a.patch('/settings', { assets: { netWorthIncludesPhysical: true } }, { token: memberToken });
+  assert.equal(denied.status, 403, denied.text);
+  assert.equal((await a.get('/settings', { token })).json.assets.netWorthIncludesPhysical, false, '被拒的 PATCH 不落库');
 });
 
 // misc contract ---------------------------------------------------------

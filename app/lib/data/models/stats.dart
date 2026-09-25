@@ -11,8 +11,12 @@ class StatsOverview {
     this.pendingCount = 0,
     this.funds = const [],
     this.accounts = const [],
+    this.investMarketCents,
+    this.netWorthExPhysicalCents,
+    this.physical,
   });
 
+  /// 按家庭设置含不含实物，由服务端 stats.js 决定。
   final int netWorthCents;
   final int assetsCents;
   final int liabilitiesCents;
@@ -20,6 +24,22 @@ class StatsOverview {
   final int pendingCount;
   final List<FundBalance> funds;
   final List<AccountBalance> accounts;
+
+  /// 持仓总市值（stats.js 一直给；缺了是 null）。净资产总览拿它说清「投资（账户外）」
+  /// 为什么比市值小：挂了账户的持仓成本已经在账户余额里。
+  final int? investMarketCents;
+
+  /// 不含实物的净资产；老服务端不给时是 null。
+  final int? netWorthExPhysicalCents;
+
+  /// 实物估值汇总；老服务端不给时是 null（净资产条就不写实物那段、也没有开关）。
+  final PhysicalSummary? physical;
+
+  /// 账户余额合计（信用卡欠款是负数，已经减掉了）。
+  int get accountsNetCents => accounts.fold<int>(0, (sum, a) => sum + a.balanceCents);
+
+  /// 投资对净资产的贡献 = 不含实物的净资产 − 账户合计（挂了账户的持仓只补浮盈，口径在 stats.js）。
+  int get investNetCents => (netWorthExPhysicalCents ?? netWorthCents) - accountsNetCents;
 
   int fundBalance(String fundId) {
     for (final f in funds) {
@@ -43,6 +63,11 @@ class StatsOverview {
     pendingCount: jsonInt(json['pendingCount']),
     funds: jsonList(json['funds'], FundBalance.fromJson),
     accounts: jsonList(json['accounts'], AccountBalance.fromJson),
+    investMarketCents: jsonIntOrNull(json['investMarketCents']),
+    netWorthExPhysicalCents: jsonIntOrNull(json['netWorthExPhysicalCents']),
+    physical: json['physical'] is Map
+        ? PhysicalSummary.fromJson(jsonMap(json['physical']))
+        : null,
   );
 
   Map<String, dynamic> toJson() => {
@@ -53,6 +78,45 @@ class StatsOverview {
     'pendingCount': pendingCount,
     'funds': funds.map((e) => e.toJson()).toList(),
     'accounts': accounts.map((e) => e.toJson()).toList(),
+    if (investMarketCents != null) 'investMarketCents': investMarketCents,
+    if (netWorthExPhysicalCents != null)
+      'netWorthExPhysicalCents': netWorthExPhysicalCents,
+    if (physical != null) 'physical': physical!.toJson(),
+  };
+}
+
+/// `physical`：实物估值合计、按单件/类别「该计入」的部分、件数、全局开关开没开（spec §3）。
+class PhysicalSummary {
+  const PhysicalSummary({
+    this.valueCents = 0,
+    this.includedCents = 0,
+    this.count = 0,
+    this.counted = true,
+  });
+
+  final int valueCents;
+
+  /// 按单件三态和类别默认该计入的估值；[counted] 为假时它不进净资产。
+  final int includedCents;
+
+  /// 在用 + 闲置、未归档的件数。
+  final int count;
+
+  /// 家庭设置 `assets.netWorthIncludesPhysical`。
+  final bool counted;
+
+  factory PhysicalSummary.fromJson(Map<String, dynamic> json) => PhysicalSummary(
+    valueCents: jsonInt(json['valueCents']),
+    includedCents: jsonInt(json['includedCents']),
+    count: jsonInt(json['count']),
+    counted: jsonBool(json['counted'], true),
+  );
+
+  Map<String, dynamic> toJson() => {
+    'valueCents': valueCents,
+    'includedCents': includedCents,
+    'count': count,
+    'counted': counted,
   };
 }
 

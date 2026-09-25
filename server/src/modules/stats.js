@@ -21,6 +21,11 @@
 //      只补浮盈（市值 − 成本）；没挂账户的整份市值计入。只算有价格、未归档未删除、
 //      份额 > 0 的持仓。「成本已在余额里」这个前提由 holdings.js 守着（有成本的持仓
 //      挂账户必须同时记转账、换账户补移仓转账、不许直接解绑），这里只管照算。
+//   5. **实物估值进净资产**：物品估值按 lib/valuation.js 现算，只算未归档、在用或闲置的。
+//      按单件三态和类别默认「该计入」的部分是 `physical.includedCents`；家庭设置
+//      `assets.netWorthIncludesPhysical` 开着（`physical.counted`）才加进资产一侧，
+//      「净资产 = 资产 − 负债」照样成立。`netWorthExPhysicalCents` 永远不含实物，
+//      App 的净资产总览靠它分项。
 //
 // 四个 `compute*` 是纯函数（只读 db、返回可直接 JSON 化的对象），AI 模块直接
 // require 过去拼上下文，不用绕一圈 HTTP：
@@ -35,6 +40,8 @@ const { HttpError, sendJson } = require('../lib/router');
 const { rowToJson } = require('../lib/db');
 const v = require('../lib/validate');
 const sql = require('../lib/stats_sql');
+const valuation = require('../lib/valuation');
+const settings = require('./settings');
 
 const TREND_DEFAULT_MONTHS = 12;
 const TREND_MAX_MONTHS = 60;
@@ -101,6 +108,18 @@ function budgetFor(db, month, scope, refId) {
 }
 
 /**
+ * 实物估值汇总（口径见文件头第 5 条）。`counted` 是家庭设置里的全局开关。
+ * @returns {{valueCents: number, includedCents: number, count: number, counted: boolean}}
+ */
+function physicalOverview(db) {
+  const rows = db.all('SELECT * FROM assets WHERE deleted_at IS NULL AND archived = 0').map((r) => rowToJson(r));
+  return {
+    ...valuation.summarizePhysical(rows, valuation.localToday()),
+    counted: settings.currentSettings(db).assets.netWorthIncludesPhysical !== false,
+  };
+}
+
+/**
  * 首页要的全部数字：净资产、本月聚合、待确认笔数、每个账户与基金的余额。
  * @param {object} db lib/db.js 的句柄
  * @param {string} [month] `YYYY-MM`，默认服务器本地时区的当前月
@@ -140,6 +159,10 @@ function computeOverview(db, month = currentMonth()) {
     assetsCents += p.accountId && liveAccounts.has(p.accountId) ? p.marketCents - p.costCents : p.marketCents;
   }
 
+  const netWorthExPhysicalCents = assetsCents - liabilitiesCents;
+  const physical = physicalOverview(db);
+  if (physical.counted) assetsCents += physical.includedCents;
+
   const totals = sql.monthSums(db, month);
   const fundSpent = new Map(sql.expenseByColumn(db, month, 'fund_id').map((r) => [r.ref, r.expenseCents]));
   const categorySpent = new Map(sql.expenseByColumn(db, month, 'category_id').map((r) => [r.ref, r.expenseCents]));
@@ -175,6 +198,8 @@ function computeOverview(db, month = currentMonth()) {
     investMarketCents,
     investCostCents,
     investGainCents: investMarketCents - investCostCents,
+    netWorthExPhysicalCents,
+    physical,
     month: {
       expenseCents: totals.expenseCents,
       incomeCents: totals.incomeCents,

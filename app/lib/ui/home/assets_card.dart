@@ -4,12 +4,14 @@ import 'package:go_router/go_router.dart';
 
 import '../../app/providers.dart';
 import '../../app/theme.dart';
+import '../../core/money.dart';
 import '../../data/models/models.dart';
 import '../assets/asset_providers.dart';
 import '../assets/asset_widgets.dart';
 import '../widgets/widgets.dart';
 
-/// 首页的「资产」：物品每天花多少、投资值多少今天涨跌多少。
+/// 首页的「资产」：物品每天花多少（副标题是估值合计）、投资值多少今天涨跌多少。
+/// 不加第三格、不放净资产的大数字：净资产只在资产页顶上（spec §5）。
 ///
 /// 两边都还没记时只留一行入口，不占首页的地方。不套 Card：DESIGN.md 只把卡片留给
 /// 基金横滑和待确认，这里跟本月合计一样用并排的两格。
@@ -150,11 +152,7 @@ class AssetsHomeCard extends ConsumerWidget {
   static String _itemsNote(bool recorded, AssetSummary items) {
     if (!recorded) return '点这里记一件';
     if (items.isEmpty) return '都退役或卖掉了';
-    final inUse = items.count - items.idleCount;
-    return [
-      if (inUse > 0) '$inUse 件在用',
-      if (items.idleCount > 0) '${items.idleCount} 件闲置',
-    ].join(' · ');
+    return '估值 ${Money.format(items.valueCents)}';
   }
 }
 

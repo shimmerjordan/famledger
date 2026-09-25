@@ -464,3 +464,63 @@ test('fundStats.recent 与 GET /transactions?fundId= 逐字段一致（同一个
       `${name}：recent 必须就是 GET /transactions 的那一页（Task 2 的过滤也匹配 to_fund_id）`);
   }
 });
+
+// ---------------------------------------------------------------- 实物估值（P1）
+
+const pad2 = (n) => String(n).padStart(2, '0');
+/** 本地今天；helpers.js 已把本进程钉在 Asia/Shanghai，和子进程一致。 */
+function localToday() {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+test('overview.physical：估值合计与计入额；全局开关开和关净资产不同；卖出后估值归零、不重复计', async (t) => {
+  const h = await household(t);
+  const { a, auth, account } = h;
+  const today = localToday();
+
+  const empty = await getStats(h, `/stats/overview?month=${MONTH}`);
+  assert.deepEqual(empty.physical, { valueCents: 0, includedCents: 0, count: 0, counted: true });
+  assert.equal(empty.netWorthExPhysicalCents, 0);
+
+  ok(await a.patch(`/accounts/${account.id}`, { initialBalanceCents: 1000000 }, auth), 'PATCH 账户');
+  // 都是今天买的（估值 = 原价）或锁定在手动估值上：数字不随跑测试的日子变。
+  const phone = ok(await a.post('/assets', { name: '手机', category: 'digital', priceCents: 599900, purchasedOn: today }, auth), '手机').asset;
+  ok(await a.post('/assets', { name: '冰箱', category: 'appliance', priceCents: 320000, purchasedOn: today }, auth), '冰箱：按类别不计入');
+  ok(await a.post('/assets', { name: '金镯子', category: 'jewelry', priceCents: 1000000, purchasedOn: '2020-05-01', manualValueCents: 1200000, manualValueOn: today }, auth), '金镯子：锁定在锚点');
+  ok(await a.post('/assets', { name: '钢琴', category: 'furniture', priceCents: 2000000, purchasedOn: today, netWorth: 'include' }, auth), '钢琴：单件计入');
+  ok(await a.post('/assets', { name: '旧平板', category: 'digital', priceCents: 100000, purchasedOn: today, netWorth: 'exclude' }, auth), '旧平板：单件不计入');
+  ok(await a.post('/assets', { name: '闲置耳机', category: 'digital', priceCents: 50000, purchasedOn: today, status: 'idle' }, auth), '闲置照算');
+  ok(await a.post('/assets', { name: '收起来的相机', category: 'digital', priceCents: 500000, purchasedOn: today, archived: true }, auth), '归档不算');
+  const gone = ok(await a.post('/assets', { name: '删掉的', category: 'digital', priceCents: 700000, purchasedOn: today }, auth), '删掉不算').asset;
+  ok(await a.del(`/assets/${gone.id}`, auth), 'DELETE');
+
+  const o = await getStats(h, `/stats/overview?month=${MONTH}`);
+  assert.deepEqual(o.physical, {
+    valueCents: 599900 + 320000 + 1200000 + 2000000 + 100000 + 50000,
+    includedCents: 599900 + 1200000 + 2000000 + 50000,
+    count: 6,
+    counted: true,
+  });
+  assert.equal(o.netWorthExPhysicalCents, 1000000);
+  assert.equal(o.netWorthCents, 1000000 + 3849900);
+  assert.equal(o.assetsCents - o.liabilitiesCents, o.netWorthCents, '净资产 = 资产 − 负债 的恒等式不破');
+
+  ok(await a.patch('/settings', { assets: { netWorthIncludesPhysical: false } }, auth), '关掉全局开关');
+  const off = await getStats(h, `/stats/overview?month=${MONTH}`);
+  assert.equal(off.physical.counted, false);
+  assert.equal(off.physical.includedCents, 3849900, '计入额照给：App 要写「不含」的是多少');
+  assert.equal(off.netWorthCents, 1000000);
+  assert.equal(off.netWorthExPhysicalCents, 1000000);
+  assert.equal(off.assetsCents - off.liabilitiesCents, off.netWorthCents);
+  ok(await a.patch('/settings', { assets: { netWorthIncludesPhysical: true } }, auth), '再打开');
+
+  // 卖掉手机、卖出款进账户：手机的估值退出汇总，这笔钱只在账户里算一次。
+  ok(await a.post(`/assets/${phone.id}/sell`, { saleCents: 500000, endedOn: today, recordTransaction: { accountId: account.id } }, auth), '卖出');
+  const sold = await getStats(h, `/stats/overview?month=${MONTH}`);
+  assert.equal(sold.physical.valueCents, 4269900 - 599900);
+  assert.equal(sold.physical.includedCents, 3849900 - 599900);
+  assert.equal(sold.physical.count, 5);
+  assert.equal(sold.netWorthExPhysicalCents, 1500000);
+  assert.equal(sold.netWorthCents, 1500000 + 3250000);
+});

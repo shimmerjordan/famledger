@@ -7,6 +7,7 @@ export 'account.dart';
 export 'ai.dart';
 export 'asset.dart';
 export 'asset_math.dart';
+export 'asset_valuation.dart';
 export 'backup.dart';
 export 'budget.dart';
 export 'category.dart';

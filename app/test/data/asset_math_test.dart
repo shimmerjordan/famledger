@@ -351,4 +351,38 @@ void main() {
       expect(formatRate(0), '0.00%');
     });
   });
+
+  group('估值汇总与按估值排序（spec §3，和日均是两套数）', () {
+    const phone = Asset(id: 'p', name: 'p', category: 'digital', priceCents: 599900, purchasedOn: '2026-09-01');
+    const washer = Asset(
+      id: 'w', name: 'w', category: 'appliance', priceCents: 320000, purchasedOn: '2026-01-01', status: Asset.statusIdle,
+    );
+
+    test('只算在用和闲置：估值合计、已折旧 = 原价合计 − 估值合计', () {
+      const sold = Asset(
+        id: 's', name: 's', category: 'digital', priceCents: 300000, purchasedOn: '2026-01-01',
+        status: Asset.statusSold, endedOn: '2026-09-10', saleCents: 80000,
+      );
+      const hidden = Asset(id: 'h', name: 'h', category: 'digital', priceCents: 999900, purchasedOn: '2026-09-01', archived: true);
+      final s = summarizeAssets([phone, washer, sold, hidden], now);
+      expect(s.priceCents, 919900);
+      expect(s.valueCents, closeTo(589588 + 292411, 2));
+      expect(s.depreciationCents, closeTo(919900 - 881999, 2));
+    });
+
+    test('手动估值高过原价：已折旧是负数', () {
+      const bracelet = Asset(
+        id: 'b', name: 'b', category: 'jewelry', priceCents: 1000000, purchasedOn: '2020-05-01',
+        manualValueCents: 1200000, manualValueOn: '2025-08-01',
+      );
+      expect(summarizeAssets([bracelet], now).depreciationCents, -200000);
+    });
+
+    test('按估值从大到小（和按价格不一样）', () {
+      // 过了 8 年的冰箱：估值停在 5% = 35000。
+      const fridge = Asset(id: 'f', name: 'f', category: 'appliance', priceCents: 700000, purchasedOn: '2016-01-01');
+      expect(sortAssets([fridge, phone], AssetSort.value, now).map((a) => a.id), ['p', 'f']);
+      expect(sortAssets([fridge, phone], AssetSort.price, now).map((a) => a.id), ['f', 'p']);
+    });
+  });
 }

@@ -21,6 +21,50 @@ class AssetRecord {
   }
 }
 
+/// 物品的估值设置（spec §2 那几个字段）。折率、残值为 null = 跟随类别；手动估值的金额和日期
+/// 服务端要求成对，清也要一起清。
+class ValuationInput {
+  const ValuationInput({
+    this.method = Asset.methodAuto,
+    this.rateBp,
+    this.residualBp,
+    this.manualValueCents,
+    this.manualValueOn,
+    this.netWorth = Asset.netWorthAuto,
+  });
+
+  final String method;
+  final int? rateBp;
+  final int? residualBp;
+  final int? manualValueCents;
+
+  /// `YYYY-MM-DD`
+  final String? manualValueOn;
+  final String netWorth;
+
+  /// 新建：只带改过的，没改的交给服务端默认（请求体和以前一样干净）。
+  Map<String, dynamic> toCreateJson() {
+    final json = <String, dynamic>{};
+    if (method != Asset.methodAuto) json['valuationMethod'] = method;
+    putIfNotNull(json, 'rateBp', rateBp);
+    putIfNotNull(json, 'residualBp', residualBp);
+    putIfNotNull(json, 'manualValueCents', manualValueCents);
+    putIfNotNull(json, 'manualValueOn', manualValueOn);
+    if (netWorth != Asset.netWorthAuto) json['netWorth'] = netWorth;
+    return json;
+  }
+
+  /// 编辑：六个键都带上，null 就是清掉。
+  Map<String, dynamic> toPatchJson() => {
+    'valuationMethod': method,
+    'rateBp': rateBp,
+    'residualBp': residualBp,
+    'manualValueCents': manualValueCents,
+    'manualValueOn': manualValueOn,
+    'netWorth': netWorth,
+  };
+}
+
 /// 物品的增删改、状态流转与卖出（`server/src/modules/assets.js`）。
 ///
 /// 写成功后先把服务端回的那行落进 [LedgerRepo]，再做一次增量同步：
@@ -36,6 +80,7 @@ class AssetsRepo {
   /// [record] 非空 = 同时记一笔支出（买价为 0 时服务端会忽略）。
   ///
   /// [clientId] 是幂等键：同一张表单重试时沿用同一个，回应丢了再发也只建一件、只记一笔。
+  /// [valuation] 只带改过的估值字段（[ValuationInput.toCreateJson]）。
   Future<Asset> create({
     required String name,
     required String category,
@@ -43,6 +88,7 @@ class AssetsRepo {
     required String purchasedOn,
     int? expectedDays,
     String? note,
+    ValuationInput? valuation,
     AssetRecord? record,
     String? clientId,
   }) async {
@@ -54,12 +100,13 @@ class AssetsRepo {
     };
     putIfNotNull(body, 'expectedDays', expectedDays);
     if (note != null && note.isNotEmpty) body['note'] = note;
+    if (valuation != null) body.addAll(valuation.toCreateJson());
     if (record != null) body['recordTransaction'] = record.toJson();
     putIfNotNull(body, 'clientId', clientId);
     return _apply(await _api.post('/assets', body));
   }
 
-  /// 编辑基本信息。预期天数、备注传 null 就是清掉。
+  /// 编辑基本信息。预期天数、备注传 null 就是清掉；给了 [valuation] 就把六个估值字段全带上。
   Future<Asset> edit(
     String id, {
     required String name,
@@ -68,6 +115,7 @@ class AssetsRepo {
     required String purchasedOn,
     int? expectedDays,
     String? note,
+    ValuationInput? valuation,
   }) => update(id, {
     'name': name,
     'category': category,
@@ -75,6 +123,7 @@ class AssetsRepo {
     'purchasedOn': purchasedOn,
     'expectedDays': expectedDays,
     'note': note == null || note.isEmpty ? null : note,
+    ...?valuation?.toPatchJson(),
   });
 
   Future<Asset> update(String id, Map<String, dynamic> patch) async =>

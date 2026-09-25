@@ -120,7 +120,8 @@ void main() {
     expect(find.byKey(const ValueKey('assets-card')), findsOneWidget);
     expect(find.text('物品每天'), findsOneWidget);
     expect(find.text('¥272.86/天', findRichText: true), findsOneWidget);
-    expect(find.text('1 件在用 · 1 件闲置'), findsOneWidget);
+    // 副标题是估值合计：iPhone ¥5,895.88 + 洗衣机（数码，闲置也算）¥2,596.82。
+    expect(find.text('估值 ¥8,492.70'), findsOneWidget);
     expect(find.text('投资市值'), findsOneWidget);
     expect(find.text('¥151,200.00'), findsOneWidget);
     expect(find.text('+¥1,100.00'), findsOneWidget);
@@ -149,10 +150,10 @@ void main() {
     expect(find.text('¥151,200.00'), findsOneWidget);
   });
 
-  testWidgets('闲置的不算「在用」', (tester) async {
+  testWidgets('副标题是估值合计：闲置的也算进去，不再数几件在用', (tester) async {
     await pumpHome(tester, LedgerData(assets: [someAssets[1]]));
 
-    expect(find.text('1 件闲置'), findsOneWidget);
+    expect(find.text('估值 ¥2,596.82'), findsOneWidget);
     expect(find.textContaining('在用'), findsNothing);
   });
 

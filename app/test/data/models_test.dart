@@ -351,6 +351,49 @@ void main() {
       expect(o.fundBalance('nope'), 0);
     });
 
+    test('StatsOverview：physical 与不含实物的净资产；分项按账户合计推出投资', () {
+      final o = StatsOverview.fromJson({
+        'netWorthCents': 1621588,
+        'assetsCents': 1641588,
+        'liabilitiesCents': 20000,
+        'month': <String, dynamic>{},
+        'accounts': [
+          {'accountId': 'bank', 'balanceCents': 1000000},
+          {'accountId': 'wx', 'balanceCents': -20000},
+        ],
+        'investMarketCents': 1512000,
+        'netWorthExPhysicalCents': 1032000,
+        'physical': {'valueCents': 881999, 'includedCents': 589588, 'count': 2, 'counted': true},
+      });
+      expect(o.netWorthExPhysicalCents, 1032000);
+      expect(o.investMarketCents, 1512000);
+      expect(o.physical!.valueCents, 881999);
+      expect(o.physical!.includedCents, 589588);
+      expect(o.physical!.count, 2);
+      expect(o.physical!.counted, isTrue);
+      expect(o.accountsNetCents, 980000);
+      expect(o.investNetCents, 52000);
+      expect(StatsOverview.fromJson(o.toJson()).physical!.includedCents, 589588);
+      expect(StatsOverview.fromJson(o.toJson()).investMarketCents, 1512000);
+    });
+
+    test('StatsOverview：老服务端没给 physical —— 是 null，投资按净资产 − 账户推', () {
+      final old = StatsOverview.fromJson({
+        'netWorthCents': 1032000,
+        'assetsCents': 1032000,
+        'liabilitiesCents': 0,
+        'month': <String, dynamic>{},
+        'accounts': [
+          {'accountId': 'bank', 'balanceCents': 980000},
+        ],
+      });
+      expect(old.physical, isNull);
+      expect(old.netWorthExPhysicalCents, isNull);
+      expect(old.investMarketCents, isNull);
+      expect(old.investNetCents, 52000);
+      expect(old.toJson().containsKey('physical'), isFalse);
+    });
+
     test('TrendSeries 解析', () {
       final t = TrendSeries.fromJson({
         'series': [
@@ -405,6 +448,7 @@ void main() {
           'allowedApps': ['com.tencent.mm'],
         },
         'ui': {'firstDayOfMonth': 1},
+        'assets': {'netWorthIncludesPhysical': false},
       };
       final s = Settings.fromJson(json);
       expect(s.capture.autoConfirmThreshold, 0.75);
@@ -412,6 +456,7 @@ void main() {
       expect(s.capture.aiAutoConfirm, isTrue);
       expect(s.capture.aiProviderId, 'prov-1');
       expect(s.ui.firstDayOfMonth, 1);
+      expect(s.assets.netWorthIncludesPhysical, isFalse);
       expect(s.toJson(), json);
 
       final empty = Settings.fromJson({});
@@ -422,6 +467,7 @@ void main() {
       expect(empty.capture.aiProviderId, isNull);
       expect(empty.capture.allowedApps, isEmpty);
       expect(empty.ui.firstDayOfMonth, 1);
+      expect(empty.assets.netWorthIncludesPhysical, isTrue, reason: '老服务端没有 assets 段：实物默认计入');
     });
   });
 

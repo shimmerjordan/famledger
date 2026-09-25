@@ -18,6 +18,8 @@ const Map<String, IconData> kAssetCategoryIcons = {
   'furniture': Icons.chair_outlined,
   'clothing': Icons.checkroom_outlined,
   'vehicle': Icons.directions_car_outlined,
+  'luxury': Icons.shopping_bag_outlined,
+  'jewelry': Icons.diamond_outlined,
   'sports': Icons.sports_basketball_outlined,
   'other': Icons.inventory_2_outlined,
 };
@@ -120,6 +122,14 @@ class DailyMoney extends StatelessWidget {
 
 String dailyLabel(double cents, {bool signed = false}) =>
     '${Money.format(cents.round(), signed: signed)}/天';
+
+/// 列表行第二行：「估值 ¥5,895.88 · −2%」；较原价不到 1%（或原价 0）只写估值。
+String assetValueLine(Asset asset, DateTime now) {
+  final value = currentValue(asset, now);
+  final change = valueChangeLabel(value, asset.priceCents);
+  final head = '估值 ${Money.format(value)}';
+  return change == null ? head : '$head · $change';
+}
 
 /// 详情页里的一行「名目 …… 数」。
 class InfoRow extends StatelessWidget {
@@ -370,6 +380,16 @@ int? parseMoneyField(String text) {
   if (t.isEmpty) return null;
   final cents = Money.tryParse(t);
   return cents == null || cents < 0 ? -1 : cents;
+}
+
+/// 表单里的百分数：空 = null（跟随类别），填错或超出 0~[maxBp] 基点 = -1。`12.5`、`12.5%` 都认。
+int? parsePercentBp(String text, {required int maxBp}) {
+  final t = text.replaceAll('%', '').replaceAll('％', '').trim();
+  if (t.isEmpty) return null;
+  final pct = double.tryParse(t);
+  if (pct == null || !pct.isFinite || pct < 0) return -1;
+  final bp = (pct * 100).round();
+  return bp > maxBp ? -1 : bp;
 }
 
 /// 开仓、加减仓、记物品、卖物品失败时给用户的话。

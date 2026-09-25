@@ -380,3 +380,130 @@ test('幂等：同一个 clientId 重发新建/卖出只算一次（回应丢了
   assert.equal(r.status, 409, r.text);
   assert.equal(r.json.error.code, 'client_id_reused');
 });
+
+// ---------------------------------------------------------------- 估值字段（P1）
+
+const VALUATION_KEYS = ['valuationMethod', 'rateBp', 'residualBp', 'manualValueCents', 'manualValueOn', 'netWorth'];
+const valuationOf = (asset) => Object.fromEntries(VALUATION_KEYS.map((k) => [k, asset[k]]));
+
+test('估值字段：默认 auto / null，可写可清；新类别 luxury、jewelry 可用；手动估值可以高于原价', async (t) => {
+  const { a, auth } = await household(t);
+  const phone = (await a.post('/assets', PHONE, auth)).json.asset;
+  assert.deepEqual(valuationOf(phone), {
+    valuationMethod: 'auto', rateBp: null, residualBp: null, manualValueCents: null, manualValueOn: null, netWorth: 'auto',
+  });
+
+  const set = await a.patch(`/assets/${phone.id}`, {
+    valuationMethod: 'declining', rateBp: 2000, residualBp: 1000,
+    manualValueCents: 700000, manualValueOn: '2026-01-01', netWorth: 'exclude',
+  }, auth);
+  assert.equal(set.status, 200, set.text);
+  assert.deepEqual(valuationOf(set.json.asset), {
+    valuationMethod: 'declining', rateBp: 2000, residualBp: 1000, manualValueCents: 700000, manualValueOn: '2026-01-01', netWorth: 'exclude',
+  });
+  const note = await a.patch(`/assets/${phone.id}`, { note: '换了壳' }, auth);
+  assert.equal(note.json.asset.manualValueOn, '2026-01-01', '无关的 PATCH 不动锚点');
+
+  const cleared = await a.patch(`/assets/${phone.id}`, {
+    valuationMethod: null, rateBp: null, residualBp: null, manualValueCents: null, manualValueOn: null, netWorth: null,
+  }, auth);
+  assert.equal(cleared.status, 200, cleared.text);
+  assert.deepEqual(valuationOf(cleared.json.asset), {
+    valuationMethod: 'auto', rateBp: null, residualBp: null, manualValueCents: null, manualValueOn: null, netWorth: 'auto',
+  });
+
+  for (const category of ['luxury', 'jewelry']) {
+    const r = await a.post('/assets', { ...PHONE, name: category, category }, auth);
+    assert.equal(r.status, 201, r.text);
+    assert.equal(r.json.asset.category, category);
+  }
+});
+
+test('估值字段校验：非法一律 400；锚点金额和日期成对，日期不早于买入、不晚于今天', async (t) => {
+  const { a, auth } = await household(t);
+  const cases = [
+    [{ ...PHONE, valuationMethod: 'fifo' }, 'invalid_valuationMethod'],
+    [{ ...PHONE, rateBp: -1 }, 'invalid_rateBp'],
+    [{ ...PHONE, rateBp: 9001 }, 'invalid_rateBp'],
+    [{ ...PHONE, rateBp: 12.5 }, 'invalid_rateBp'],
+    [{ ...PHONE, residualBp: 10001 }, 'invalid_residualBp'],
+    [{ ...PHONE, netWorth: 'yes' }, 'invalid_netWorth'],
+    [{ ...PHONE, netWorth: true }, 'invalid_netWorth'],
+    [{ ...PHONE, manualValueCents: -1, manualValueOn: '2026-01-01' }, 'invalid_manualValueCents'],
+    [{ ...PHONE, manualValueCents: 100000 }, 'invalid_manualValueOn'],
+    [{ ...PHONE, manualValueOn: '2026-01-01' }, 'invalid_manualValueCents'],
+    [{ ...PHONE, manualValueCents: 100000, manualValueOn: '2026/1/1' }, 'invalid_manualValueOn'],
+    [{ ...PHONE, manualValueCents: 100000, manualValueOn: '2026-02-30' }, 'invalid_manualValueOn'],
+    [{ ...PHONE, manualValueCents: 100000, manualValueOn: localDay(1) }, 'invalid_manualValueOn'],
+    [{ ...PHONE, manualValueCents: 100000, manualValueOn: '2025-02-28' }, 'invalid_manualValueOn'],
+  ];
+  for (const [body, code] of cases) {
+    const r = await a.post('/assets', body, auth);
+    assert.equal(r.status, 400, `${JSON.stringify(body)} → ${r.status} ${r.text}`);
+    assert.equal(r.json.error.code, code, JSON.stringify(body));
+  }
+  assert.deepEqual((await a.get('/assets', auth)).json.items, [], '校验失败一条都不落库');
+
+  const made = await a.post('/assets', { ...PHONE, manualValueCents: 100000, manualValueOn: PHONE.purchasedOn }, auth);
+  assert.equal(made.status, 201, `买入当天估的可以：${made.text}`);
+  const id = made.json.asset.id;
+
+  // PATCH 比的是「旧行 + 本次改动」合并后的样子。
+  const half = await a.patch(`/assets/${id}`, { manualValueCents: null }, auth);
+  assert.equal(half.status, 400, half.text);
+  assert.equal(half.json.error.code, 'invalid_manualValueCents', '只清一列等于留下半个锚点');
+  const moved = await a.patch(`/assets/${id}`, { purchasedOn: '2025-04-01' }, auth);
+  assert.equal(moved.status, 400, moved.text);
+  assert.equal(moved.json.error.code, 'invalid_purchasedOn', '买入日期不能挪到估值日期之后');
+  const kept = (await a.get('/assets', auth)).json.items[0];
+  assert.equal(kept.manualValueCents, 100000);
+  assert.equal(kept.purchasedOn, '2025-03-01');
+});
+
+test('/changes 带上估值字段（别的设备靠它同步）', async (t) => {
+  const { a, auth } = await household(t);
+  const before = (await a.get('/changes?since=0', auth)).json;
+  await a.post('/assets', {
+    ...PHONE, valuationMethod: 'locked', manualValueCents: 650000, manualValueOn: '2026-01-01', netWorth: 'include',
+  }, auth);
+  const row = (await a.get(`/changes?since=${before.next}`, auth)).json.assets[0];
+  assert.deepEqual(valuationOf(row), {
+    valuationMethod: 'locked', rateBp: null, residualBp: null, manualValueCents: 650000, manualValueOn: '2026-01-01', netWorth: 'include',
+  });
+});
+
+test('旧库（001–004）重开：补上估值列（老行按 auto、seq 不动）和 idx_holdings_seq', () => {
+  const { openDb } = require('../src/lib/db');
+  const dir = tmpDir('valuation-migrate');
+  const oldSql = tmpDir('valuation-sql');
+  const sqlDir = path.join(__dirname, '..', 'src', 'sql');
+  for (const f of fs.readdirSync(sqlDir).filter((x) => /^00[1-4]_.+\.sql$/.test(x))) {
+    fs.copyFileSync(path.join(sqlDir, f), path.join(oldSql, f));
+  }
+
+  const old = openDb(dir, { sqlDir: oldSql });
+  old.run(
+    'INSERT INTO assets(id, name, category, price_cents, purchased_on, created_at, updated_at, seq)' +
+      " VALUES('old-1', '旧电视', 'appliance', 300000, '2020-01-01', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z', 1)",
+  );
+  assert.equal(old.get("SELECT 1 AS ok FROM sqlite_master WHERE type='index' AND name='idx_holdings_seq'"), null);
+  old.close();
+
+  const db = openDb(dir);
+  try {
+    assert.ok(db.get('SELECT 1 AS ok FROM schema_migrations WHERE version = 5'));
+    const row = db.get('SELECT * FROM assets WHERE id = ?', 'old-1');
+    assert.equal(row.valuation_method, 'auto');
+    assert.equal(row.net_worth, 'auto');
+    assert.equal(row.rate_bp, null);
+    assert.equal(row.residual_bp, null);
+    assert.equal(row.manual_value_cents, null);
+    assert.equal(row.manual_value_on, null);
+    assert.equal(row.seq, 1, 'ALTER 不动 seq：客户端的老缓存靠 fromJson 兜底');
+    assert.ok(db.get("SELECT 1 AS ok FROM sqlite_master WHERE type='index' AND name='idx_holdings_seq'"));
+  } finally {
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(oldSql, { recursive: true, force: true });
+  }
+});

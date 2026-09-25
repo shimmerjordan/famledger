@@ -14,8 +14,10 @@ import '../add_tx/picker_field.dart';
 import '../widgets/widgets.dart';
 import 'asset_providers.dart';
 import 'asset_widgets.dart';
+import 'valuation_fields.dart';
 
 /// 新建 / 编辑物品。新建时默认「同时记一笔支出」：买东西本来就是一笔账。
+/// 「估值」一段默认收起：大多数东西跟随类别自动折旧就够了。
 class AssetFormPage extends ConsumerStatefulWidget {
   const AssetFormPage({super.key, this.id});
 
@@ -38,9 +40,12 @@ class _AssetFormPageState extends ConsumerState<AssetFormPage> {
   final TextEditingController _price = TextEditingController();
   final TextEditingController _expected = TextEditingController();
   final TextEditingController _note = TextEditingController();
+  final ValuationEditor _valuation = ValuationEditor();
 
   String _category = 'digital';
-  DateTime _purchasedOn = DateTime.now();
+
+  /// 默认「今天」取 [assetClockProvider]，和估值用的是同一个时钟（测试里是固定的那天）。
+  late DateTime _purchasedOn = ref.read(assetClockProvider)();
   bool _record = true;
   String? _accountId;
   String? _fundId;
@@ -61,6 +66,7 @@ class _AssetFormPageState extends ConsumerState<AssetFormPage> {
     _price.dispose();
     _expected.dispose();
     _note.dispose();
+    _valuation.dispose();
     super.dispose();
   }
 
@@ -72,7 +78,19 @@ class _AssetFormPageState extends ConsumerState<AssetFormPage> {
     _expected.text = asset.expectedDays?.toString() ?? '';
     _note.text = asset.note ?? '';
     _category = Asset.categories.contains(asset.category) ? asset.category : 'other';
-    _purchasedOn = localDate(asset.purchasedOn) ?? DateTime.now();
+    _purchasedOn = localDate(asset.purchasedOn) ?? ref.read(assetClockProvider)();
+    _valuation.bind(asset);
+  }
+
+  /// 买价填对了才预估「现在约多少」。
+  int? get _pricePreview {
+    final cents = parseMoneyField(_price.text);
+    return cents == null || cents < 0 ? null : cents;
+  }
+
+  int? get _expectedPreview {
+    final days = int.tryParse(_expected.text.trim());
+    return days == null || days < 1 ? null : days;
   }
 
   Future<void> _pickDate() async {
@@ -104,6 +122,15 @@ class _AssetFormPageState extends ConsumerState<AssetFormPage> {
         return;
       }
     }
+    final valuation = _valuation.read(
+      category: _category,
+      purchasedOn: _purchasedOn,
+      today: ref.read(assetClockProvider)(),
+    );
+    if (valuation.error != null) {
+      setState(() => _error = valuation.error);
+      return;
+    }
 
     setState(() {
       _busy = true;
@@ -122,6 +149,7 @@ class _AssetFormPageState extends ConsumerState<AssetFormPage> {
           purchasedOn: day,
           expectedDays: expected,
           note: note,
+          valuation: valuation.input,
         );
       } else {
         await repo.create(
@@ -131,6 +159,7 @@ class _AssetFormPageState extends ConsumerState<AssetFormPage> {
           purchasedOn: day,
           expectedDays: expected,
           note: note,
+          valuation: valuation.input,
           record: _record && price > 0
               ? AssetRecord(
                   accountId: _accountId,
@@ -272,8 +301,36 @@ class _AssetFormPageState extends ConsumerState<AssetFormPage> {
                         ),
                     ],
                   ),
+                  // 匀速折旧的年限也用这个天数（spec §2），填的时候就得知道它会动估值。
+                  ListenableBuilder(
+                    listenable: _valuation,
+                    builder: (context, _) =>
+                        _valuation.effectiveMethod(_category) == Asset.methodStraight
+                        ? Padding(
+                            padding: const EdgeInsets.only(top: 8),
+                            child: Text(
+                              '这件按匀速折旧估值，折旧年限也按这个天数算；'
+                              '不填按类别默认 ${categoryValuation(_category).years} 年',
+                              key: const ValueKey('asset-expected-life-hint'),
+                              style: theme.textTheme.bodySmall,
+                            ),
+                          )
+                        : const SizedBox.shrink(),
+                  ),
                 ],
               ),
+            ),
+            ValuationFields(
+              editor: _valuation,
+              category: _category,
+              priceCents: _pricePreview,
+              purchasedOn: _purchasedOn,
+              expectedDays: _expectedPreview,
+              now: ref.watch(assetClockProvider)(),
+              status: asset?.status ?? Asset.statusInUse,
+              netWorthSwitchOn:
+                  ref.watch(settingsProvider).valueOrNull?.assets.netWorthIncludesPhysical ?? true,
+              initiallyExpanded: _editing && _valuation.customized,
             ),
             PickerField(
               label: '备注（选填）',

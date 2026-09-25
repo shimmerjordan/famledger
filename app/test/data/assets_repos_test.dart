@@ -361,6 +361,61 @@ void main() {
       });
     });
 
+    test('估值：新建只带改过的键；编辑带上全部六个（null 就是清掉）；不给 valuation 的编辑照旧', () async {
+      final rig = Rig({
+        'POST $api/assets': [
+          {'asset': assetRow('a1')},
+        ],
+        'PATCH $api/assets/a1': [
+          {'asset': assetRow('a1')},
+        ],
+        'GET $api/changes': [changes()],
+      });
+      await rig.assets.create(
+        name: '镯子',
+        category: 'jewelry',
+        priceCents: 1000000,
+        purchasedOn: '2020-05-01',
+        valuation: const ValuationInput(
+          method: Asset.methodLocked,
+          manualValueCents: 1200000,
+          manualValueOn: '2025-08-01',
+        ),
+      );
+      expect(rig.server.bodyOf('POST', '$api/assets'), {
+        'name': '镯子',
+        'category': 'jewelry',
+        'priceCents': 1000000,
+        'purchasedOn': '2020-05-01',
+        'valuationMethod': 'locked',
+        'manualValueCents': 1200000,
+        'manualValueOn': '2025-08-01',
+      });
+
+      await rig.assets.edit(
+        'a1',
+        name: '镯子',
+        category: 'jewelry',
+        priceCents: 1000000,
+        purchasedOn: '2020-05-01',
+        valuation: const ValuationInput(netWorth: Asset.netWorthExclude),
+      );
+      expect(rig.server.bodyOf('PATCH', '$api/assets/a1'), {
+        'name': '镯子',
+        'category': 'jewelry',
+        'priceCents': 1000000,
+        'purchasedOn': '2020-05-01',
+        'expectedDays': null,
+        'note': null,
+        'valuationMethod': 'auto',
+        'rateBp': null,
+        'residualBp': null,
+        'manualValueCents': null,
+        'manualValueOn': null,
+        'netWorth': 'exclude',
+      });
+    });
+
     test('闲置 / 退役 / 卖出各自的请求体', () async {
       final rig = Rig({
         'PATCH $api/assets/a1': [

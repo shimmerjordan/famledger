@@ -60,6 +60,59 @@ void main() {
       expect(find.text('每天花费'), findsOneWidget);
       expect(find.text('¥272.86/天', findRichText: true), findsOneWidget);
       expect(find.text('在用和闲置 2 件 · 原价合计 ¥9,199.00'), findsOneWidget);
+
+      // 估值（这几行没有估值字段 = 老数据，按类别自动算）：数码每年打七五折，家电 8 年匀速降到 5%。
+      expect(find.text('估值 ¥5,895.88 · −2%'), findsOneWidget);
+      expect(find.text('估值 ¥2,924.11 · −9%'), findsOneWidget);
+      expect(find.text('估值 ¥8,819.99 · 已折旧 ¥379.01'), findsOneWidget);
+      // 卖掉的估值归零、退出汇总：那一行不写估值。
+      expect(find.textContaining('估值 ¥'), findsNWidgets(3));
+    });
+
+    testWidgets('排序：按估值（和按价格不一样时看得出来）', (tester) async {
+      final backend = AssetsBackend(
+        assets: [
+          assetJson('a1'),
+          // 过了 8 年的冰箱：估值停在原价的 5%。
+          assetJson(
+            'a4',
+            name: '老冰箱',
+            category: 'appliance',
+            price: 700000,
+            purchasedOn: '2016-01-01',
+            sort: 1,
+          ),
+        ],
+      );
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets');
+      expect(find.text('估值 ¥350.00 · −95%'), findsOneWidget);
+
+      await tester.tap(find.text('按价格'));
+      await settle(tester);
+      expect(topOf(tester, '老冰箱'), lessThan(topOf(tester, 'iPhone 16')));
+
+      await tester.tap(find.text('按估值'));
+      await settle(tester);
+      expect(topOf(tester, 'iPhone 16'), lessThan(topOf(tester, '老冰箱')));
+    });
+
+    testWidgets('手动估值高过原价：行里写「+20% 未实现」，汇总写「比原价高」', (tester) async {
+      final backend = AssetsBackend(
+        assets: [
+          assetJson(
+            'a9',
+            name: '金镯子',
+            category: 'jewelry',
+            price: 1000000,
+            purchasedOn: '2020-05-01',
+            manualValueCents: 1200000,
+            manualValueOn: '2025-08-01',
+          ),
+        ],
+      );
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets');
+      expect(find.text('估值 ¥12,000.00 · +20% 未实现'), findsOneWidget);
+      expect(find.text('估值 ¥12,000.00 · 比原价高 ¥2,000.00'), findsOneWidget);
     });
 
     testWidgets('排序：默认按日均，切到按天数/按价格', (tester) async {
@@ -116,7 +169,8 @@ void main() {
         'name': 'MacBook',
         'category': 'digital',
         'priceCents': 1299950,
-        'purchasedOn': Dates.isoDate(DateTime.now()),
+        // 默认买入日期取资产页的时钟（测试里固定在 2026-09-23），和估值同一个「今天」。
+        'purchasedOn': '2026-09-23',
         'expectedDays': 1095,
         'recordTransaction': {
           'accountId': 'bank',
@@ -223,6 +277,13 @@ void main() {
       'purchasedOn': '2026-09-01',
       'expectedDays': null,
       'note': null,
+      // 估值段没动：照原样把六个字段带上（编辑一律全量，null 就是清掉）。
+      'valuationMethod': 'auto',
+      'rateBp': null,
+      'residualBp': null,
+      'manualValueCents': null,
+      'manualValueOn': null,
+      'netWorth': 'auto',
     });
     expect(find.text('iPhone 16 Pro'), findsWidgets);
   });

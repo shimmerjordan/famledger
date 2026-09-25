@@ -65,6 +65,11 @@ function buildFinanceContext(db, month = stats.currentMonth()) {
   L.push(
     `【净资产】${formatMoney(ov.netWorthCents)}（资产 ${formatMoney(ov.assetsCents)} / 负债 ${formatMoney(ov.liabilitiesCents)}）`,
   );
+  // 实物估值（spec §3）：计入额跟着家庭设置的全局开关走，关着就是 ¥0.00。没有在用的物品就不写这一行。
+  const physical = ov.physical;
+  if (physical && physical.count > 0) {
+    L.push(`【实物估值】${formatMoney(physical.valueCents)}（计入 ${formatMoney(physical.counted ? physical.includedCents : 0)}）`);
+  }
 
   if (prev) {
     const d = ov.month.expenseCents - prev.expenseCents;
