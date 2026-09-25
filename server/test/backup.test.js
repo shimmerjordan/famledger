@@ -24,12 +24,15 @@ const SNAPSHOT_RE = /^famledger-\d{8}-\d{6}\.db\.gz(\.enc)?$/;
 // ---------------------------------------------------------------- fake WebDAV
 
 /**
- * @param {{user?:string, pass?:string, mount?:string, ns?:string, legacyMount?:string}} [opts]
+ * @param {{user?:string, pass?:string, mount?:string, ns?:string, legacyMount?:string, legacyTarget?:string, outside405?:boolean}} [opts]
  *   mount        where the DAV root lives in the URL space (default `/dav`)
  *   ns           namespace prefix used in the 207 XML (`d:`, `D:`, or '')
  *   legacyMount  a second prefix that 301-redirects to `mount`
  *   legacyTarget where that redirect points (default: `mount`, same origin —
  *                pass another server's URL to test a cross-origin redirect)
+ *   outside405   answer anything outside `mount` with 405 instead of 404 — what
+ *                QNAP does on its bare root, where DAV only lives under the
+ *                shared folders
  */
 async function startFakeWebdav(opts = {}) {
   const user = opts.user ?? 'dav-user';
@@ -38,6 +41,7 @@ async function startFakeWebdav(opts = {}) {
   const ns = opts.ns ?? 'd:';
   const legacy = opts.legacyMount || null;
   const legacyTarget = opts.legacyTarget || mount;
+  const outside405 = !!opts.outside405;
 
   /** @type {Map<string, Buffer>} path → bytes */
   const files = new Map();
@@ -45,6 +49,7 @@ async function startFakeWebdav(opts = {}) {
   const mtimes = new Map();
   const hits = [];
   const seen = []; // every request, logged before the auth check
+  const auths = []; // every Authorization header received, as sent
   const state = { delayMs: 0 };
 
   const parentOf = (p) => {
@@ -80,6 +85,7 @@ async function startFakeWebdav(opts = {}) {
 
   const server = http.createServer((req, res) => {
     seen.push(`${req.method} ${req.url}`);
+    auths.push(req.headers.authorization || '');
     const want = 'Basic ' + Buffer.from(`${user}:${pass}`).toString('base64');
     if ((req.headers.authorization || '') !== want) {
       req.resume();
@@ -96,7 +102,11 @@ async function startFakeWebdav(opts = {}) {
       req.resume();
       return send(res, 301, '', { location: legacyTarget + raw.slice(legacy.length) });
     }
-    if (raw !== mount && !raw.startsWith(mount + '/')) return send(res, 404, 'outside the dav root');
+    if (raw !== mount && !raw.startsWith(mount + '/')) {
+      req.resume();
+      if (outside405) return send(res, 405, 'method not allowed', { allow: 'HEAD,GET,POST,OPTIONS' });
+      return send(res, 404, 'outside the dav root');
+    }
 
     let p = raw.slice(mount.length) || '/';
     if (p.length > 1) p = p.replace(/\/+$/, '');
@@ -175,6 +185,9 @@ async function startFakeWebdav(opts = {}) {
     dirs,
     hits,
     seen,
+    auths,
+    /** The password half of every Basic header received ('' when there was none). */
+    passwords: () => auths.map((h) => Buffer.from(h.replace(/^Basic /, ''), 'base64').toString('utf8').split(':').slice(1).join(':')),
     /** Make GET take `ms` — lets a test hold a restore open. */
     setDelay: (ms) => {
       state.delayMs = ms;
@@ -350,6 +363,123 @@ test('服务器不可达时 test → {ok:false}，run → 502 webdav_error 且�
 
   // 进程还活着
   assert.equal((await a.get('/members', { token })).status, 200);
+});
+
+test('POST /backup/test 用请求体里的表单值测：不用先保存，也什么都不落库', async (t) => {
+  const { a, token, fake } = await fixture(t);
+
+  // 什么都没保存过：表单里填的值直接就能测
+  const before = await a.get('/backup/config', { token });
+  const fresh = await a.post(
+    '/backup/test',
+    { url: fake.url, username: fake.user, password: fake.pass, remoteDir: '/fresh' },
+    { token },
+  );
+  assert.equal(fresh.status, 200, fresh.text);
+  assert.equal(fresh.json.ok, true, fresh.text);
+  assert.match(fresh.json.message, /\/fresh/);
+  assert.ok(fake.dirs.has('/fresh'), '测的是请求体里的 remoteDir');
+  assert.deepEqual((await a.get('/backup/config', { token })).json, before.json, '测试不能写库');
+
+  // 已保存的指向 A，请求体换成 B → 请求只打到 B，已保存的配置纹丝不动
+  const saved = (await configure(a, token, fake)).webdav;
+  const other = await startFakeWebdav({ user: 'b-user', pass: 'b-pass' });
+  t.after(() => other.close());
+  const seenAtA = fake.seen.length;
+  const r = await a.post(
+    '/backup/test',
+    { url: other.url, username: other.user, password: other.pass, remoteDir: '/elsewhere' },
+    { token },
+  );
+  assert.equal(r.json.ok, true, r.text);
+  assert.ok(other.dirs.has('/elsewhere'));
+  assert.equal(fake.seen.length, seenAtA, '已保存的那个地址一个请求都不该收到');
+  assert.deepEqual((await a.get('/backup/config', { token })).json.webdav, saved);
+
+  // 只给一部分：没给的字段用已保存的
+  const partial = await a.post('/backup/test', { remoteDir: '/partial' }, { token });
+  assert.equal(partial.json.ok, true, partial.text);
+  assert.ok(fake.dirs.has('/partial'));
+
+  // 字段校验与 PUT /backup/config 一致，校验失败同样不落库
+  for (const [body, code] of [
+    [{ url: 'ftp://x/y' }, 'invalid_url'],
+    [{ remoteDir: '/a/../b' }, 'invalid_remoteDir'],
+    [{ password: 42 }, 'invalid_password'],
+    [{ username: 7 }, 'invalid_username'],
+  ]) {
+    const bad = await a.post('/backup/test', body, { token });
+    assert.equal(bad.status, 400, JSON.stringify(body) + ' → ' + bad.text);
+    assert.equal(bad.json.error.code, code, bad.text);
+  }
+  assert.deepEqual((await a.get('/backup/config', { token })).json.webdav, saved);
+});
+
+test('POST /backup/test 口令：同源才沿用已保存的，换了服务器绝不带过去', async (t) => {
+  const { srv, a, token, fake } = await fixture(t, { LOG_LEVEL: 'info' });
+  await configure(a, token, fake);
+
+  // 同一台服务器换个路径（比如补上共享文件夹名），口令框留空 / 不传都沿用已保存的
+  fake.dirs.add('/share');
+  for (const password of [undefined, '']) {
+    const from = fake.auths.length;
+    const r = await a.post('/backup/test', { url: `${fake.url}/share`, username: fake.user, password }, { token });
+    assert.equal(r.json.ok, true, `password=${JSON.stringify(password)} → ${r.text}`);
+    assert.ok(fake.dirs.has('/share/famledger'), '测的是新路径');
+    assert.ok(fake.passwords().slice(from).every((p) => p === fake.pass), '同源应当带上已保存的口令');
+  }
+
+  // 另一个源（只差端口也算）且账号口令恰好相同：不带口令过去 → 401，并提示重填口令
+  const stranger = await startFakeWebdav();
+  t.after(() => stranger.close());
+  for (const password of [undefined, '']) {
+    const r = await a.post('/backup/test', { url: stranger.url, username: fake.user, password }, { token });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.ok, false, r.text);
+    assert.match(r.json.message, /401/);
+    assert.match(r.json.message, /重新填/);
+  }
+  assert.ok(stranger.auths.length > 0, '请求确实发到了新地址');
+  assert.deepEqual(new Set(stranger.passwords()), new Set(['']), '已保存的口令绝不能发到别的服务器');
+
+  // 这次亲手填了口令，换了服务器也用填的
+  const typed = await a.post(
+    '/backup/test',
+    { url: stranger.url, username: stranger.user, password: stranger.pass },
+    { token },
+  );
+  assert.equal(typed.json.ok, true, typed.text);
+
+  // password:null = 明确不带口令（与 PUT 里 null 清空口令同义），同源也不沿用
+  const from = fake.auths.length;
+  const none = await a.post('/backup/test', { password: null }, { token });
+  assert.equal(none.json.ok, false, none.text);
+  assert.ok(fake.passwords().slice(from).every((p) => p === ''));
+
+  // 日志说得清口令从哪来，但口令本身一个字都不出现
+  const logs = srv.stdout() + srv.stderr();
+  assert.match(logs, /password=saved/);
+  assert.match(logs, /password=withheld/);
+  assert.ok(!logs.includes(fake.pass), '日志里不能有口令');
+});
+
+test('POST /backup/test 地址停在 NAS 根目录（405）→ 提示在地址后补上共享文件夹名', async (t) => {
+  const { a, token } = await fixture(t);
+  // 威联通的样子：DAV 只挂在共享文件夹下，根目录的 PROPFIND 回 405
+  const nas = await startFakeWebdav({ mount: '/Web', outside405: true });
+  t.after(() => nas.close());
+  const root = `http://127.0.0.1:${nas.port}/`;
+
+  const r = await a.post('/backup/test', { url: root, username: nas.user, password: nas.pass }, { token });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.json.ok, false, r.text);
+  assert.match(r.json.message, /根目录不是 WebDAV 目录/);
+  assert.match(r.json.message, /共享文件夹/);
+  assert.ok(r.json.message.includes(`${root}Web/`), `应给出能照抄的例子：${r.json.message}`);
+
+  // 照提示补上共享文件夹名就通了
+  const fixed = await a.post('/backup/test', { url: nas.url, username: nas.user, password: nas.pass }, { token });
+  assert.equal(fixed.json.ok, true, fixed.text);
 });
 
 // ---------------------------------------------------------------- run
@@ -942,4 +1072,29 @@ test('WebDavClient: 401 与连不上都是 test()→{ok:false}，get 缺文件�
   await fake.close();
   const dead = new WebDavClient({ url: fake.url, username: fake.user, password: fake.pass, timeoutMs: 2000 });
   assert.equal((await dead.test()).ok, false);
+});
+
+test('WebDavClient: 只有 test() 的探测把 405 讲成「补上共享文件夹名」，别处的 405 措辞不变', async (t) => {
+  const nas = await startFakeWebdav({ mount: '/Web', outside405: true });
+  t.after(() => nas.close());
+  const origin = `http://127.0.0.1:${nas.port}`;
+
+  const atRoot = new WebDavClient({ url: `${origin}/`, username: nas.user, password: nas.pass });
+  const probe = await atRoot.test();
+  assert.equal(probe.ok, false);
+  assert.equal(probe.status, 405);
+  assert.match(probe.message, /^这个地址的根目录不是 WebDAV 目录（405）/);
+  assert.ok(probe.message.includes(`${origin}/Web/`), probe.message);
+  await assert.rejects(
+    () => atRoot.propfind('/', 0),
+    (e) => e.status === 405 && e.message === '服务器不接受该操作（405）',
+  );
+
+  // 地址本身带了路径时不说「根目录」
+  const onPath = new WebDavClient({ url: `${origin}/nope`, username: nas.user, password: nas.pass });
+  assert.match((await onPath.test()).message, /^这个地址不是 WebDAV 目录（405）/);
+
+  // 401 带上状态码，调用方好补自己的提示
+  const wrong = new WebDavClient({ url: nas.url, username: nas.user, password: 'nope' });
+  assert.equal((await wrong.test()).status, 401);
 });

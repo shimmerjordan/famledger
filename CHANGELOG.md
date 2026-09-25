@@ -18,6 +18,9 @@
     换版本时，Chrome 会把 fetch 的 keepalive 请求扣着不发；现在网页端请求一律不带 keepalive。
   - Docker 用 bind mount 挂一个还不存在的宿主目录时，容器报 `unable to open database file` 反复重启。
     现在容器以 root 入场，先把 `/data` 的属主改成 1000（可用 `PUID` / `PGID` 改）再降权运行，不用手动 chown。
+  - 备份设置的「测试连接」直接用表单里现在填的值，不用先保存（`POST /backup/test` 可带
+    `url`/`username`/`password`/`remoteDir`，不落库）。口令框留空时，只有地址和已保存的同源才沿用已保存的口令。
+    地址停在威联通等 NAS 的根目录（PROPFIND 回 405）时，提示在地址后补上共享文件夹名。
   - 局域网、Tailscale 地址自动补全端口。
   - 基金页的新建按钮和右下角的 + 重叠。
 - **文档**：README 精简并加了截图，`docs/ios.md` 也压短了。

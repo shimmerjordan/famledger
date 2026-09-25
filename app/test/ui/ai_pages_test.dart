@@ -110,6 +110,20 @@ class FakeBackupRepo extends BackupRepo {
 
   String? restored;
 
+  /// 最近一次「测试连接」收到的表单值。
+  Map<String, String>? tested;
+
+  @override
+  Future<BackupTestResult> test({
+    required String url,
+    required String username,
+    required String password,
+    required String remoteDir,
+  }) async {
+    tested = {'url': url, 'username': username, 'password': password, 'remoteDir': remoteDir};
+    return const BackupTestResult(ok: true, message: '连接成功：/famledger 下已有 0 个备份');
+  }
+
   @override
   Future<BackupConfig> config() async =>
       restored == null ? config_ : (configAfterRestore ?? config_);
@@ -546,6 +560,50 @@ void main() {
       expect(find.text('famledger-20260913-030000.db.gz.enc'), findsOneWidget);
       expect(find.textContaining('1.2 MB'), findsOneWidget);
       expect(find.byIcon(Icons.lock_outline), findsOneWidget);
+    });
+
+    testWidgets('测试连接用表单里现在填的值，不用先保存；口令框留空就传空', (tester) async {
+      tester.view.physicalSize = const Size(400, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final repo = FakeBackupRepo(config_: config);
+      await pumpIn(
+        tester,
+        await boot(overrides: [backupRepoProvider.overrideWithValue(repo)]),
+        const BackupPage(),
+      );
+      await tester.pumpAndSettle();
+
+      // 改了地址和远端目录，不点「保存设置」直接测
+      await tester.enterText(
+        find.ancestor(of: find.text('地址'), matching: find.byType(TextField)),
+        '  https://nas-webdav.example.com/Web/  ',
+      );
+      await tester.enterText(
+        find.ancestor(of: find.text('远端目录'), matching: find.byType(TextField)),
+        '/fam',
+      );
+      await tester.tap(find.text('测试连接'));
+      await tester.pumpAndSettle();
+
+      expect(repo.tested, {
+        'url': 'https://nas-webdav.example.com/Web/',
+        'username': 'mama@example.com',
+        'password': '',
+        'remoteDir': '/fam',
+      });
+      expect(find.text('连接成功：/famledger 下已有 0 个备份'), findsOneWidget);
+
+      // 这次填了口令就一起带上
+      await tester.enterText(
+        find.ancestor(of: find.text('口令'), matching: find.byType(TextField)),
+        'app-pass',
+      );
+      await tester.tap(find.text('测试连接'));
+      await tester.pumpAndSettle();
+      expect(repo.tested?['password'], 'app-pass');
     });
 
     testWidgets('恢复前先说清楚会留一份 pre-restore 副本', (tester) async {

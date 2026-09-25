@@ -52,8 +52,24 @@ class BackupRepo {
     return BackupConfig.fromJson(res);
   }
 
-  Future<BackupTestResult> test() async =>
-      BackupTestResult.fromJson(await _api.post('/backup/test', const {}));
+  /// 拿表单里**现在填的**值测连接，不用先保存，服务端也不落库。
+  ///
+  /// 口令留空 = 不发：服务端只在地址与已保存的同源时沿用已保存的口令，
+  /// 换了服务器就不带口令去测，免得把口令送到别人的机器上。
+  Future<BackupTestResult> test({
+    required String url,
+    required String username,
+    required String password,
+    required String remoteDir,
+  }) async {
+    final body = <String, dynamic>{
+      'url': url,
+      'username': username,
+      'remoteDir': remoteDir,
+    };
+    if (password.isNotEmpty) body['password'] = password;
+    return BackupTestResult.fromJson(await _api.post('/backup/test', body));
+  }
 
   Future<BackupRunResult> run() async =>
       BackupRunResult.fromJson(await _api.post('/backup/run', const {}));

@@ -8,7 +8,7 @@
 // `<href>` and `<lp1:href>` all parse).
 //
 //   const c = new WebDavClient({url, username, password});
-//   await c.test();                       → {ok, message}   never throws
+//   await c.test();                       → {ok, message, status?}   never throws
 //   await c.mkcolp('/famledger/2026');    create every missing segment
 //   await c.propfind('/famledger', 1);    → [{href, name, isDir, size, modifiedAt}]
 //   await c.put(path, buffer, type); await c.get(path); await c.delete(path);
@@ -20,7 +20,9 @@
 // percent-encoded and may be absolute URLs; `Depth` is mandatory; MKCOL on an
 // existing collection answers 405 (坚果云) or 301 (a redirect to the
 // trailing-slash form) rather than a success code; one redirect hop is
-// followed by hand because `redirect: 'follow'` turns PROPFIND into GET.
+// followed by hand because `redirect: 'follow'` turns PROPFIND into GET; a
+// NAS that mounts DAV under each shared folder (QNAP) answers PROPFIND on its
+// bare root with 405, which test() turns into "add the folder name".
 
 const DEFAULT_TIMEOUT_MS = 60000;
 const REDIRECTS = new Set([301, 302, 307, 308]);
@@ -299,13 +301,33 @@ class WebDavClient {
     await res.body?.cancel().catch(() => {});
   }
 
-  /** Connectivity + credentials, as a value. Never throws. */
+  /**
+   * Connectivity + credentials, as a value. Never throws.
+   * On failure `status` is the HTTP status (0 = no answer), for callers that
+   * want to add their own hint; the message already stands on its own.
+   */
   async test() {
     try {
       await this.propfind('/', 0);
       return { ok: true, message: '连接成功' };
     } catch (e) {
-      return { ok: false, message: e instanceof WebDavError ? e.message : netMessage(e) };
+      if (!(e instanceof WebDavError)) return { ok: false, status: 0, message: netMessage(e) };
+      // PROPFIND is the one method every DAV collection must take, so a 405 on
+      // the probe means this URL is not a collection at all — typically a NAS
+      // (QNAP: `Allow: HEAD,GET,POST,OPTIONS` on `/`) whose DAV lives under
+      // each shared folder. Only the probe says so: a 405 anywhere else keeps
+      // its generic wording.
+      if (e.status === 405) {
+        const where = this.base === this.origin ? '这个地址的根目录' : '这个地址';
+        return {
+          ok: false,
+          status: 405,
+          message:
+            `${where}不是 WebDAV 目录（405）。威联通（QNAP）等 NAS 的 WebDAV 挂在共享文件夹下，` +
+            `请在地址后面加上共享文件夹名，比如 ${this.origin}/Web/`,
+        };
+      }
+      return { ok: false, status: e.status, message: e.message };
     }
   }
 }

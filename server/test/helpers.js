@@ -46,7 +46,7 @@ function tmpDir(tag) {
 /**
  * Start a server. `env` overrides any environment variable; DATA_DIR and
  * WEB_ROOT default to fresh temp directories.
- * @returns {Promise<{base:string, port:number, dataDir:string, webRoot:string, stderr:()=>string, stop:()=>Promise<void>}>}
+ * @returns {Promise<{base:string, port:number, dataDir:string, webRoot:string, stderr:()=>string, stdout:()=>string, stop:()=>Promise<void>}>}
  */
 async function startServer(env = {}) {
   const dataDir = env.DATA_DIR || tmpDir('data');
@@ -73,7 +73,12 @@ async function startServer(env = {}) {
   child.stderr.on('data', (d) => {
     err += d.toString();
   });
-  child.stdout.resume();
+  // info/debug 走 stdout（lib/log.js）；默认 LOG_LEVEL=error 时这里几乎是空的，
+  // 只有传了 LOG_LEVEL 的用例（比如检查日志里不漏口令）才会攒下内容。
+  let out = '';
+  child.stdout.on('data', (d) => {
+    out += d.toString();
+  });
 
   const base = `http://127.0.0.1:${port}`;
   let up = false;
@@ -97,6 +102,7 @@ async function startServer(env = {}) {
     dataDir,
     webRoot,
     stderr: () => err,
+    stdout: () => out,
     stop: () =>
       new Promise((resolve) => {
         if (child.exitCode !== null) return resolve();

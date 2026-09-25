@@ -115,13 +115,20 @@ class _BackupPageState extends ConsumerState<BackupPage> {
     }
   }
 
+  /// 测的是表单里现在填的值（没点「保存设置」也行）；口令框留空时，
+  /// 只有地址还在同一台服务器上才沿用已保存的口令（见 [BackupRepo.test]）。
   Future<void> _test() async {
     setState(() {
       _testing = true;
       _testMessage = null;
     });
     try {
-      final result = await ref.read(backupRepoProvider).test();
+      final result = await ref.read(backupRepoProvider).test(
+        url: _url.text.trim(),
+        username: _username.text.trim(),
+        password: _password.text,
+        remoteDir: _remoteDir.text.trim(),
+      );
       if (!mounted) return;
       setState(() {
         _testOk = result.ok;

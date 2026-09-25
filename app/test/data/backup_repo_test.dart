@@ -188,10 +188,59 @@ void main() {
         ),
       );
 
-      final result = await repo.test();
+      final result = await repo.test(
+        url: 'https://dav.jianguoyun.com/dav',
+        username: 'mama@example.com',
+        password: '',
+        remoteDir: '/famledger',
+      );
 
       expect(result.ok, isFalse);
       expect(result.message, '401：用户名或应用密码不对');
+    });
+
+    test('测试连接发的是表单当前值；口令留空就不带 password', () async {
+      late http.Request seen;
+      final repo = repoWith(
+        MockClient((request) async {
+          seen = request;
+          return jsonResponse({'ok': true, 'message': '连接成功'});
+        }),
+      );
+
+      await repo.test(
+        url: 'https://nas-webdav.example.com/Web',
+        username: 'mama',
+        password: '',
+        remoteDir: '/famledger',
+      );
+
+      expect(seen.method, 'POST');
+      expect(seen.url.path, '/api/v1/backup/test');
+      expect(jsonDecode(seen.body), {
+        'url': 'https://nas-webdav.example.com/Web',
+        'username': 'mama',
+        'remoteDir': '/famledger',
+      });
+    });
+
+    test('测试连接时这次填了口令就一起发上去', () async {
+      late http.Request seen;
+      final repo = repoWith(
+        MockClient((request) async {
+          seen = request;
+          return jsonResponse({'ok': true, 'message': '连接成功'});
+        }),
+      );
+
+      await repo.test(
+        url: 'https://dav.example.com',
+        username: 'u',
+        password: 'app-pass',
+        remoteDir: '/famledger',
+      );
+
+      expect((jsonDecode(seen.body) as Map)['password'], 'app-pass');
     });
 
     test('备份进行中时恢复会拿到服务端的 409 说明', () async {

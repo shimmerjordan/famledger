@@ -22,6 +22,8 @@
 // are stored AES-256-GCM-encrypted under `DATA_DIR/secret.key` (lib/secret.js)
 // and are never returned by the API, never logged, and never put in an error
 // message. `GET /backup/config` answers with `hasPassword`/`hasPassphrase`.
+// `POST /backup/test` can try unsaved form values, and the stored password only
+// ever travels to the stored URL's origin (see testTarget).
 //
 // Environment: BACKUP_TICK_MS overrides the 60 s scheduler tick (tests only).
 
@@ -80,6 +82,16 @@ function normalizeDir(value, field = 'remoteDir') {
   const dir = '/' + segs.join('/');
   if (dir.length > 200) v.bad(field, 'remoteDir 太长了');
   return dir;
+}
+
+/** `https://nas:5006/dav` → `https://nas:5006`; anything unparseable (or '') → null. */
+function originOf(url) {
+  try {
+    const o = new URL(url).origin;
+    return o === 'null' ? null : o; // opaque origins (file:, data:) never match anything
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -365,23 +377,105 @@ module.exports = (ctx) => {
     return new HttpError(500, 'backup_failed', `备份失败：${e.message || e}`);
   }
 
-  async function testConnection(req, res) {
-    const c = config();
-    if (!c.webdav.url) return sendJson(res, 200, { ok: false, message: '还没有配置 WebDAV 地址' });
+  /**
+   * What POST /backup/test should connect to: the stored WebDAV settings with
+   * whatever the form sent (`{url, username, password, remoteDir}`, all
+   * optional) laid over them, so a setting can be tried before it is saved.
+   * Nothing here is written anywhere. Validation and the blank/absent rules are
+   * putConfig's — `''` or no password means "the stored one", `null` means none
+   * — so a value that tests fine is a value that saves fine.
+   *
+   * The stored password only follows a URL on the stored URL's origin (scheme,
+   * host and port). Otherwise any admin session could point the test at a
+   * server it controls and read the drive password out of the Basic header.
+   *
+   * @returns {{url:string, username:string, password:string, remoteDir:string,
+   *   overridden:boolean, passwordFrom:'typed'|'url'|'saved'|'withheld'|'none'}}
+   */
+  function testTarget(b) {
+    const cur = config().webdav;
+    const t = {
+      url: cur.url,
+      username: cur.username,
+      password: '',
+      remoteDir: cur.remoteDir,
+      overridden: ['url', 'username', 'password', 'remoteDir'].some((k) => b[k] !== undefined),
+      passwordFrom: 'none',
+    };
+    let urlPassword = null;
+    if (b.url !== undefined) {
+      const parsed = parseWebdavUrl(b.url);
+      t.url = parsed.url;
+      // Same rule as putConfig: credentials pasted into the URL only count when
+      // the request did not spell them out separately.
+      if (parsed.username && b.username === undefined) t.username = parsed.username;
+      if (parsed.password && b.password === undefined) urlPassword = parsed.password;
+    }
+    if (b.username !== undefined) t.username = v.optStr(b.username, 'username', { max: 200 }) || '';
+    if (b.remoteDir !== undefined) t.remoteDir = normalizeDir(b.remoteDir);
+
+    const typed = b.password === undefined || b.password === null
+      ? ''
+      : v.str(b.password, 'password', { min: 0, max: 512, trim: false });
+    if (typed !== '') {
+      t.password = typed;
+      t.passwordFrom = 'typed';
+    } else if (urlPassword) {
+      t.password = urlPassword;
+      t.passwordFrom = 'url';
+    } else if (b.password !== null && cur.passwordEnc) {
+      const origin = originOf(t.url);
+      if (origin && origin === originOf(cur.url)) {
+        t.password = reveal(cur.passwordEnc) || '';
+        t.passwordFrom = 'saved';
+      } else {
+        t.passwordFrom = 'withheld';
+      }
+    }
+    return t;
+  }
+
+  /**
+   * POST /backup/test — probe, create remoteDir, count the snapshots already
+   * there. Always 200 `{ok, message}` once the body validates; an empty body
+   * tests exactly what is saved.
+   */
+  async function testConnection(req, res, reqCtx) {
+    const t = testTarget(v.body(reqCtx.body));
+    const reply = (out) => {
+      // Where the password came from, never the password itself.
+      log.info(
+        'backup',
+        `test: ${t.overridden ? 'unsaved form values' : 'saved config'} origin=${originOf(t.url) || 'none'} ` +
+          `password=${t.passwordFrom} → ${out.ok ? 'ok' : `failed: ${out.message}`}`,
+      );
+      sendJson(res, 200, { ok: out.ok, message: out.message });
+    };
+
+    if (!t.url) return reply({ ok: false, message: '还没有配置 WebDAV 地址' });
     let client;
     try {
-      client = makeClient(c);
+      client = new WebDavClient({ url: t.url, username: t.username, password: t.password, timeoutMs: WEBDAV_TIMEOUT_MS });
     } catch (e) {
-      return sendJson(res, 200, { ok: false, message: e.message });
+      return reply({ ok: false, message: e.message });
     }
     const probe = await client.test();
-    if (!probe.ok) return sendJson(res, 200, probe);
+    if (!probe.ok) {
+      // A 401 right after the stored password was held back is the one case
+      // where "wrong username or password" would send the household hunting
+      // for the wrong fault.
+      const withheld = t.passwordFrom === 'withheld' && (probe.status === 401 || probe.status === 403);
+      return reply({
+        ok: false,
+        message: withheld ? `${probe.message}。地址换到了别的服务器，已保存的口令不会带过去，请把口令重新填一遍` : probe.message,
+      });
+    }
     try {
-      await client.mkcolp(c.webdav.remoteDir);
-      const n = (await client.propfind(c.webdav.remoteDir, 1)).filter((i) => !i.isDir && SNAPSHOT_RE.test(i.name)).length;
-      return sendJson(res, 200, { ok: true, message: `连接成功：${c.webdav.remoteDir} 下已有 ${n} 个备份` });
+      await client.mkcolp(t.remoteDir);
+      const n = (await client.propfind(t.remoteDir, 1)).filter((i) => !i.isDir && SNAPSHOT_RE.test(i.name)).length;
+      return reply({ ok: true, message: `连接成功：${t.remoteDir} 下已有 ${n} 个备份` });
     } catch (e) {
-      return sendJson(res, 200, { ok: false, message: e.message || String(e) });
+      return reply({ ok: false, message: e.message || String(e) });
     }
   }
 
