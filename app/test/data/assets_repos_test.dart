@@ -251,6 +251,11 @@ void main() {
       await rig.store.write(LedgerRepo.cacheKey, {
         'assets': [assetRow('a1')],
         'holdings': <Object>[],
+        // 会员权益四张表（P2）也是后加的：缺它们的缓存会被当成老缓存从头拉。
+        'platforms': <Object>[],
+        'memberships': <Object>[],
+        'benefits': <Object>[],
+        'benefit_events': <Object>[],
         'seq': 42,
       });
 

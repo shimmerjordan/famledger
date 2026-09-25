@@ -16,13 +16,18 @@ const { clientIp } = require('./clientip');
 const DEFAULT_MAX_BODY = 64 * 1024;
 const BODY_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
-/** An error the client is allowed to see. Anything else becomes a 500. */
+/**
+ * An error the client is allowed to see. Anything else becomes a 500.
+ * `details` (optional, a plain object) rides along as `error.details` — e.g. the
+ * id of the row a name collided with, so the client can offer to use that one.
+ */
 class HttpError extends Error {
-  constructor(status, code, message) {
+  constructor(status, code, message, details = null) {
     super(message || code);
     this.name = 'HttpError';
     this.status = status;
     this.code = code;
+    this.details = details;
   }
 }
 
@@ -37,8 +42,8 @@ function sendJson(res, status, obj, extraHeaders = {}) {
 }
 
 /** Every error body in this API has the same shape. */
-function sendError(res, status, code, message) {
-  sendJson(res, status, { error: { code, message: message || code } });
+function sendError(res, status, code, message, details = null) {
+  sendJson(res, status, { error: { code, message: message || code, ...(details ? { details } : {}) } });
 }
 
 class Router {
@@ -133,7 +138,7 @@ class Router {
     } catch (e) {
       if (!(e instanceof HttpError)) throw e;
       if (res.headersSent) res.destroy();
-      else sendError(res, e.status, e.code, e.message);
+      else sendError(res, e.status, e.code, e.message, e.details);
     }
     return true;
   }

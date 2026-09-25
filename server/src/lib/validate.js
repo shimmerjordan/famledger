@@ -86,6 +86,31 @@ function month(v, field, { allowStar = false } = {}) {
   return v;
 }
 
+const pad2 = (n) => String(n).padStart(2, '0');
+
+/** The server's local calendar day (the deploy image is pinned to Asia/Shanghai). */
+function localDay(d = new Date()) {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+/**
+ * `YYYY-MM-DD` that exists on the calendar. By default it may not be later than
+ * today (nothing that has not happened yet gets booked); `{future: true}` lifts
+ * that for dates that are naturally ahead — a membership's expiry, a perk's window.
+ */
+function day(v, field, { future = false } = {}) {
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) bad(field, `${field} 必须是 YYYY-MM-DD 日期`);
+  const d = new Date(`${v}T00:00:00Z`);
+  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== v) bad(field, `${field} 不是有效日期`);
+  if (!future && v > localDay()) bad(field, `${field} 不能晚于今天`);
+  return v;
+}
+
+/** Optional `day`: `undefined` / `null` / '' collapse to null. */
+function optDay(v, field, opts) {
+  return isMissing(v) || v === '' ? null : day(v, field, opts);
+}
+
 /** An ISO-8601 instant, normalised to UTC with milliseconds. */
 function isoTime(v, field) {
   if (typeof v !== 'string') bad(field, `${field} 必须是 ISO-8601 时间字符串`);
@@ -110,4 +135,6 @@ function body(v) {
   return v;
 }
 
-module.exports = { bad, isObject, isMissing, str, optStr, int, optInt, num, bool, enumOf, color, emoji, month, isoTime, list, body };
+module.exports = {
+  bad, isObject, isMissing, str, optStr, int, optInt, num, bool, enumOf, color, emoji, month, day, optDay, localDay, isoTime, list, body,
+};

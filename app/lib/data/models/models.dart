@@ -15,6 +15,8 @@ export 'fund.dart';
 export 'holding.dart';
 export 'json_utils.dart';
 export 'member.dart';
+export 'perk_groups.dart';
+export 'perks.dart';
 export 'rule.dart';
 export 'settings.dart';
 export 'stats.dart';

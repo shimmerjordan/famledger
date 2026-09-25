@@ -1,0 +1,317 @@
+import 'dart:convert';
+
+import 'package:famledger/data/models/models.dart';
+import 'package:http/http.dart' as http;
+
+import 'assets_harness.dart';
+
+// 会员权益的假服务端（挂在 AssetsBackend 上）：只实现 App 会碰到的接口，行为照
+// server/src/modules/platforms.js、memberships.js、benefits.js —— 重名 409 带已有 id、删除前查引用、
+// 合并、有子项 409 / ?cascade=1、选项的 flow 跟父权益。规范化名用 App 的 perkNameKey 近似服务端的 NFKC。
+
+Map<String, dynamic> platformJson(String id, {String name = '淘宝', List<String> aliases = const [], int sort = 0, bool archived = false}) => {
+  'id': id,
+  'name': name,
+  'aliases': aliases,
+  'kind': 'other',
+  'icon': null,
+  'color': null,
+  'url': null,
+  'note': null,
+  'sortOrder': sort,
+  'archived': archived,
+  'deletedAt': null,
+};
+
+Map<String, dynamic> membershipJson(
+  String id, {
+  String platformId = 'tb',
+  String name = '88VIP',
+  String? tier,
+  String kind = 'membership',
+  String? memberId,
+  int? feeCents,
+  String feePeriod = 'year',
+  int? termPaidCents,
+  String? termStartOn,
+  String? expiresOn,
+  String? sourceBenefitId,
+  int sort = 0,
+  bool archived = false,
+}) => {
+  'id': id,
+  'platformId': platformId,
+  'sourceBenefitId': sourceBenefitId,
+  'name': name,
+  'tier': tier,
+  'kind': kind,
+  'memberId': memberId,
+  'accountId': null,
+  'feeCents': feeCents,
+  'feePeriod': feePeriod,
+  'termPaidCents': termPaidCents,
+  'termStartOn': termStartOn,
+  'expiresOn': expiresOn,
+  'autoRenew': 'unknown',
+  'isTrial': false,
+  'remindDays': null,
+  'payPattern': null,
+  'lastChargeTxId': null,
+  'origin': <String, dynamic>{},
+  'note': null,
+  'sortOrder': sort,
+  'archived': archived,
+  'deletedAt': null,
+};
+
+Map<String, dynamic> benefitJson(
+  String id, {
+  String membershipId = 'vip',
+  String? parentId,
+  String name = '券',
+  String kind = 'other',
+  String? claimPlatformId,
+  String? claimHow,
+  String? claimUrl,
+  String flow = 'claim',
+  List<Map<String, dynamic>> quota = const [],
+  List<Map<String, dynamic>> limits = const [],
+  String? validUntil,
+  int? faceValueCents,
+  int sort = 0,
+  bool archived = false,
+}) => {
+  'id': id,
+  'membershipId': membershipId,
+  'parentId': parentId,
+  'name': name,
+  'kind': kind,
+  'claimPlatformId': claimPlatformId,
+  'claimHow': claimHow,
+  'claimUrl': claimUrl,
+  'flow': flow,
+  'quota': quota,
+  'anchor': 'calendar',
+  'validFrom': null,
+  'validUntil': validUntil,
+  'faceValueCents': faceValueCents,
+  'myValueCents': null,
+  'limits': limits,
+  'remind': true,
+  'origin': <String, dynamic>{},
+  'note': null,
+  'sortOrder': sort,
+  'archived': archived,
+  'deletedAt': null,
+};
+
+class PerksFake {
+  PerksFake({
+    List<Map<String, dynamic>> platforms = const [],
+    List<Map<String, dynamic>> memberships = const [],
+    List<Map<String, dynamic>> benefits = const [],
+  }) {
+    for (final p in platforms) {
+      this.platforms[p['id'] as String] = {...p};
+    }
+    for (final m in memberships) {
+      this.memberships[m['id'] as String] = {...m};
+    }
+    for (final b in benefits) {
+      this.benefits[b['id'] as String] = {...b};
+    }
+  }
+
+  final Map<String, Map<String, dynamic>> platforms = {};
+  final Map<String, Map<String, dynamic>> memberships = {};
+  final Map<String, Map<String, dynamic>> benefits = {};
+
+  /// 服务端有、App 还没同步到的打卡记录数（按权益 id）：删权益时照 benefits.js 的 canDelete 算进 409。
+  final Map<String, int> events = {};
+  final List<Map<String, dynamic>> _tombstones = [];
+  int _ids = 0;
+
+  static const Set<String> resources = {'platforms', 'memberships', 'benefits'};
+
+  Map<String, dynamic> changes() => {
+    'platforms': [...platforms.values, ..._gone('platform')],
+    'memberships': [...memberships.values, ..._gone('membership')],
+    'benefits': [...benefits.values, ..._gone('benefit')],
+    'benefit_events': <Object>[],
+  };
+
+  Iterable<Map<String, dynamic>> _gone(String kind) => _tombstones.where((t) => t['_kind'] == kind);
+
+  void _bury(String kind, Map<String, dynamic> row) =>
+      _tombstones.add({...row, 'deletedAt': testNow.toUtc().toIso8601String(), '_kind': kind});
+
+  String _id(String prefix) => '$prefix-new${++_ids}';
+
+  http.Response handle(String method, List<String> seg, Map<String, dynamic> body, Map<String, String> query) {
+    final cascade = query['cascade'] == '1';
+    switch (seg.first) {
+      case 'platforms':
+        return _platforms(method, seg, body);
+      case 'memberships':
+        return _memberships(method, seg, body, cascade);
+      default:
+        return _benefits(method, seg, body, cascade);
+    }
+  }
+
+  Map<String, dynamic>? _clash(String name, {String? except}) {
+    final key = perkNameKey(name);
+    for (final p in platforms.values) {
+      if (p['id'] != except && perkNameKey(p['name'] as String) == key) return p;
+    }
+    return null;
+  }
+
+  http.Response _platforms(String method, List<String> seg, Map<String, dynamic> body) {
+    if (method == 'POST' && seg.length == 1) {
+      final name = (body['name'] as String).trim();
+      final clash = _clash(name);
+      if (clash != null) {
+        return error(409, 'name_taken', '已经有叫「${clash['name']}」的平台了', {'id': clash['id'], 'name': clash['name']});
+      }
+      final row = platformJson(_id('p'), name: name, aliases: [...?(body['aliases'] as List?)?.cast<String>()], sort: platforms.length)
+        ..['kind'] = body['kind'] ?? 'other'
+        ..['url'] = body['url']
+        ..['note'] = body['note'];
+      platforms[row['id'] as String] = row;
+      return ok({'platform': row}, 201);
+    }
+    final row = platforms[seg[1]];
+    if (row == null) return error(404, 'not_found', '平台不存在');
+    if (method == 'POST' && seg.length == 3 && seg[2] == 'merge') {
+      final target = platforms[body['targetId']];
+      if (target == null || target == row) return error(400, 'invalid_targetId', '目标平台不对');
+      var ms = 0;
+      var bs = 0;
+      for (final m in memberships.values.where((m) => m['platformId'] == row['id'])) {
+        m['platformId'] = target['id'];
+        ms++;
+      }
+      for (final b in benefits.values.where((b) => b['claimPlatformId'] == row['id'])) {
+        b['claimPlatformId'] = target['id'];
+        bs++;
+      }
+      target['aliases'] = [...(target['aliases'] as List), row['name'], ...(row['aliases'] as List)];
+      platforms.remove(seg[1]);
+      _bury('platform', row);
+      return ok({
+        'platform': target,
+        'moved': {'memberships': ms, 'benefits': bs},
+      });
+    }
+    if (method == 'PATCH') {
+      if (body['name'] is String) {
+        final clash = _clash(body['name'] as String, except: row['id'] as String);
+        if (clash != null) {
+          return error(409, 'name_taken', '已经有叫「${clash['name']}」的平台了', {'id': clash['id'], 'name': clash['name']});
+        }
+      }
+      row.addAll(body);
+      return ok({'platform': row});
+    }
+    if (method == 'DELETE') {
+      final ms = memberships.values.where((m) => m['platformId'] == row['id']).length;
+      final bs = benefits.values.where((b) => b['claimPlatformId'] == row['id']).length;
+      if (ms > 0 || bs > 0) {
+        return error(409, 'platform_in_use', '还有 $ms 张会员卡挂在它下面，不能删；可以归档，或并入别的平台', {'memberships': ms, 'benefits': bs});
+      }
+      platforms.remove(seg[1]);
+      _bury('platform', row);
+      return ok({'platform': row});
+    }
+    return error(404, 'not_found', '没有这个接口');
+  }
+
+  http.Response _memberships(String method, List<String> seg, Map<String, dynamic> body, bool cascade) {
+    if (method == 'POST' && seg.length == 1) {
+      final row = membershipJson(_id('m'), platformId: body['platformId'] as String, name: body['name'] as String, sort: memberships.length);
+      for (final e in body.entries) {
+        if (e.key != 'clientId' && e.key != 'recordTransaction') row[e.key] = e.value;
+      }
+      if (body['recordTransaction'] != null) row['lastChargeTxId'] = 'tx-perk';
+      memberships[row['id'] as String] = row;
+      return ok({'membership': row}, 201);
+    }
+    final row = memberships[seg[1]];
+    if (row == null) return error(404, 'not_found', '会员不存在');
+    if (method == 'PATCH') {
+      row.addAll(body);
+      return ok({'membership': row});
+    }
+    if (method == 'DELETE') {
+      final mine = benefits.values.where((b) => b['membershipId'] == row['id']).toList();
+      if (mine.isNotEmpty && !cascade) {
+        return error(409, 'has_children', '这张卡下还有 ${mine.length} 项权益，要一起删掉吗？', {'benefits': mine.length});
+      }
+      for (final b in mine) {
+        benefits.remove(b['id']);
+        _bury('benefit', b);
+      }
+      for (final m in memberships.values) {
+        if (mine.any((b) => b['id'] == m['sourceBenefitId'])) m['sourceBenefitId'] = null;
+      }
+      memberships.remove(seg[1]);
+      _bury('membership', row);
+      return ok({'membership': row});
+    }
+    return error(404, 'not_found', '没有这个接口');
+  }
+
+  http.Response _benefits(String method, List<String> seg, Map<String, dynamic> body, bool cascade) {
+    if (method == 'POST' && seg.length == 1) {
+      final row = benefitJson(_id('b'), membershipId: body['membershipId'] as String, name: body['name'] as String, sort: benefits.length);
+      for (final e in body.entries) {
+        if (e.key != 'clientId') row[e.key] = e.value;
+      }
+      final parent = benefits[body['parentId']];
+      if (parent != null) row['flow'] = parent['flow'];
+      benefits[row['id'] as String] = row;
+      return ok({'benefit': row}, 201);
+    }
+    final row = benefits[seg[1]];
+    if (row == null) return error(404, 'not_found', '权益不存在');
+    if (method == 'PATCH') {
+      row.addAll(body);
+      return ok({'benefit': row});
+    }
+    if (method == 'DELETE') {
+      final options = benefits.values.where((b) => b['parentId'] == row['id']).toList();
+      final family = [row, ...options];
+      final eventCount = family.fold<int>(0, (n, b) => n + (events[b['id']] ?? 0));
+      if ((options.isNotEmpty || eventCount > 0) && !cascade) {
+        final parts = [if (options.isNotEmpty) '${options.length} 个选项', if (eventCount > 0) '$eventCount 条打卡记录'];
+        return error(409, 'has_children', '这条下面还有 ${parts.join('、')}，要一起删掉吗？', {'options': options.length, 'events': eventCount});
+      }
+      for (final o in family) {
+        benefits.remove(o['id']);
+        events.remove(o['id']);
+        _bury('benefit', o);
+      }
+      // 带出过的派生会员解开（benefits.js removeBenefits）。
+      for (final m in memberships.values) {
+        if (family.any((b) => b['id'] == m['sourceBenefitId'])) m['sourceBenefitId'] = null;
+      }
+      return ok({'benefit': row});
+    }
+    return error(404, 'not_found', '没有这个接口');
+  }
+
+  static http.Response ok(Object body, [int status = 200]) => http.Response(
+    jsonEncode(body),
+    status,
+    headers: {'content-type': 'application/json; charset=utf-8'},
+  );
+
+  static http.Response error(int status, String code, String message, [Map<String, dynamic>? details]) => http.Response(
+    jsonEncode({
+      'error': {'code': code, 'message': message, 'details': ?details},
+    }),
+    status,
+    headers: {'content-type': 'application/json; charset=utf-8'},
+  );
+}

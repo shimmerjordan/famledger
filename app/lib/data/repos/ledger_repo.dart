@@ -15,6 +15,10 @@ class LedgerData {
     this.budgets = const [],
     this.assets = const [],
     this.holdings = const [],
+    this.platforms = const [],
+    this.memberships = const [],
+    this.benefits = const [],
+    this.benefitEvents = const [],
     this.seq = 0,
   });
 
@@ -26,6 +30,10 @@ class LedgerData {
   final List<Budget> budgets;
   final List<Asset> assets;
   final List<Holding> holdings;
+  final List<PerkPlatform> platforms;
+  final List<Membership> memberships;
+  final List<Benefit> benefits;
+  final List<BenefitEvent> benefitEvents;
 
   /// 已同步到的全局序号。
   final int seq;
@@ -37,6 +45,9 @@ class LedgerData {
   List<Member> get activeMembers => members.where((m) => !m.archived).toList();
   List<Asset> get activeAssets => assets.where((a) => !a.archived).toList();
   List<Holding> get activeHoldings => holdings.where((h) => !h.archived).toList();
+  List<PerkPlatform> get activePlatforms => platforms.where((p) => !p.archived).toList();
+  List<Membership> get activeMemberships => memberships.where((m) => !m.archived).toList();
+  List<Benefit> get activeBenefits => benefits.where((b) => !b.archived).toList();
 
   List<Category> expenseCategories() =>
       categories.where((c) => !c.archived && c.kind == 'expense').toList();
@@ -50,6 +61,9 @@ class LedgerData {
   Member? member(String? id) => _find(members, id, (e) => e.id);
   Asset? asset(String? id) => _find(assets, id, (e) => e.id);
   Holding? holding(String? id) => _find(holdings, id, (e) => e.id);
+  PerkPlatform? platform(String? id) => _find(platforms, id, (e) => e.id);
+  Membership? membership(String? id) => _find(memberships, id, (e) => e.id);
+  Benefit? benefit(String? id) => _find(benefits, id, (e) => e.id);
 
   /// 基金在 12 色盘里的位置（没设颜色时按顺序取色）。
   int fundIndex(String id) => funds.indexWhere((f) => f.id == id);
@@ -65,7 +79,8 @@ class LedgerData {
 
 /// 主数据缓存 + `GET /changes` 增量同步 + 各实体的增删改。
 ///
-/// 流水不在这里缓存（可能很多），只缓存成员/账户/基金/类别/规则/预算/物品/持仓。
+/// 流水不在这里缓存（可能很多），只缓存成员/账户/基金/类别/规则/预算/物品/持仓，
+/// 以及会员权益的平台/会员/权益/打卡事件。
 class LedgerRepo {
   LedgerRepo({required ApiClient api, required LocalStore store})
     : _api = api,
@@ -86,6 +101,10 @@ class LedgerRepo {
   List<Budget> budgets = [];
   List<Asset> assets = [];
   List<Holding> holdings = [];
+  List<PerkPlatform> platforms = [];
+  List<Membership> memberships = [];
+  List<Benefit> benefits = [];
+  List<BenefitEvent> benefitEvents = [];
   int seq = 0;
 
   /// 任何一次本地数据变化都会打一下（UI 重新取 [snapshot]）。
@@ -100,6 +119,10 @@ class LedgerRepo {
     budgets: List.unmodifiable(budgets),
     assets: List.unmodifiable(assets),
     holdings: List.unmodifiable(holdings),
+    platforms: List.unmodifiable(platforms),
+    memberships: List.unmodifiable(memberships),
+    benefits: List.unmodifiable(benefits),
+    benefitEvents: List.unmodifiable(benefitEvents),
     seq: seq,
   );
 
@@ -115,6 +138,10 @@ class LedgerRepo {
     budgets = jsonList(cached['budgets'], Budget.fromJson);
     assets = jsonList(cached['assets'], Asset.fromJson);
     holdings = jsonList(cached['holdings'], Holding.fromJson);
+    platforms = jsonList(cached['platforms'], PerkPlatform.fromJson);
+    memberships = jsonList(cached['memberships'], Membership.fromJson);
+    benefits = jsonList(cached['benefits'], Benefit.fromJson);
+    benefitEvents = jsonList(cached['benefit_events'], BenefitEvent.fromJson);
     // 老版本不认识的表，服务端早就把它们的行发过、游标也走过去了，接着拉永远补不回来。
     final missesTables = _tablesAddedLater.any((key) => !cached.containsKey(key));
     seq = missesTables ? 0 : jsonInt(cached['seq']);
@@ -122,7 +149,14 @@ class LedgerRepo {
   }
 
   /// 后来才加进同步的表：缓存里没有这个键 = 缓存是老版本写的。
-  static const List<String> _tablesAddedLater = ['assets', 'holdings'];
+  static const List<String> _tablesAddedLater = [
+    'assets',
+    'holdings',
+    'platforms',
+    'memberships',
+    'benefits',
+    'benefit_events',
+  ];
 
   /// 增量同步：`GET /changes?since=`，按 id 合并，软删的直接删掉。
   ///
@@ -138,6 +172,10 @@ class LedgerRepo {
       budgets = [];
       assets = [];
       holdings = [];
+      platforms = [];
+      memberships = [];
+      benefits = [];
+      benefitEvents = [];
     }
     var more = true;
     var guard = 0;
@@ -154,6 +192,10 @@ class LedgerRepo {
       budgets = _merge(budgets, res['budgets'], Budget.fromJson, budgetKey);
       assets = _merge(assets, res['assets'], Asset.fromJson, (e) => e.id);
       holdings = _merge(holdings, res['holdings'], Holding.fromJson, (e) => e.id);
+      platforms = _merge(platforms, res['platforms'], PerkPlatform.fromJson, (e) => e.id);
+      memberships = _merge(memberships, res['memberships'], Membership.fromJson, (e) => e.id);
+      benefits = _merge(benefits, res['benefits'], Benefit.fromJson, (e) => e.id);
+      benefitEvents = _merge(benefitEvents, res['benefit_events'], BenefitEvent.fromJson, (e) => e.id);
       seq = jsonInt(res['next'], seq);
       more = jsonBool(res['more']);
     }
@@ -293,6 +335,42 @@ class LedgerRepo {
 
   Future<void> dropHolding(String id) => _drop(holdings, id, (e) => e.id);
 
+  // —— 会员权益 ——
+  // 增删改走 PerksRepo（删除有级联、平台能合并），拿到服务端回的那一行后交给这里落本地。
+
+  Future<void> putPlatform(PerkPlatform item) => _put(platforms, item, (e) => e.id);
+
+  Future<void> dropPlatform(String id) => _drop(platforms, id, (e) => e.id);
+
+  Future<void> putMembership(Membership item) => _put(memberships, item, (e) => e.id);
+
+  /// 级联删会员时连它名下的权益和这些权益的打卡事件一起从本地拿掉（服务端同一事务里删的）。
+  Future<void> dropMembership(String id, {bool cascade = false}) async {
+    memberships.removeWhere((e) => e.id == id);
+    if (cascade) {
+      final gone = {for (final b in benefits) if (b.membershipId == id) b.id};
+      benefits.removeWhere((b) => gone.contains(b.id));
+      benefitEvents.removeWhere((e) => gone.contains(e.benefitId));
+    }
+    await _persist();
+    _notify();
+  }
+
+  Future<void> putBenefit(Benefit item) => _put(benefits, item, (e) => e.id);
+
+  /// 级联删权益时连它的选项和打卡事件一起拿掉。
+  Future<void> dropBenefit(String id, {bool cascade = false}) async {
+    final gone = {id, if (cascade) ...[for (final b in benefits) if (b.parentId == id) b.id]};
+    benefits.removeWhere((b) => gone.contains(b.id));
+    benefitEvents.removeWhere((e) => gone.contains(e.benefitId));
+    await _persist();
+    _notify();
+  }
+
+  Future<void> putBenefitEvent(BenefitEvent item) => _put(benefitEvents, item, (e) => e.id);
+
+  Future<void> dropBenefitEvent(String id) => _drop(benefitEvents, id, (e) => e.id);
+
   /// 拖动排序后写回顺序。
   Future<void> reorder(String entity, List<String> ids) async {
     await _api.put('/$entity/reorder', {'ids': ids});
@@ -408,6 +486,11 @@ class LedgerRepo {
     rules.sort((a, b) => b.priority.compareTo(a.priority));
     assets.sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
     holdings.sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+    platforms.sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+    memberships.sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+    benefits.sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+    // 打卡事件新的在前（P3 的历史列表就这么画）。
+    benefitEvents.sort((a, b) => b.occurredOn.compareTo(a.occurredOn));
   }
 
   Future<void> _persist() async {
@@ -420,6 +503,10 @@ class LedgerRepo {
       'budgets': budgets.map((e) => e.toJson()).toList(),
       'assets': assets.map((e) => e.toJson()).toList(),
       'holdings': holdings.map((e) => e.toJson()).toList(),
+      'platforms': platforms.map((e) => e.toJson()).toList(),
+      'memberships': memberships.map((e) => e.toJson()).toList(),
+      'benefits': benefits.map((e) => e.toJson()).toList(),
+      'benefit_events': benefitEvents.map((e) => e.toJson()).toList(),
       'seq': seq,
     });
   }

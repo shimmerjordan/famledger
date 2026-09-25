@@ -154,6 +154,37 @@ void main() {
       );
     });
 
+    test('error.details 带进 ApiException.details；没有 details 就是空 Map', () async {
+      final api = ApiClient(
+        baseUrl: 'https://x.dev',
+        inner: MockClient(
+          (req) async => req.url.path.endsWith('/platforms')
+              ? jsonResponse({
+                  'error': {
+                    'code': 'name_taken',
+                    'message': '已经有叫「优酷」的平台了',
+                    'details': {'id': 'p1', 'name': '优酷'},
+                  },
+                }, status: 409)
+              : jsonResponse({
+                  'error': {'code': 'not_found', 'message': '没有'},
+                }, status: 404),
+        ),
+      );
+      await expectLater(
+        api.post('/platforms', {'name': 'YOUKU'}),
+        throwsA(
+          isA<ApiException>()
+              .having((e) => e.code, 'code', 'name_taken')
+              .having((e) => e.details, 'details', {'id': 'p1', 'name': '优酷'}),
+        ),
+      );
+      await expectLater(
+        api.get('/nothing'),
+        throwsA(isA<ApiException>().having((e) => e.details, 'details', isEmpty)),
+      );
+    });
+
     test('非 JSON 错误体回退到 http_<status>', () async {
       final api = ApiClient(
         baseUrl: 'https://x.dev',

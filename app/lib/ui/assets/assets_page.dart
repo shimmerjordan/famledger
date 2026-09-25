@@ -5,11 +5,13 @@ import 'package:go_router/go_router.dart';
 import '../../app/providers.dart';
 import '../../data/repos/holdings_repo.dart';
 import 'asset_providers.dart';
+import '../perks/perks_tab.dart';
 import 'invest_tab.dart';
 import 'items_tab.dart';
 import 'net_worth_strip.dart';
 
-/// 资产：顶上一行净资产总览，下面「物品」看每天花多少和估值，「投资」看市值和收益。
+/// 资产：顶上一行净资产总览，下面「物品」看每天花多少和估值，「投资」看市值和收益，
+/// 「会员权益」看每张卡有哪些权益、去哪领（虚拟资产不计入净资产）。
 ///
 /// TabBar 放在页面里（不挂在 AppBar.bottom）：它上面的净资产总览能展开，高度不固定。
 ///
@@ -17,10 +19,11 @@ import 'net_worth_strip.dart';
 class AssetsPage extends ConsumerStatefulWidget {
   const AssetsPage({super.key, this.initialTab = 0});
 
-  /// 0 = 物品，1 = 投资（`/assets?tab=invest`）。
+  /// 0 = 物品，1 = 投资（`/assets?tab=invest`），2 = 会员权益（`/assets?tab=perks`）。
   final int initialTab;
 
   static const int investTab = 1;
+  static const int perksTab = 2;
 
   @override
   ConsumerState<AssetsPage> createState() => _AssetsPageState();
@@ -29,9 +32,9 @@ class AssetsPage extends ConsumerStatefulWidget {
 class _AssetsPageState extends ConsumerState<AssetsPage>
     with SingleTickerProviderStateMixin {
   late final TabController _tabs = TabController(
-    length: 2,
+    length: 3,
     vsync: this,
-    initialIndex: widget.initialTab.clamp(0, 1),
+    initialIndex: widget.initialTab.clamp(0, 2),
   );
   late int _index = _tabs.index;
 
@@ -90,17 +93,27 @@ class _AssetsPageState extends ConsumerState<AssetsPage>
   Widget build(BuildContext context) {
     ref.listen(ledgerProvider, (_, _) => _maybeAutoRefresh());
     final invest = _index == AssetsPage.investTab;
+    final perks = _index == AssetsPage.perksTab;
     return Scaffold(
       appBar: AppBar(
         title: const Text('资产'),
         actions: [
           IconButton(
-            tooltip: invest ? '添加持仓' : '记一件物品',
+            tooltip: invest ? '添加持仓' : (perks ? '记一张会员卡' : '记一件物品'),
             icon: const Icon(Icons.add),
             onPressed: () => context.push(
-              invest ? '/assets/holdings/new' : '/assets/items/new',
+              invest ? '/assets/holdings/new' : (perks ? '/assets/memberships/new' : '/assets/items/new'),
             ),
           ),
+          if (perks)
+            PopupMenuButton<String>(
+              key: const ValueKey('perks-menu'),
+              tooltip: '更多',
+              onSelected: (_) => context.push('/assets/platforms'),
+              itemBuilder: (context) => const [
+                PopupMenuItem(value: 'platforms', child: Text('平台管理')),
+              ],
+            ),
         ],
       ),
       body: LayoutBuilder(
@@ -117,12 +130,13 @@ class _AssetsPageState extends ConsumerState<AssetsPage>
               tabs: const [
                 Tab(text: '物品'),
                 Tab(text: '投资'),
+                Tab(text: '会员权益'),
               ],
             ),
             Expanded(
               child: TabBarView(
                 controller: _tabs,
-                children: const [ItemsTab(), InvestTab()],
+                children: const [ItemsTab(), InvestTab(), PerksTab()],
               ),
             ),
           ],

@@ -18,6 +18,9 @@ const { loadOrCreateSecret, encrypt, decrypt, isEncrypted } = require('../src/li
 const { RateLimiter } = require('../src/lib/ratelimit');
 const { clientIp } = require('../src/lib/clientip');
 const { openSse } = require('../src/lib/sse');
+const { HttpError, sendError } = require('../src/lib/router');
+const { makeCrud } = require('../src/lib/crud');
+const v = require('../src/lib/validate');
 
 function tmp(tag) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `famledger-${tag}-`));
@@ -187,4 +190,106 @@ test('sse: events are framed as text/event-stream', async (t) => {
   assert.match(res.headers.get('cache-control'), /no-cache/);
   const body = await res.text();
   assert.equal(body, ': open\n\nevent: delta\ndata: {"text":"你好"}\n\nevent: done\ndata: {"usage":{"in":1,"out":2}}\n\n');
+});
+
+/** Just enough of a ServerResponse for sendJson(): records the status and the parsed body. */
+function fakeRes() {
+  return {
+    status: 0,
+    body: null,
+    writeHead(status) {
+      this.status = status;
+    },
+    end(buf) {
+      this.body = JSON.parse(buf.toString('utf8'));
+    },
+  };
+}
+
+test('router: HttpError details ride along as error.details; plain errors keep the old shape', () => {
+  const e = new HttpError(409, 'name_taken', '已经有了', { id: 'p1' });
+  assert.deepEqual(e.details, { id: 'p1' });
+  assert.equal(new HttpError(400, 'x').details, null);
+
+  const withDetails = fakeRes();
+  sendError(withDetails, 409, 'name_taken', '已经有了', { id: 'p1' });
+  assert.deepEqual(withDetails.body, { error: { code: 'name_taken', message: '已经有了', details: { id: 'p1' } } });
+  const plain = fakeRes();
+  sendError(plain, 404, 'not_found', '没有');
+  assert.deepEqual(plain.body, { error: { code: 'not_found', message: '没有' } }, 'no details key when there are none');
+});
+
+test('validate: day() is a real calendar day, not later than today unless {future:true}; optDay() allows blanks', () => {
+  const pad = (n) => String(n).padStart(2, '0');
+  const at = (offset) => {
+    const d = new Date();
+    d.setDate(d.getDate() + offset);
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  };
+  assert.equal(v.localDay(new Date(2026, 0, 5, 23, 59)), '2026-01-05');
+  assert.equal(v.day(at(0), 'd'), at(0));
+  assert.equal(v.day('2024-02-29', 'd'), '2024-02-29');
+  assert.equal(v.day(at(400), 'd', { future: true }), at(400));
+  const code = (fn) => {
+    try {
+      fn();
+    } catch (e) {
+      return `${e.status} ${e.code}`;
+    }
+    return 'ok';
+  };
+  assert.equal(code(() => v.day(at(1), 'expiresOn')), '400 invalid_expiresOn');
+  assert.equal(code(() => v.day('2025-02-29', 'd', { future: true })), '400 invalid_d');
+  assert.equal(code(() => v.day('2025/1/1', 'd')), '400 invalid_d');
+  assert.equal(code(() => v.day(20250101, 'd')), '400 invalid_d');
+  assert.equal(v.optDay(undefined, 'd'), null);
+  assert.equal(v.optDay(null, 'd'), null);
+  assert.equal(v.optDay('', 'd'), null);
+  assert.equal(v.optDay(at(30), 'd', { future: true }), at(30));
+});
+
+test('crud: onDelete runs inside the delete transaction — a throw rolls the tombstone back', (t) => {
+  const dir = tmp('crud');
+  const db = openDb(dir);
+  t.after(() => db.close());
+  db.exec(
+    'CREATE TABLE widgets(id TEXT PRIMARY KEY, name TEXT NOT NULL, sort_order INTEGER NOT NULL DEFAULT 0,' +
+      ' archived INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT, seq INTEGER NOT NULL)',
+  );
+  const seen = [];
+  let explode = false;
+  const crud = makeCrud({
+    db,
+    table: 'widgets',
+    resource: 'widgets',
+    label: '零件',
+    fields: { name: { type: 'string', required: true, max: 20 } },
+    onDelete(row, reqCtx) {
+      seen.push({ id: row.id, tombstoned: !!row.deleted_at, cascade: reqCtx.query.cascade });
+      db.setMeta('widgets_cleanup', row.id);
+      if (explode) throw new HttpError(409, 'nope', '清理失败');
+    },
+  });
+  const handler = (method, pattern) => crud.routes.find((r) => r.method === method && r.pattern === pattern).handler;
+  const call = (method, pattern, reqCtx) => {
+    const res = fakeRes();
+    handler(method, pattern)(null, res, { params: {}, query: {}, body: {}, ...reqCtx });
+    return res;
+  };
+
+  const a = call('POST', '/widgets', { body: { name: '齿轮' } }).body.widget;
+  const b = call('POST', '/widgets', { body: { name: '弹簧' } }).body.widget;
+
+  const removed = call('DELETE', '/widgets/:id', { params: { id: a.id }, query: { cascade: '1' } });
+  assert.equal(removed.status, 200);
+  assert.ok(removed.body.widget.deletedAt);
+  assert.deepEqual(seen, [{ id: a.id, tombstoned: true, cascade: '1' }], 'sees the tombstoned row and the request');
+  assert.equal(db.meta('widgets_cleanup'), a.id, 'what onDelete wrote is committed with the delete');
+
+  explode = true;
+  const seqBefore = db.meta('change_seq');
+  assert.throws(() => call('DELETE', '/widgets/:id', { params: { id: b.id } }), (e) => e.code === 'nope');
+  assert.equal(db.get('SELECT deleted_at FROM widgets WHERE id = ?', b.id).deleted_at, null, 'tombstone rolled back');
+  assert.equal(db.meta('widgets_cleanup'), a.id, "onDelete's own write rolled back too");
+  assert.equal(db.meta('change_seq'), seqBefore, 'no seq burnt');
 });

@@ -8,7 +8,13 @@ import 'http_client_io.dart'
 
 /// 后端返回的一个错误；网络层错误用 `status: 0, code: 'network'`。
 class ApiException implements Exception {
-  const ApiException(this.status, this.code, this.message, {this.maybeSent = false});
+  const ApiException(
+    this.status,
+    this.code,
+    this.message, {
+    this.maybeSent = false,
+    this.details = const {},
+  });
 
   /// HTTP 状态码；0 表示请求根本没到服务端。
   final int status;
@@ -24,6 +30,9 @@ class ApiException implements Exception {
   /// 只有「连都没连上」（拒绝连接、DNS 解析不了）才是 false。离线入队时靠它
   /// 决定这条记录能不能就地丢弃 —— 可能已落库的，删之前得先确认一次。
   final bool maybeSent;
+
+  /// 服务端 `{error:{details}}`：比如重名时已有那行的 id（`name_taken`）、删不掉时的引用数。没有就是空 Map。
+  final Map<String, dynamic> details;
 
   bool get isNetwork => code == 'network';
   bool get isUnauthorized => status == 401;
@@ -285,10 +294,12 @@ class ApiClient {
   static ApiException _errorFrom(int status, Object? decoded) {
     if (decoded is Map && decoded['error'] is Map) {
       final error = decoded['error'] as Map;
+      final details = error['details'];
       return ApiException(
         status,
         error['code']?.toString() ?? 'http_$status',
         error['message']?.toString() ?? _statusMessage(status),
+        details: details is Map ? details.map((k, v) => MapEntry(k.toString(), v)) : const {},
       );
     }
     return ApiException(status, 'http_$status', _statusMessage(status));

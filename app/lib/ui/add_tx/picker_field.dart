@@ -63,8 +63,11 @@ class PickerField extends StatelessWidget {
                   ),
                 ),
               ] else if (trailing != null) ...[
-                const Spacer(),
-                trailing!,
+                // 说明排不下（长辈调大字号、窄屏）时自己折行，不撑破标题行。
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Align(alignment: AlignmentDirectional.centerEnd, child: trailing!),
+                ),
               ],
             ],
           ),

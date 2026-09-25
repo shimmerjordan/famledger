@@ -28,6 +28,10 @@ const SYNCED = [
   ['rules', { bools: ['enabled'] }],
   ['assets', { bools: ['archived'] }],
   ['holdings', { bools: ['archived'] }],
+  ['platforms', { bools: ['archived'], json: ['aliases'] }],
+  ['memberships', { bools: ['archived', 'is_trial'], json: ['pay_pattern', 'origin'] }],
+  ['benefits', { bools: ['archived', 'remind'], json: ['quota', 'limits', 'origin'] }],
+  ['benefit_events', {}],
 ];
 
 module.exports = (ctx) => {

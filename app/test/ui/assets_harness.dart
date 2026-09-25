@@ -15,6 +15,8 @@ import 'package:go_router/go_router.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
+import 'perks_fake.dart';
+
 // 资产页 widget 测试共用：一个记得住状态的假服务端（写完再 /changes 能拿到新样子），
 // 加上真的 LedgerRepo / AssetsRepo / HoldingsRepo 和 go_router 路由。
 
@@ -132,7 +134,10 @@ class AssetsBackend {
     List<Map<String, dynamic>> assets = const [],
     List<Map<String, dynamic>> holdings = const [],
     List<Map<String, dynamic>> accounts = defaultAccounts,
-  }) : accounts = [for (final a in accounts) {...a}] {
+    this.members = const [],
+    PerksFake? perks,
+  }) : accounts = [for (final a in accounts) {...a}],
+       perks = perks ?? PerksFake() {
     for (final a in assets) {
       this.assets[a['id'] as String] = {...a};
     }
@@ -144,6 +149,12 @@ class AssetsBackend {
   final Map<String, Map<String, dynamic>> assets = {};
   final Map<String, Map<String, dynamic>> holdings = {};
   final List<Map<String, dynamic>> accounts;
+
+  /// `/changes` 里的家庭成员（会员卡的持有人 chip 用）。
+  final List<Map<String, dynamic>> members;
+
+  /// 会员权益那几张表和接口（test/ui/perks_fake.dart）。
+  final PerksFake perks;
   final List<Map<String, dynamic>> _tombstones = [];
   final List<http.Request> seen = [];
 
@@ -239,6 +250,8 @@ class AssetsBackend {
       res = _assets(req.method, seg, body);
     } else if (seg.isNotEmpty && seg.first == 'holdings') {
       res = _holdings(req.method, seg, body);
+    } else if (seg.isNotEmpty && PerksFake.resources.contains(seg.first)) {
+      res = perks.handle(req.method, seg, body, req.url.queryParameters);
     } else {
       res = _error(404, 'not_found', '没有这个接口 $path');
     }
@@ -255,7 +268,7 @@ class AssetsBackend {
     'since': 0,
     'next': frozenSeq ? _seq : ++_seq,
     'more': false,
-    'members': <Object>[],
+    'members': members,
     'accounts': accounts,
     'funds': [
       {'id': 'f1', 'name': '家庭公共', 'kind': 'shared', 'isDefault': true, 'sortOrder': 0},
@@ -270,6 +283,7 @@ class AssetsBackend {
       ...holdings.values,
       ..._tombstones.where((t) => t['kind'] == 'holding'),
     ],
+    ...perks.changes(),
   };
 
   Map<String, dynamic> overview() {
@@ -475,11 +489,12 @@ Future<SessionRepo> sessionAs(String role) async {
   return repo;
 }
 
-/// [session] 不给 = 没登录（不是管理员）。
+/// [session] 不给 = 没登录（不是管理员）。[overrides] 追加在后面（比如换掉打开链接的函数）。
 ProviderContainer bootAssets(
   AssetsBackend backend, {
   LocalStore? store,
   SessionRepo? session,
+  List<Override> overrides = const [],
 }) => ProviderContainer(
       overrides: [
         localStoreProvider.overrideWithValue(store ?? MemoryLocalStore()),
@@ -491,6 +506,7 @@ ProviderContainer bootAssets(
           ApiClient(baseUrl: 'https://x.dev', token: 'tok', inner: backend.client),
         ),
         assetClockProvider.overrideWithValue(() => testNow),
+        ...overrides,
       ],
     );
 

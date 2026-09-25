@@ -21,6 +21,9 @@
 //   fromBody(body, isPatch, row) → extra column values, merged last
 //   canDelete(row, reqCtx)       → throw HttpError(409, …) to refuse a delete
 //   onWrite(row, {isPatch, body, reqCtx}) → runs inside the same transaction
+//   onDelete(row, reqCtx)        → runs inside the delete's transaction, right after the
+//                                  row got its tombstone (cascades, unlinking references);
+//                                  a throw rolls the delete back too
 //
 // `idempotency: '<scope>'` makes POST honour a `clientId` in the body (lib/idempotency.js):
 // a create whose onWrite also books money must not run twice when the client retries
@@ -90,6 +93,7 @@ function makeCrud(opts) {
     fromBody = null,
     canDelete = null,
     onWrite = null,
+    onDelete = null,
     idempotency = null,
     auth = 'member',
   } = opts;
@@ -201,7 +205,9 @@ function makeCrud(opts) {
       canDelete?.(row, reqCtx);
       const now = db.now();
       db.run(`UPDATE ${table} SET deleted_at = ?, updated_at = ?, seq = ? WHERE id = ?`, now, now, db.nextSeq(), row.id);
-      return reread(row.id);
+      const gone = reread(row.id);
+      onDelete?.(gone, reqCtx);
+      return gone;
     });
     sendJson(res, 200, { [singular]: toJson(next) });
   }

@@ -76,6 +76,7 @@ class TagLabel extends StatelessWidget {
       child: Text(
         text,
         maxLines: 1,
+        overflow: TextOverflow.ellipsis,
         style: theme.textTheme.labelSmall?.copyWith(
           color: warning
               ? theme.colorScheme.onSurface
@@ -197,6 +198,29 @@ Future<DateTime?> pickPastDay(
     initialDate: start,
     firstDate: firstDate,
     lastDate: last,
+    helpText: help,
+  );
+}
+
+/// 选一天，可以是将来：会员到期日、权益有效期这些本来就在前面的日子（服务端也允许）。
+/// [first] / [last] 缺省是 2000 年到 2100 年底；[initial] 超出范围时夹到边上。
+Future<DateTime?> pickAnyDay(
+  BuildContext context, {
+  required DateTime initial,
+  DateTime? first,
+  DateTime? last,
+  String? help,
+}) {
+  final firstDate = first ?? DateTime(2000);
+  final lastDate = last ?? DateTime(2100, 12, 31);
+  var start = DateTime(initial.year, initial.month, initial.day);
+  if (start.isBefore(firstDate)) start = firstDate;
+  if (start.isAfter(lastDate)) start = lastDate;
+  return showDatePicker(
+    context: context,
+    initialDate: start,
+    firstDate: firstDate,
+    lastDate: lastDate,
     helpText: help,
   );
 }
