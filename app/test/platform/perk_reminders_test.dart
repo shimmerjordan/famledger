@@ -358,7 +358,8 @@ void main() {
       notifications: [PerkNotification(id: 20260924, at: at, title: 't', body: 'b', payload: '/')],
     );
     expect(plan.signature, contains('20260924@${at.toUtc().toIso8601String()}|'));
-    expect(plan.signature, isNot(contains(at.toIso8601String())));
+    // 带上分隔符比：机器时区是 UTC 时，本地串恰好是 UTC 串去掉末尾的 Z，光比子串会误报。
+    expect(plan.signature, isNot(contains('20260924@${at.toIso8601String()}|')));
   });
 
   testWidgets('防抖 2 秒：连着来几次只排一次；卸掉外壳时收起没到点的', (tester) async {
