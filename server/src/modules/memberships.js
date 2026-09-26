@@ -7,6 +7,10 @@
 // 指向这些权益的派生会员把 source_benefit_id 置空（lib/crud.js 的 onDelete + benefits.js 的 removeBenefits）。
 // 续费 POST /memberships/:id/renew：到期日往后推一个周期（或给定的日子），本期开始和本期实付跟着换；
 // 带 chargeTransactionId 只关联那笔已有流水、不另记账；收 clientId 做幂等（「续了」回应丢了再点，不会续两期）。
+// 扣费线索 GET /memberships/charge-hints（P6）：设了扣费特征（payPattern）、到期日在 [今天 − 15, 今天 + 7] 的卡，
+// 找到期日前后没被关联过的对得上的确认支出（lib/charge_hints.js）。同一笔流水只能挂在一张卡上：续费关联、
+// PATCH lastChargeTxId（撤销续费时改回去）都查，挂在别的卡上 409 charge_linked；PATCH 给的那笔已经删了、
+// 不再是确认过的支出时按 null 存（悬空的指针没有意义，不能因此把整个撤销拒掉）。
 
 const { HttpError, sendJson } = require('../lib/router');
 const { makeCrud } = require('../lib/crud');
@@ -14,8 +18,12 @@ const { rowToJson } = require('../lib/db');
 const idem = require('../lib/idempotency');
 const v = require('../lib/validate');
 const perks = require('../lib/perks_schema');
+const { CHARGE_DAYS_BEFORE, CHARGE_DAYS_AFTER, CHARGE_TX_SQL, matchChargeHints } = require('../lib/charge_hints');
 
 const MAX_AMOUNT = 1e14;
+/** 扣费线索看到期日落在 [今天 − 15, 今天 + 7] 的卡（spec §4）。 */
+const HINT_EXPIRED_DAYS = 15;
+const HINT_AHEAD_DAYS = 7;
 const RECORD_KEYS = ['accountId', 'fundId', 'categoryId', 'memberId'];
 
 // 会员只记到「哪一天」：钉在当天中午，和物品同一个口径（modules/assets.js）。
@@ -26,6 +34,32 @@ module.exports = (ctx) => {
 
   const alive = (table, id) => !!db.get(`SELECT 1 AS ok FROM ${table} WHERE id = ? AND deleted_at IS NULL`, id);
   const aliveRow = (table, id) => db.get(`SELECT * FROM ${table} WHERE id = ? AND deleted_at IS NULL`, id);
+
+  /**
+   * 这笔流水能不能算成 [membershipId] 的扣费（续费关联）：得是存活、确认过的支出（和统计、扣费线索一个口径 ——
+   * 收入、转账、待确认的挂上去，这张卡的「上次扣费」就是错的）；已经挂在别的存活会员上 409（checkLinked）。
+   */
+  function checkCharge(txId, membershipId, field) {
+    const charge = db.get('SELECT type, status FROM transactions WHERE id = ? AND deleted_at IS NULL', txId);
+    if (!charge) v.bad(field, '这笔流水不存在');
+    if (charge.type !== 'expense' || charge.status !== 'confirmed') v.bad(field, '只能关联一笔已确认的支出');
+    checkLinked(txId, membershipId);
+  }
+
+  /** 存活、确认过的支出（checkCharge 的前半句，不报错）。 */
+  const isCharge = (txId) =>
+    !!db.get("SELECT 1 AS ok FROM transactions WHERE id = ? AND deleted_at IS NULL AND type = 'expense' AND status = 'confirmed'", txId);
+
+  /** 同一笔流水不能挂到两张卡上：已经是别的存活会员的 last_charge_tx_id 就 409 charge_linked。 */
+  function checkLinked(txId, membershipId) {
+    const other = db.get(
+      'SELECT id, name FROM memberships WHERE last_charge_tx_id = ? AND deleted_at IS NULL AND id <> ?',
+      txId, membershipId || '',
+    );
+    if (other) {
+      throw new HttpError(409, 'charge_linked', `这笔扣费已经算在「${other.name}」上了`, { membershipId: other.id });
+    }
+  }
 
   /** 「同时记账」请求体 → createTransaction 的一部分；类型、金额、日期由会员本身决定。 */
   function recordFrom(raw, row) {
@@ -44,8 +78,9 @@ module.exports = (ctx) => {
     singular: 'membership',
     label: '会员',
     idempotency: 'membership.create',
-    // pay_pattern（扣费特征，P6/P7 写）不是可写字段，但回应要和 /changes 一个形状（modules/changes.js 的 SYNCED）：
-    // 否则 App 落本地时把字符串当成「没有」，缓存里的 payPattern 要等下一次同步才回来。
+    // pay_pattern（扣费特征）在下面 fromBody 里按 perks.payPatternOf 写，不进 fields 表（AI 导入的 apply 共用 fields 表，
+    // 不该顺手收它）；回应要和 /changes 一个形状（modules/changes.js 的 SYNCED）：否则 App 落本地时把字符串当成「没有」，
+    // 缓存里的 payPattern 要等下一次同步才回来。
     toJson: (row) => rowToJson(row, { bools: ['archived', 'is_trial'], json: ['pay_pattern', 'origin'] }),
     // 字段表和 AI 导入共用（lib/perks_schema.js）；origin 的真正校验在下面 fromBody（originOf）。
     fields: perks.MEMBERSHIP_FIELDS,
@@ -88,6 +123,26 @@ module.exports = (ctx) => {
       perks.dateOrder(termStartOn, expiresOn, given('expiresOn') ? 'expiresOn' : 'termStartOn', '到期日不能早于本期开始');
       out.term_start_on = termStartOn;
       out.expires_on = expiresOn;
+
+      // 扣费特征：给 null / 空串清掉；给了就按 perks_schema.payPatternOf 规整（P7 的流水识别写同一个形状）。
+      if (given('payPattern')) {
+        out.pay_pattern = blank('payPattern') ? null : JSON.stringify(perks.payPatternOf(body.payPattern));
+      }
+      // 上次扣费：撤销「续上」时把它改回去用。null 清掉；挂在别的卡上 409（同一笔不能挂两张卡）。原来那笔后来删了、
+      // 改成待确认了（比如和自动记账那笔重复，用户删了手记的）：按 null 存 —— 悬空的指针没有意义，也不能因为它
+      // 把到期日、本期这些一起拒掉，撤销就撤不回去了。
+      if (given('lastChargeTxId')) {
+        if (blank('lastChargeTxId')) out.last_charge_tx_id = null;
+        else {
+          const txId = v.str(body.lastChargeTxId, 'lastChargeTxId', { max: 64 });
+          if (isCharge(txId)) {
+            checkLinked(txId, row ? row.id : null);
+            out.last_charge_tx_id = txId;
+          } else {
+            out.last_charge_tx_id = null;
+          }
+        }
+      }
 
       if (given('origin')) out.origin = JSON.stringify(v.isMissing(body.origin) ? {} : perks.originOf(body.origin));
       else if (isPatch) {
@@ -164,14 +219,13 @@ module.exports = (ctx) => {
     const termStartOn = oneBack > afterBase ? oneBack : afterBase;
     const paid = v.optInt(body.paidCents, 'paidCents', { min: 0, max: MAX_AMOUNT });
 
-    // 只关联、不记账：扣费线索（P6）或用户指认的那笔流水。得是确认过的支出（和统计、charge-hints 一个口径）：
-    // 收入、转账、待确认的挂上去，这张卡的「上次扣费」就是错的。同一笔挂到两张卡上的检查放在 P6 和扣费线索一起做。
+    // 只关联、不记账：扣费线索或用户指认的那笔流水。得是确认过的支出，也不能已经挂在别的卡上（checkCharge）；
+    // 挂在这张卡自己身上 = 这笔已经续过一期了，再续就是一笔钱续两期，也 409。
     const chargeId = v.optStr(body.chargeTransactionId, 'chargeTransactionId', { max: 64 });
     if (chargeId) {
-      const charge = db.get('SELECT type, status FROM transactions WHERE id = ? AND deleted_at IS NULL', chargeId);
-      if (!charge) v.bad('chargeTransactionId', '这笔流水不存在');
-      if (charge.type !== 'expense' || charge.status !== 'confirmed') {
-        v.bad('chargeTransactionId', '只能关联一笔已确认的支出');
+      checkCharge(chargeId, row.id, 'chargeTransactionId');
+      if (row.last_charge_tx_id === chargeId) {
+        throw new HttpError(409, 'charge_linked', '这笔扣费已经续过这张卡了', { membershipId: row.id });
       }
     }
     const rec = chargeId ? null : recordFrom(body.recordTransaction, row);
@@ -219,8 +273,34 @@ module.exports = (ctx) => {
     return kept.length === origin.unverified.length ? raw : JSON.stringify({ ...origin, unverified: kept });
   }
 
+  /**
+   * 扣费线索（spec §4）：设了扣费特征、没归档、能续费（month / quarter / year）、到期日在 [今天 − 15, 今天 + 7] 的卡，
+   * 在到期日前 7 天到后 15 天里找没被关联过（不是哪张卡的 last_charge_tx_id、也不是哪件物品的 transaction_id）的
+   * 确认支出。流水按 occurred_at 的字符串区间查（CHARGE_TX_SQL，走 idx_tx_occurred）；怎么对、怎么分给卡见 lib/charge_hints.js。
+   * 回 `{items:[{membershipId, transactionId, occurredOn, amountCents, merchant, expiresOn, renewTo}]}`。
+   */
+  function chargeHints(req, res) {
+    const today = v.localDay();
+    const cards = db.all(
+      'SELECT id, member_id, fee_period, expires_on, pay_pattern FROM memberships' +
+        ' WHERE deleted_at IS NULL AND archived = 0 AND pay_pattern IS NOT NULL AND expires_on >= ? AND expires_on <= ?',
+      perks.addDays(today, -HINT_EXPIRED_DAYS), perks.addDays(today, HINT_AHEAD_DAYS),
+    ).filter((c) => perks.PERIOD_MONTHS[c.fee_period]);
+    if (cards.length === 0) return sendJson(res, 200, { items: [] });
+    const days = cards.map((c) => c.expires_on).sort();
+    const txs = db.all(
+      CHARGE_TX_SQL,
+      perks.addDays(days[0], -CHARGE_DAYS_BEFORE), perks.addDays(days[days.length - 1], CHARGE_DAYS_AFTER + 1),
+    );
+    sendJson(res, 200, { items: matchChargeHints(cards, txs) });
+  }
+
   return {
     name: 'memberships',
-    routes: [...crud.routes, { method: 'POST', pattern: '/memberships/:id/renew', handler: renew }],
+    routes: [
+      ...crud.routes,
+      { method: 'GET', pattern: '/memberships/charge-hints', handler: chargeHints, maxBody: 0 },
+      { method: 'POST', pattern: '/memberships/:id/renew', handler: renew },
+    ],
   };
 };

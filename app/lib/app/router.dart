@@ -25,6 +25,7 @@ import '../ui/settings/budgets_page.dart';
 import '../ui/settings/capture_page.dart';
 import '../ui/settings/categories_page.dart';
 import '../ui/settings/members_page.dart';
+import '../ui/settings/perk_reminder_page.dart';
 import '../ui/settings/rules_page.dart';
 import '../ui/settings/server_page.dart';
 import '../ui/settings/settings_page.dart';
@@ -171,6 +172,10 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/settings/capture',
         builder: (context, state) => const CapturePage(),
+      ),
+      GoRoute(
+        path: '/settings/perk-reminders',
+        builder: (context, state) => const PerkReminderPage(),
       ),
       GoRoute(
         path: '/settings/ai',

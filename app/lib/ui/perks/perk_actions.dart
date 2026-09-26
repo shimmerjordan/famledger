@@ -303,11 +303,17 @@ class _CheckInSheetState extends State<CheckInSheet> {
 /// 到期日总是算好了发过去（服务端只在「新到期日晚于它手上的到期日」时才续）：两台设备、两个家人各点一次「续了」，
 /// 后到的那台本地还是旧的到期日，服务端回 400 `invalid_expiresOn`，这里说一句「已经续过了」再同步，不会续出两期。
 /// 免年费（上一期实付 0）、派生卡（大会员带出来的）续下一期多半还是这样，本期实付照原样带上，不让服务端清空成按续费价算。
-Future<void> renewNow(BuildContext context, WidgetRef ref, Membership m) async {
+///
+/// 给了 [charge]（扣费线索的「续上」）：到期日用线索算好的 renewTo，本期实付 = 那笔扣了多少，带 chargeTransactionId
+/// 只关联、不另记账；撤销时连「上次扣费」一起改回去。这笔已经算在别的卡上（409 charge_linked）就说一句、重新取线索。
+/// 撤销时原来那笔「上次扣费」用不了了（老服务端对删掉的流水回 400，或者它后来算到了别的卡上）：不带它再改一次，
+/// 到期日、本期一定改回去。
+Future<void> renewNow(BuildContext context, WidgetRef ref, Membership m, {ChargeHint? charge}) async {
   final messenger = ScaffoldMessenger.of(context);
+  final container = ProviderScope.containerOf(context, listen: false);
   final repo = ref.read(perksRepoProvider);
   final now = ref.read(assetClockProvider)();
-  final plan = renewPlan(m, localDay(now));
+  final plan = charge == null ? renewPlan(m, localDay(now)) : parseDay(charge.renewTo);
   if (plan == null) {
     _showError(messenger, '一次性或不收费的卡没有下一期，不用续费');
     return;
@@ -316,15 +322,21 @@ Future<void> renewNow(BuildContext context, WidgetRef ref, Membership m) async {
   final busyKey = perkCardBusyKey(m.id);
   if (!busy.start(busyKey)) return;
   final retry = ref.read(perkRetryIdsProvider);
-  final retryKey = 'renew/${m.id}/${Dates.isoDate(plan)}';
+  final retryKey = 'renew/${m.id}/${Dates.isoDate(plan)}${charge == null ? '' : '/${charge.transactionId}'}';
   final clientId = retry.of(retryKey, now) ?? newClientId();
   final body = <String, dynamic>{'clientId': clientId, 'expiresOn': Dates.isoDate(plan)};
-  if (!m.isTrial && (m.sourceBenefitId != null || m.termPaidCents == 0)) putIfNotNull(body, 'paidCents', m.termPaidCents);
+  if (charge != null) {
+    body['paidCents'] = charge.amountCents;
+    body['chargeTransactionId'] = charge.transactionId;
+  } else if (!m.isTrial && (m.sourceBenefitId != null || m.termPaidCents == 0)) {
+    putIfNotNull(body, 'paidCents', m.termPaidCents);
+  }
   final before = <String, dynamic>{
     'expiresOn': m.expiresOn,
     'termStartOn': m.termStartOn,
     'termPaidCents': m.termPaidCents,
     'isTrial': m.isTrial,
+    if (charge != null) 'lastChargeTxId': m.lastChargeTxId,
   };
   final Membership next;
   try {
@@ -338,6 +350,9 @@ Future<void> renewNow(BuildContext context, WidgetRef ref, Membership m) async {
     if (error is ApiException && error.code == 'invalid_expiresOn') {
       _showError(messenger, '「${m.title}」已经续过了（可能是别的设备或家人刚点的），这就刷新');
       await repo.refresh();
+    } else if (error is ApiException && error.code == 'charge_linked') {
+      _showError(messenger, '${error.message}，没有续');
+      container.invalidate(chargeHintsProvider);
     } else {
       _showError(messenger, describeWriteError(error));
     }
@@ -355,7 +370,12 @@ Future<void> renewNow(BuildContext context, WidgetRef ref, Membership m) async {
         label: '撤销',
         onPressed: () async {
           try {
-            await repo.updateMembership(m.id, before);
+            try {
+              await repo.updateMembership(m.id, before);
+            } on ApiException catch (error) {
+              if (charge == null || (error.code != 'invalid_lastChargeTxId' && error.code != 'charge_linked')) rethrow;
+              await repo.updateMembership(m.id, {...before, 'lastChargeTxId': null});
+            }
             messenger.showSnackBar(const SnackBar(content: Text('已撤销')));
           } catch (error) {
             _showError(messenger, '没撤销成功：${describeError(error)}');

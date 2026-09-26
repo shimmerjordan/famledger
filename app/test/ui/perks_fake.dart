@@ -11,7 +11,8 @@ import 'assets_harness.dart';
 // 会员权益的假服务端（挂在 AssetsBackend 上）：只实现 App 会碰到的接口，行为照
 // server/src/modules/platforms.js、memberships.js、benefits.js、benefit_events.js —— 重名 409 带已有 id、删除前查引用、
 // 合并、有子项 409 / ?cascade=1、选项的 flow 跟父权益、打卡（N 选 1 父权益 400）与撤销、续费（默认原到期日 + 一个周期，
-// once / none 409）。规范化名用 App 的 perkNameKey 近似服务端的 NFKC。
+// once / none 409；带 chargeTransactionId 只关联，已挂在别的卡上 409 charge_linked）、扣费线索（GET charge-hints 回
+// [PerksFake.chargeHints] 里还没被哪张卡关联的）。规范化名用 App 的 perkNameKey 近似服务端的 NFKC。
 
 /// 本机记着上次看的是「全部」：P3 起会员权益 tab 默认打开「本期」，测「全部」视图的用例从这里起。
 MemoryLocalStore allViewStore() => MemoryLocalStore()..write(PerkViewPrefsController.storeKey, {'view': 'all'});
@@ -118,6 +119,24 @@ Map<String, dynamic> benefitJson(
   'deletedAt': null,
 };
 
+Map<String, dynamic> chargeHintJson(
+  String membershipId, {
+  String transactionId = 'tx1',
+  String occurredOn = '2026-09-21',
+  int amountCents = 2500,
+  String merchant = '腾讯视频',
+  String expiresOn = '2026-09-20',
+  String renewTo = '2026-10-20',
+}) => {
+  'membershipId': membershipId,
+  'transactionId': transactionId,
+  'occurredOn': occurredOn,
+  'amountCents': amountCents,
+  'merchant': merchant,
+  'expiresOn': expiresOn,
+  'renewTo': renewTo,
+};
+
 Map<String, dynamic> eventJson(String id, String benefitId, {String kind = 'claim', String occurredOn = '2026-09-20', int count = 1, int? valueCents}) => {
   'id': id,
   'benefitId': benefitId,
@@ -157,6 +176,9 @@ class PerksFake {
 
   /// 打卡事件（/changes 的 benefit_events）。
   final Map<String, Map<String, dynamic>> events = {};
+
+  /// 扣费线索（chargeHintJson）：GET /memberships/charge-hints 回其中流水还没挂在哪张卡上的（照 memberships.js）。
+  final List<Map<String, dynamic>> chargeHints = [];
 
   /// 服务端有、App 还没同步到的打卡记录数（按权益 id）：删权益时照 benefits.js 的 canDelete 算进 409。
   final Map<String, int> unsyncedEvents = {};
@@ -273,6 +295,15 @@ class PerksFake {
   }
 
   http.Response _memberships(String method, List<String> seg, Map<String, dynamic> body, bool cascade) {
+    if (method == 'GET' && seg.length == 2 && seg[1] == 'charge-hints') {
+      final linked = {for (final m in memberships.values) m['lastChargeTxId']};
+      return ok({
+        'items': [
+          for (final h in chargeHints)
+            if (!linked.contains(h['transactionId'])) h,
+        ],
+      });
+    }
     if (method == 'POST' && seg.length == 1) {
       final row = membershipJson(_id('m'), platformId: body['platformId'] as String, name: body['name'] as String, sort: memberships.length);
       for (final e in body.entries) {
@@ -290,6 +321,14 @@ class PerksFake {
       final base = parseDay(row['expiresOn'] as String?) ?? addDays(localDay(testNow), -1);
       final expires = body['expiresOn'] is String ? parseDay(body['expiresOn'] as String)! : addMonthsClamped(base, months);
       if (!expires.isAfter(base)) return error(400, 'invalid_expiresOn', '新的到期日要晚于原来的到期日');
+      final charge = body['chargeTransactionId'];
+      if (charge != null) {
+        final other = memberships.values.where((m) => m['lastChargeTxId'] == charge).firstOrNull;
+        if (other != null) {
+          return error(409, 'charge_linked', '这笔扣费已经算在「${other['name']}」上了', {'membershipId': other['id']});
+        }
+        row['lastChargeTxId'] = charge;
+      }
       final oneBack = addDays(addMonthsClamped(expires, -months), 1);
       final afterBase = addDays(base, 1);
       row

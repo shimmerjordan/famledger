@@ -65,6 +65,10 @@ class PerksRepo {
   Future<Membership> renewMembership(String id, Map<String, dynamic> body) async =>
       _putMembership(await _api.post('/memberships/$id/renew', body));
 
+  /// `GET /memberships/charge-hints`：设了扣费特征的卡，到期日前后看到的对得上、没被关联过的扣费（服务端现查流水）。
+  Future<List<ChargeHint>> chargeHints() async =>
+      jsonList((await _api.get('/memberships/charge-hints'))['items'], ChargeHint.fromJson);
+
   // —— 权益 ——
 
   Future<Benefit> createBenefit(Map<String, dynamic> body) async =>

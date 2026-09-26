@@ -22,6 +22,7 @@ import 'platform_picker.dart';
 
 /// 新建 / 编辑会员卡（spec §5「表单」）。只必填平台和名称；到期日可以留空（长期有效）；
 /// 其余收进「更多」。日期都能选将来（[pickAnyDay]）。新建可选「同时记一笔支出」，默认不记。
+/// 「更多」里的扣费特征（商户关键词 + 金额范围）给扣费线索用（P6）：到期前后看到对得上的支出，「要处理」里问要不要续上。
 class MembershipFormPage extends ConsumerStatefulWidget {
   const MembershipFormPage({
     super.key,
@@ -51,6 +52,12 @@ class _MembershipFormPageState extends ConsumerState<MembershipFormPage> {
   final TextEditingController _paid = TextEditingController();
   final TextEditingController _remind = TextEditingController();
   final TextEditingController _note = TextEditingController();
+  final TextEditingController _payKeywords = TextEditingController();
+  final TextEditingController _payMin = TextEditingController();
+  final TextEditingController _payMax = TextEditingController();
+
+  /// 编辑时带出来的扣费特征三栏原文：保存时三栏都没动就不发 payPattern（原样留在服务端，不因为拆词口径不同被改写）。
+  (String, String, String) _payBound = ('', '', '');
 
   late String? _platformId = widget.initialPlatformId;
   late String? _sourceBenefitId = widget.initialSourceBenefitId;
@@ -87,7 +94,7 @@ class _MembershipFormPageState extends ConsumerState<MembershipFormPage> {
 
   @override
   void dispose() {
-    for (final c in [_name, _tier, _fee, _paid, _remind, _note]) {
+    for (final c in [_name, _tier, _fee, _paid, _remind, _note, _payKeywords, _payMin, _payMax]) {
       c.dispose();
     }
     super.dispose();
@@ -104,6 +111,11 @@ class _MembershipFormPageState extends ConsumerState<MembershipFormPage> {
     _paid.text = m.termPaidCents == null ? '' : Money.plain(m.termPaidCents!).replaceAll(',', '');
     _remind.text = m.remindDays?.toString() ?? '';
     _note.text = m.note ?? '';
+    final pay = PerkPayPattern.tryParse(m.payPattern);
+    _payKeywords.text = pay == null ? '' : joinPayKeywords(pay.keywords);
+    _payMin.text = pay?.minCents == null ? '' : Money.plain(pay!.minCents!).replaceAll(',', '');
+    _payMax.text = pay?.maxCents == null ? '' : Money.plain(pay!.maxCents!).replaceAll(',', '');
+    _payBound = (_payKeywords.text, _payMin.text, _payMax.text);
     _expiresOn = localDate(m.expiresOn);
     _termStartOn = localDate(m.termStartOn);
     _kind = m.kind;
@@ -126,7 +138,30 @@ class _MembershipFormPageState extends ConsumerState<MembershipFormPage> {
       _trial ||
       _remind.text.isNotEmpty ||
       _sourceBenefitId != null ||
-      _note.text.isNotEmpty;
+      _note.text.isNotEmpty ||
+      _payKeywords.text.isNotEmpty;
+
+  /// 扣费特征三栏动过没有（新建时算动过：填了就带）。
+  bool get _payChanged => !_editing || (_payKeywords.text, _payMin.text, _payMax.text) != _payBound;
+
+  /// 扣费特征：关键词只按逗号、顿号、换行拆（splitPayKeywords：「Apple Music」是一个词），按规范化名去重；
+  /// 金额不填 = 那头不限。全空 = 没设（value 为 null）。填错的给 error（行内说，不发请求）；规则和服务端
+  /// perks_schema.payPatternOf 一样：每个最多 30 个字（去重之前查）、全是标点的丢掉、去重后最多 5 个。
+  ({Map<String, dynamic>? value, String? error}) _readPayPattern() {
+    final raw = rawPayKeywords(_payKeywords.text);
+    final keywords = splitPayKeywords(_payKeywords.text);
+    final min = parseMoneyField(_payMin.text);
+    final max = parseMoneyField(_payMax.text);
+    if (raw.any((k) => k.length > 30)) return (value: null, error: '每个商户关键词最多 30 个字');
+    if (raw.isNotEmpty && keywords.isEmpty) return (value: null, error: '商户关键词里至少要有一个字或字母');
+    if (keywords.isEmpty) {
+      return (value: null, error: min == null && max == null ? null : '填了扣费金额，也要写商户关键词');
+    }
+    if (keywords.length > 5) return (value: null, error: '商户关键词最多 5 个');
+    if (min == -1 || max == -1) return (value: null, error: '扣费金额填得不对，例如 25');
+    if (min != null && max != null && min > max) return (value: null, error: '扣费金额的下限不能高于上限');
+    return (value: PerkPayPattern(keywords: keywords, minCents: min, maxCents: max).toJson(), error: null);
+  }
 
   /// 「同时记一笔」记多少：本期实付，没填按续费价；填错或没有是 0。
   int get _recordAmount {
@@ -165,6 +200,10 @@ class _MembershipFormPageState extends ConsumerState<MembershipFormPage> {
     final start = _termStartOn;
     final end = _expiresOn;
     if (start != null && end != null && end.isBefore(start)) return setState(() => _error = '到期日不能早于本期开始');
+    // 编辑时扣费特征没动过：不查也不发（服务端那份原样留着）。
+    final payChanged = _payChanged;
+    final pay = payChanged ? _readPayPattern() : (value: null, error: null);
+    if (pay.error != null) return setState(() => _error = pay.error);
 
     setState(() {
       _busy = true;
@@ -192,6 +231,7 @@ class _MembershipFormPageState extends ConsumerState<MembershipFormPage> {
           'remindDays': remind,
           'sourceBenefitId': _sourceBenefitId,
           'note': note.isEmpty ? null : note,
+          if (payChanged) 'payPattern': pay.value,
         });
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已保存')));
@@ -214,6 +254,7 @@ class _MembershipFormPageState extends ConsumerState<MembershipFormPage> {
       putIfNotNull(body, 'remindDays', remind);
       putIfNotNull(body, 'sourceBenefitId', _sourceBenefitId);
       if (note.isNotEmpty) body['note'] = note;
+      putIfNotNull(body, 'payPattern', pay.value);
       if (record) {
         body['recordTransaction'] = AssetRecord(
           accountId: _recordAccountId,
@@ -307,7 +348,7 @@ class _MembershipFormPageState extends ConsumerState<MembershipFormPage> {
               tilePadding: const EdgeInsets.symmetric(horizontal: LedgerLayout.pagePadding),
               expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
               title: const Text('更多'),
-              subtitle: const Text('档位、持有人、续费价、本期、提醒……'),
+              subtitle: const Text('档位、持有人、续费价、本期、提醒、扣费特征……'),
               children: _more(context, ledger, sources),
             ),
             if (!_editing && _recordAmount > 0) ...[
@@ -463,6 +504,52 @@ class _MembershipFormPageState extends ConsumerState<MembershipFormPage> {
               ),
           ],
           onChanged: (v) => setState(() => _sourceBenefitId = v),
+        ),
+      ),
+      PickerField(
+        label: '扣费特征（选填）',
+        trailing: Text('在流水里认出续费扣款', style: theme.textTheme.bodySmall),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              key: const ValueKey('membership-pay-keywords'),
+              controller: _payKeywords,
+              // 多行：一行一个也行（换行和逗号、顿号一样算分隔）；单行框会把粘贴进来的换行吞掉、几个词粘成一个。
+              keyboardType: TextInputType.multiline,
+              minLines: 1,
+              maxLines: 3,
+              decoration: const InputDecoration(labelText: '商户关键词', hintText: '例如：腾讯视频'),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    key: const ValueKey('membership-pay-min'),
+                    controller: _payMin,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(prefixText: '¥ ', hintText: '最少'),
+                  ),
+                ),
+                const Padding(padding: EdgeInsets.symmetric(horizontal: 8), child: Text('至')),
+                Expanded(
+                  child: TextField(
+                    key: const ValueKey('membership-pay-max'),
+                    controller: _payMax,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(prefixText: '¥ ', hintText: '最多'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '关键词在流水的商户名和备注里找，多个用逗号、顿号或换行隔开。到期前后看到一笔这样的支出，「要处理」里会问'
+              '要不要续上（只关联那笔，不另记账）。金额不填就不限。',
+              style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            ),
+          ],
         ),
       ),
       PickerField(

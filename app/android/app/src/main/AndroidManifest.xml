@@ -2,6 +2,9 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <!-- Android 13+ 发结果通知要先要权限（设置页里请求） -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- 会员提醒：手机重启后把排好的每日摘要重新交给系统（flutter_local_notifications 的 ScheduledNotificationBootReceiver）。
+         只用 inexactAllowWhileIdle，不申请精确闹钟权限（SCHEDULE_EXACT_ALARM / USE_EXACT_ALARM）。 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
 
     <application
         android:label="@string/app_name"
@@ -58,6 +61,21 @@
         <receiver
             android:name=".capture.ActionReceiver"
             android:exported="false"/>
+
+        <!-- 会员提醒（flutter_local_notifications）：到点弹出排好的每日摘要；开机、升级后把排好的重新交给系统 -->
+        <receiver
+            android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver"
+            android:exported="false"/>
+        <receiver
+            android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED"/>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
+                <action android:name="android.intent.action.QUICKBOOT_POWERON"/>
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON"/>
+            </intent-filter>
+        </receiver>
 
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->

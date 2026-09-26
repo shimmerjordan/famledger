@@ -243,10 +243,16 @@ class CapturePlugin(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && activity != null &&
             activity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
-            activity.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_POST_NOTIFICATIONS)
-            return
+            // 同一个权限被拒两次后，系统不再弹框、直接回拒绝 —— 点「允许」看起来什么都没发生。弹过、而且系统已经不给
+            // 「再说明一次」的机会（shouldShowRequestPermissionRationale 为 false）就是弹不出来了，改去通知设置页。
+            val asked = CapturePrefs.notificationAsked(context)
+            if (!asked || activity.shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS)) {
+                CapturePrefs.markNotificationAsked(context)
+                activity.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_POST_NOTIFICATIONS)
+                return
+            }
         }
-        // 权限有了但通知被整体关掉（或拿不到 Activity）：去应用的通知设置
+        // 权限有了但通知被整体关掉、被拒绝到系统不再弹框（或拿不到 Activity）：去应用的通知设置
         val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
         } else {

@@ -205,6 +205,106 @@ void main() {
       expect(backend.requests('POST', '/memberships'), isEmpty);
     });
 
+    testWidgets('扣费特征：关键词只按逗号、顿号、换行拆（「Apple Music」是一个词），按规范化名去重；金额可以只填一头', (tester) async {
+      final backend = withPlatforms();
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets/memberships/new?platformId=tb', size: tall);
+      await tester.enterText(find.byKey(const ValueKey('membership-name')), '腾讯视频');
+      await tapVisible(tester, find.text('更多'));
+      await tester.enterText(find.byKey(const ValueKey('membership-pay-keywords')), ' 腾讯视频，QQ会员、Apple Music\n腾讯 视频,!! ');
+      await tester.enterText(find.byKey(const ValueKey('membership-pay-min')), '20');
+      await tapVisible(tester, find.widgetWithText(FilledButton, '记好了'));
+      expect(backend.lastBody('POST', '/memberships')['payPattern'], {
+        'keywords': ['腾讯视频', 'QQ会员', 'Apple Music'],
+        'minCents': 2000,
+      }, reason: '「腾讯 视频」和「腾讯视频」是同一个；全是标点的丢掉（和服务端 payPatternOf 一样）');
+    });
+
+    testWidgets('「更多」的副标题写着扣费特征（想用扣费线索的人知道去哪设）', (tester) async {
+      final backend = withPlatforms();
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets/memberships/new?platformId=tb', size: tall);
+      expect(find.text('档位、持有人、续费价、本期、提醒、扣费特征……'), findsOneWidget);
+    });
+
+    testWidgets('扣费特征填错：只填金额没写关键词、下限高于上限、金额填错、关键词超过 5 个 —— 行内说清楚，不发请求', (tester) async {
+      final backend = withPlatforms();
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets/memberships/new?platformId=tb', size: tall);
+      await tester.enterText(find.byKey(const ValueKey('membership-name')), '腾讯视频');
+      await tapVisible(tester, find.text('更多'));
+      final cases = <(String, String, String, String)>[
+        ('', '20', '', '填了扣费金额，也要写商户关键词'),
+        ('腾讯视频', '30', '20', '扣费金额的下限不能高于上限'),
+        ('腾讯视频', 'abc', '', '扣费金额填得不对，例如 25'),
+        ('a，b、c,d，e，f', '', '', '商户关键词最多 5 个'),
+        ('!!', '', '', '商户关键词里至少要有一个字或字母'),
+        ('腾讯视频，${'长' * 31}', '', '', '每个商户关键词最多 30 个字'),
+      ];
+      for (final (keywords, min, max, message) in cases) {
+        await tester.enterText(find.byKey(const ValueKey('membership-pay-keywords')), keywords);
+        await tester.enterText(find.byKey(const ValueKey('membership-pay-min')), min);
+        await tester.enterText(find.byKey(const ValueKey('membership-pay-max')), max);
+        await tapVisible(tester, find.widgetWithText(FilledButton, '记好了'));
+        expect(find.text(message), findsOneWidget, reason: '$keywords / $min / $max');
+      }
+      expect(backend.requests('POST', '/memberships'), isEmpty);
+    });
+
+    testWidgets('编辑：带出扣费特征（用「，」连起来）、「更多」直接展开；没动就不发 payPattern；改了发新的；清空发 null', (tester) async {
+      final backend = withPlatforms(memberships: [
+        membershipJson('tv', name: '腾讯视频', feeCents: 2500, feePeriod: 'month')
+          ..['payPattern'] = {
+            'keywords': ['腾讯视频', 'QQ会员'],
+            'minCents': 2000,
+            'maxCents': 3000,
+          },
+      ]);
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets/memberships/tv/edit', size: tall);
+      expect(tester.widget<TextField>(find.byKey(const ValueKey('membership-pay-keywords'))).controller!.text, '腾讯视频，QQ会员');
+      expect(tester.widget<TextField>(find.byKey(const ValueKey('membership-pay-min'))).controller!.text, '20.00');
+      expect(tester.widget<TextField>(find.byKey(const ValueKey('membership-pay-max'))).controller!.text, '30.00');
+      await tapVisible(tester, find.widgetWithText(FilledButton, '保存'));
+      expect(backend.lastBody('PATCH', '/memberships/tv').containsKey('payPattern'), isFalse, reason: '没动就不发，服务端那份原样留着');
+
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets/memberships/tv/edit', size: tall);
+      await tester.enterText(find.byKey(const ValueKey('membership-pay-keywords')), '腾讯视频，QQ会员，微信支付-腾讯视频');
+      await tapVisible(tester, find.widgetWithText(FilledButton, '保存'));
+      expect(backend.lastBody('PATCH', '/memberships/tv')['payPattern'], {
+        'keywords': ['腾讯视频', 'QQ会员', '微信支付-腾讯视频'],
+        'minCents': 2000,
+        'maxCents': 3000,
+      });
+
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets/memberships/tv/edit', size: tall);
+      for (final key in ['membership-pay-keywords', 'membership-pay-min', 'membership-pay-max']) {
+        await tester.enterText(find.byKey(ValueKey(key)), '');
+      }
+      await tapVisible(tester, find.widgetWithText(FilledButton, '保存'));
+      final body = backend.lastBody('PATCH', '/memberships/tv');
+      expect(body.containsKey('payPattern'), isTrue);
+      expect(body['payPattern'], isNull);
+    });
+
+    testWidgets('编辑一张关键词带空格的卡（接口或以后的流水识别写的「Apple Music」）只改备注：关键词不被拆开、也不被改写', (tester) async {
+      final backend = withPlatforms(memberships: [
+        membershipJson('am', name: 'Apple Music', feeCents: 1100, feePeriod: 'month')
+          ..['payPattern'] = {
+            'keywords': ['Apple Music', 'iTunes', 'App Store', 'Apple.com', 'Apple 服务'],
+          },
+      ]);
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets/memberships/am/edit', size: tall);
+      expect(
+        tester.widget<TextField>(find.byKey(const ValueKey('membership-pay-keywords'))).controller!.text,
+        'Apple Music，iTunes，App Store，Apple.com，Apple 服务',
+      );
+      await tester.enterText(find.byKey(const ValueKey('membership-note')), '家庭共享');
+      await tapVisible(tester, find.widgetWithText(FilledButton, '保存'));
+      final body = backend.lastBody('PATCH', '/memberships/am');
+      expect(body['note'], '家庭共享');
+      expect(body.containsKey('payPattern'), isFalse, reason: '5 个关键词、其中带空格的也不会被数成 6 个挡住保存');
+      expect(backend.perks.memberships['am']!['payPattern'], {
+        'keywords': ['Apple Music', 'iTunes', 'App Store', 'Apple.com', 'Apple 服务'],
+      });
+    });
+
     testWidgets('同时记一笔支出：默认不勾；勾上后带 recordTransaction（按本期实付，没填按续费价）', (tester) async {
       final backend = withPlatforms();
       await pumpAssetsAt(tester, bootAssets(backend), '/assets/memberships/new?platformId=tb', size: tall);

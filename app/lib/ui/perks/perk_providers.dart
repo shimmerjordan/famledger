@@ -100,17 +100,21 @@ class PerkDismissedController extends Notifier<Set<String>> {
 
   Map<String, String> _saved = {};
   Future<void>? _loading;
+  int _builds = 0;
 
   @override
   Set<String> build() {
-    _loading = _load();
+    // 退出登录会清空本机缓存：跟着重新读盘，内存里不留上一个人点过的（P6 起它还决定通知里提不提某一项）。
+    ref.watch(localStoreEpochProvider);
+    _saved = {};
+    _loading = _load(++_builds);
     return const {};
   }
 
-  Future<void> _load() async {
+  Future<void> _load(int build) async {
     try {
       final raw = await ref.read(localStoreProvider).read<Map<String, dynamic>>(storeKey);
-      if (raw == null) return;
+      if (raw == null || build != _builds) return;
       _saved = {for (final e in raw.entries) e.key: '${e.value}', ..._saved};
       state = {...state, ..._saved.keys};
     } catch (_) {
@@ -136,6 +140,18 @@ class PerkDismissedController extends Notifier<Set<String>> {
     }
   }
 }
+
+/// 扣费线索（spec §5「要处理」）：服务端现查流水（本地不缓存流水）。同步往前走了（seq 变了：续上了、新记了流水、
+/// 别的设备改了卡）就重新取；取不到（离线、老服务端）当没有，不打扰。不用 autoDispose（和这一片别的 provider 一样）：
+/// 列表很小，切走再回来不用重新转圈。
+final chargeHintsProvider = FutureProvider<List<ChargeHint>>((ref) async {
+  ref.watch(ledgerProvider.select((v) => v.valueOrNull?.seq));
+  try {
+    return await ref.watch(perksRepoProvider).chargeHints();
+  } catch (_) {
+    return const [];
+  }
+});
 
 /// 当前登录的成员（「我」）；没登录是 null（按全家看）。
 final perkMeProvider = Provider<String?>((ref) => ref.watch(sessionProvider)?.me.id);

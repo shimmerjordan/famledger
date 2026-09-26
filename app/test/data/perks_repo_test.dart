@@ -146,5 +146,31 @@ void main() {
       await rig.perks.updateBenefit('b1', {'name': '优酷VIP年卡'});
       expect(rig.ledger.benefits.single.name, '优酷VIP年卡');
     });
+
+    test('扣费线索：GET /memberships/charge-hints 逐项解析；不落本地、不触发同步', () async {
+      final rig = Rig({
+        'GET $api/memberships/charge-hints': [
+          {
+            'items': [
+              {
+                'membershipId': 'tv',
+                'transactionId': 'tx1',
+                'occurredOn': '2026-09-21',
+                'amountCents': 2500,
+                'merchant': '腾讯视频',
+                'expiresOn': '2026-09-20',
+                'renewTo': '2026-10-20',
+              },
+            ],
+          },
+        ],
+      });
+      final hints = await rig.perks.chargeHints();
+      expect(hints.map((h) => (h.membershipId, h.transactionId, h.occurredOn, h.amountCents, h.merchant, h.expiresOn, h.renewTo)), [
+        ('tv', 'tx1', '2026-09-21', 2500, '腾讯视频', '2026-09-20', '2026-10-20'),
+      ]);
+      expect(hints.single.key, 'charge:tv:tx1');
+      expect(rig.server.all('GET', '$api/changes'), isEmpty);
+    });
   });
 }

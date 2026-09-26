@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../capture/pipeline.dart' show CaptureOutcome;
 import '../platform/capture_providers.dart';
+import '../platform/perk_reminders.dart';
 import '../platform/share_import.dart';
 import 'router.dart';
 
@@ -17,9 +18,13 @@ import 'router.dart';
 ///   App Group，并自己挂了生命周期观察者（回到前台再 drain）；`outcomes` 每出一条
 ///   结论就弹一条 SnackBar，有本地捕获记录的可点「查看」跳到对应流水。
 ///
+/// - [perkReminderControllerProvider]：会员提醒（spec §5「Android 通知」）。挂上时 `start()`：初始化通知插件，
+///   冷启动是点通知进来的就跳到会员权益 tab，然后排一次；回到前台 `request()` 重排（防抖 2 秒）；卸掉时收起
+///   还没到点的防抖。数据变了的重排由 provider 自己听 ledger。
+///
 /// 两个服务在没有原生通道的平台（Web、桌面、测试）都自己吞 `MissingPluginException`
-/// 且一次 `invokeMethod` 都不发，这里不再判平台。只包在登录后的外壳外面：
-/// 没登录本来也导不进去，认证页不需要这些。
+/// 且一次 `invokeMethod` 都不发，这里不再判平台（通知调度器同样：插件初始化失败就当不支持）。
+/// 只包在登录后的外壳外面：没登录本来也导不进去，认证页不需要这些。
 class StartupWiring extends ConsumerStatefulWidget {
   const StartupWiring({super.key, required this.child});
 
@@ -29,8 +34,9 @@ class StartupWiring extends ConsumerStatefulWidget {
   ConsumerState<StartupWiring> createState() => _StartupWiringState();
 }
 
-class _StartupWiringState extends ConsumerState<StartupWiring> {
+class _StartupWiringState extends ConsumerState<StartupWiring> with WidgetsBindingObserver {
   StreamSubscription<CaptureOutcome>? _outcomes;
+  late final PerkReminderController _reminders;
 
   @override
   void initState() {
@@ -41,12 +47,24 @@ class _StartupWiringState extends ConsumerState<StartupWiring> {
     final share = ref.read(shareImportProvider);
     unawaited(share.start());
     _outcomes = share.outcomes.listen(_showOutcome);
+
+    _reminders = ref.read(perkReminderControllerProvider);
+    unawaited(_reminders.start());
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // 回到前台：可能已经过了一天（窗口要往后挪），也可能别的设备改过数据。
+    if (state == AppLifecycleState.resumed) _reminders.request();
   }
 
   @override
   void dispose() {
     // 只取消自己的订阅；服务本身归 provider 管，登出再登入时 start() 是幂等的。
     unawaited(_outcomes?.cancel());
+    WidgetsBinding.instance.removeObserver(this);
+    _reminders.cancelPending();
     super.dispose();
   }
 

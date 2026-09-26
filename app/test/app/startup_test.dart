@@ -14,13 +14,18 @@ import 'package:famledger/data/repos/session_repo.dart';
 import 'package:famledger/platform/capture_channel.dart';
 import 'package:famledger/platform/capture_providers.dart';
 import 'package:famledger/platform/file_capture_store.dart';
+import 'package:famledger/platform/perk_notifications.dart';
 import 'package:famledger/platform/share_import.dart';
+import 'package:famledger/ui/assets/asset_providers.dart';
+import 'package:famledger/ui/perks/perk_alert_tile.dart';
 import 'package:famledger/ui/transactions/tx_detail_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+
+import '../platform/perk_fake_scheduler.dart';
 
 /// 只替掉「启动」和「结论流」：start() 记次数，结论由测试往 [feed] 里塞。
 class FakeShareImport extends ShareImportService {
@@ -90,7 +95,7 @@ http.Client api() => MockClient((req) async {
 });
 
 ({ProviderContainer container, FakeShareImport share, int Function() platformReads})
-boot({required bool loggedIn, LocalCaptureStore? store}) {
+boot({required bool loggedIn, LocalCaptureStore? store, PerkNotificationScheduler? scheduler, DateTime Function()? clock}) {
   final secure = MemorySecureStore();
   secure.data[SessionRepo.baseUrlKey] = 'https://x.dev';
   if (loggedIn) {
@@ -120,6 +125,8 @@ boot({required bool loggedIn, LocalCaptureStore? store}) {
       captureStoreProvider.overrideWith(
         (ref) async => store ?? MemoryCaptureStore(),
       ),
+      if (scheduler != null) perkNotificationSchedulerProvider.overrideWithValue(scheduler),
+      if (clock != null) assetClockProvider.overrideWithValue(clock),
     ],
   );
   return (container: container, share: share, platformReads: () => platformReads);
@@ -212,5 +219,58 @@ void main() {
     expect(find.text('家账还没登录'), findsOneWidget);
     expect(find.text('查看'), findsNothing);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('外壳挂上：会员提醒初始化并在 2 秒后排一次；第二天回到前台窗口往后挪；点通知跳到会员权益 tab「本期 · 我」', (tester) async {
+    final scheduler = FakePerkScheduler();
+    var now = DateTime(2026, 9, 23, 10);
+    final ctx = boot(loggedIn: true, scheduler: scheduler, clock: () => now);
+    addTearDown(ctx.share.feed.close);
+    await pumpApp(tester, ctx.container);
+    expect(scheduler.inits, 1);
+    expect(scheduler.calls, isEmpty, reason: '防抖 2 秒');
+    await tester.pump(const Duration(seconds: 2));
+    expect(scheduler.cancels, hasLength(30), reason: '没有会员卡：只把窗口清一遍');
+    expect(scheduler.cancels.last, 'cancel 20261023');
+
+    scheduler.reset();
+    now = DateTime(2026, 9, 24, 10);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump(const Duration(seconds: 2));
+    expect(scheduler.cancels.last, 'cancel 20261024', reason: '回到前台重排，窗口跟着今天走');
+
+    scheduler.tap!(perkAgendaLocation);
+    await tester.pumpAndSettle();
+    final router = ctx.container.read(routerProvider);
+    expect(router.state.uri.toString(), perkAgendaLocation);
+  });
+
+  testWidgets('冷启动是点通知进来的：一挂上就跳到会员权益 tab', (tester) async {
+    final scheduler = FakePerkScheduler(launch: perkAgendaLocation);
+    final ctx = boot(loggedIn: true, scheduler: scheduler);
+    addTearDown(ctx.share.feed.close);
+    await pumpApp(tester, ctx.container);
+    final router = ctx.container.read(routerProvider);
+    expect(router.state.uri.toString(), perkAgendaLocation);
+  });
+
+  testWidgets('没登录冷启动（停在认证页）：不初始化通知，但把系统里上一家的会员提醒撤干净（上次退出时进程可能被杀了）', (tester) async {
+    final scheduler = FakePerkScheduler(pending: [20261001, 20261120, 7001]);
+    final ctx = boot(loggedIn: false, scheduler: scheduler);
+    addTearDown(ctx.share.feed.close);
+    await pumpApp(tester, ctx.container);
+    expect(scheduler.inits, 0);
+    expect(scheduler.pending, [7001], reason: '会员提醒全撤，自动记账的不动');
+    expect(scheduler.schedules, isEmpty);
+  });
+
+  testWidgets('登录着冷启动：不当成「上一家」去撤', (tester) async {
+    final scheduler = FakePerkScheduler(pending: [20261120]);
+    final ctx = boot(loggedIn: true, scheduler: scheduler, clock: () => DateTime(2026, 9, 23, 10));
+    addTearDown(ctx.share.feed.close);
+    await pumpApp(tester, ctx.container);
+    expect(scheduler.calls, isEmpty, reason: '交给外壳里的排程（2 秒防抖后先取消整段再排）');
+    await tester.pump(const Duration(seconds: 2));
   });
 }

@@ -12,6 +12,7 @@ import '../data/repos/session_repo.dart';
 import '../data/repos/settings_repo.dart';
 import '../data/repos/stats_repo.dart';
 import '../data/repos/transactions_repo.dart';
+import '../platform/perk_notifications.dart';
 
 // —— 启动时在 main() 里 override 的三个「外设」 ——
 
@@ -28,6 +29,33 @@ final sessionRepoProvider = Provider<SessionRepo>(
   (ref) => throw UnimplementedError('sessionRepoProvider 必须在 main() 里 override'),
 );
 
+/// 退出登录时、删会话之前要先做完的事：撤掉排着的会员提醒（platform/perk_reminders.dart 登记）。
+/// 单独一个 provider，是因为登记的一方自己也听会话，不能反过来让会话去读它（Riverpod 不许循环依赖）。
+class LogoutHooks {
+  final List<Future<void> Function()> _hooks = [];
+
+  void add(Future<void> Function() hook) => _hooks.add(hook);
+
+  void remove(Future<void> Function() hook) => _hooks.remove(hook);
+
+  /// 挨个做完；哪个出错都不拦着退出登录。
+  Future<void> run() async {
+    for (final hook in [..._hooks]) {
+      try {
+        await hook();
+      } catch (_) {
+        // 退出登录一定要退得出去。
+      }
+    }
+  }
+}
+
+final logoutHooksProvider = Provider<LogoutHooks>((ref) => LogoutHooks());
+
+/// 本机缓存被清空的次数（退出登录会清）。读本机设置的 provider watch 它：清空之后跟着重新读盘，
+/// 内存里不留上一个人的设置（会员提醒的时间、「知道了」）。
+final localStoreEpochProvider = StateProvider<int>((ref) => 0);
+
 /// 当前会话；null = 没登录。
 final sessionProvider = NotifierProvider<SessionController, Session?>(
   SessionController.new,
@@ -35,7 +63,13 @@ final sessionProvider = NotifierProvider<SessionController, Session?>(
 
 class SessionController extends Notifier<Session?> {
   @override
-  Session? build() => ref.read(sessionRepoProvider).current;
+  Session? build() {
+    final current = ref.read(sessionRepoProvider).current;
+    // 没登录就启动了（停在登录页）：把系统里排着的会员提醒撤干净 —— 上次退出登录时进程可能在撤到一半时被杀了，
+    // 上一家的卡名不该再弹 30 天。登录着的由外壳里的排程接手（platform/perk_reminders.dart）。
+    if (current == null) unawaited(clearPerkNotifications(ref.read(perkNotificationSchedulerProvider), DateTime.now()));
+    return current;
+  }
 
   SessionRepo get _repo => ref.read(sessionRepoProvider);
 
@@ -66,10 +100,15 @@ class SessionController extends Notifier<Session?> {
   }
 
   /// 退出登录顺手清掉本地缓存，换个人登录不会看到上一家的数据。
+  ///
+  /// 先撤掉排着的会员提醒再删会话：撤到一半进程被杀的话，下次打开还登录着，外壳会接着排（或再退一次）；
+  /// 反过来先删了会话，那些提醒就没人管了。
   Future<void> logout() async {
+    await ref.read(logoutHooksProvider).run();
     await _repo.logout();
     await ref.read(localStoreProvider).clear();
     state = null;
+    ref.read(localStoreEpochProvider.notifier).state++;
   }
 
   Future<void> changePassword({

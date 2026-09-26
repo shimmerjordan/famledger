@@ -8,6 +8,7 @@ import '../../data/repos/ledger_repo.dart';
 import '../assets/asset_providers.dart';
 import '../assets/asset_widgets.dart';
 import '../widgets/widgets.dart';
+import 'charge_hint_tile.dart';
 import 'perk_actions.dart';
 import 'perk_alert_tile.dart';
 import 'perk_providers.dart';
@@ -39,10 +40,24 @@ class PerksCurrentView extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final today = localDay(ref.watch(assetClockProvider)());
     final dismissed = ref.watch(perkDismissedProvider);
+    // 扣费线索排最前（spec §5）：只看这个范围里的卡（「我」= 我的和全家共用的），点过「不是这笔」的收起。
+    final mine = {for (final m in perkMemberships(data.memberships, memberId: memberId)) m.id};
+    final fetched = ref.watch(chargeHintsProvider);
+    final hints = [
+      for (final h in fetched.valueOrNull ?? const <ChargeHint>[])
+        if (mine.contains(h.membershipId) && !dismissed.contains(h.key)) h,
+    ];
+    final hinted = {for (final h in hints) h.membershipId};
+    // 线索第一次还没取回来（之后随同步重取时有旧值，不算）：可能有线索的卡，它的「续了 / 停了」先转圈、点了不做事 ——
+    // 不然线索一到整行换掉，手快的人已经点了「续了」（不关联流水、实付按原值）。
+    final waiting = fetched.hasValue
+        ? const <String>{}
+        : {for (final m in data.memberships) if (mine.contains(m.id) && mayHaveChargeHint(m, today)) m.id};
     // 和首页同一张单子（「本期没领完」那一句也在）：从首页「全部 N 项」、提醒、通知过来，看到的就是那 N 项、同一句话。
+    // 有扣费线索的卡，它的续费 / 到期 / 过期待确认那一条由线索那一行替掉（一张卡不说两遍）。
     final alerts = [
       for (final a in data.perkAlerts(today, memberId: memberId))
-        if (!dismissed.contains(a.key)) a,
+        if (!dismissed.contains(a.key) && !(hinted.contains(a.membershipId) && _cardKinds.contains(a.kind))) a,
     ];
     final now = data.currentPerksOf(today, memberId: memberId);
     AnimationStyle expand() => MediaQuery.disableAnimationsOf(context)
@@ -57,9 +72,11 @@ class PerksCurrentView extends ConsumerWidget {
         padding: (wide ? EdgeInsets.zero : readableInsets(box.maxWidth)).copyWith(bottom: 96),
         children: [
           header,
-          if (alerts.isNotEmpty) ...[
-            SectionHeader('要处理 · ${alerts.length}', key: const ValueKey('perks-todo')),
-            for (final a in alerts) PerkAlertTile(alert: a, data: data, onOpen: onOpen),
+          if (hints.isNotEmpty || alerts.isNotEmpty) ...[
+            SectionHeader('要处理 · ${hints.length + alerts.length}', key: const ValueKey('perks-todo')),
+            for (final h in hints) ChargeHintTile(hint: h, data: data, onOpen: onOpen),
+            for (final a in alerts)
+              PerkAlertTile(alert: a, data: data, onOpen: onOpen, hold: _cardKinds.contains(a.kind) && waiting.contains(a.membershipId)),
             const SizedBox(height: LedgerLayout.itemGap),
           ],
           if (now.toClaim.isNotEmpty) ...[
@@ -77,7 +94,7 @@ class PerksCurrentView extends ConsumerWidget {
               for (final e in g.entries) tile(e),
               const SizedBox(height: LedgerLayout.itemGap),
             ],
-          ] else if (alerts.isEmpty)
+          ] else if (alerts.isEmpty && hints.isEmpty)
             EmptyState(
               title: now.isEmpty ? '本期没有要领的' : '本期的都领完了',
               message: now.isEmpty ? '给卡加上有次数的权益（每月几张券、每年几次贵宾厅），这里就按平台排好。' : '随时可用的和已完成的收在下面。',
@@ -110,6 +127,14 @@ class PerksCurrentView extends ConsumerWidget {
     );
   }
 }
+
+/// 卡片级的提醒：这张卡有扣费线索时由线索那一行替掉。
+const Set<PerkAlertKind> _cardKinds = {
+  PerkAlertKind.renewCheck,
+  PerkAlertKind.renewCharge,
+  PerkAlertKind.expiry,
+  PerkAlertKind.trialEnd,
+};
 
 /// 组头「优酷 · 3 项」，平台填了网址的右边一个「打开」。
 class _GroupHeader extends ConsumerWidget {

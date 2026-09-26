@@ -21,7 +21,7 @@ const String perkAgendaLocation = '/assets?tab=perks&view=current&scope=mine';
 /// 都能点 ✕「知道了」（只记在本机）。点行本身打开那张卡；「本期没领完」去会员权益 tab（已经在 tab 里就不动）。
 /// 请求还在路上时这张卡 / 这项权益的按钮转圈、再点不做事。
 class PerkAlertTile extends ConsumerWidget {
-  const PerkAlertTile({super.key, required this.alert, required this.data, this.onOpen, this.padding});
+  const PerkAlertTile({super.key, required this.alert, required this.data, this.onOpen, this.padding, this.hold = false});
 
   final PerkAlert alert;
   final LedgerData data;
@@ -29,6 +29,9 @@ class PerkAlertTile extends ConsumerWidget {
   /// 打开一张卡；不给就推会员详情页（会员权益 tab 传进来：宽屏换右栏，手机推详情页）。
   final void Function(String membershipId)? onOpen;
   final EdgeInsetsGeometry? padding;
+
+  /// 先等一等（这张卡的扣费线索还没取回来，这一行可能马上被线索替掉）：「续了」转圈、「续了」「停了」点了都不做事。
+  final bool hold;
 
   static const Map<PerkAlertKind, IconData> _icons = {
     PerkAlertKind.renewCheck: Icons.help_outline,
@@ -47,7 +50,7 @@ class PerkAlertTile extends ConsumerWidget {
     final busy = ref.watch(perkBusyProvider);
     final m = data.membership(alert.membershipId);
     final renewable = m != null && renewPeriodMonths.containsKey(m.feePeriod);
-    final cardBusy = m != null && busy.contains(perkCardBusyKey(m.id));
+    final cardBusy = hold || (m != null && busy.contains(perkCardBusyKey(m.id)));
     final actions = <Widget>[
       if (alert.kind == PerkAlertKind.benefitExpiring) ?_checkButton(context, ref, busy),
       // 请求还在路上时转圈、再点不做事（renewNow / stopMembership 自己会忽略）。不真的置灰：置灰的按钮不接点击，
@@ -55,13 +58,13 @@ class PerkAlertTile extends ConsumerWidget {
       if (m != null && renewable && _renewRows.contains(alert.kind))
         TextButton(
           key: ValueKey('alert-renew-${m.id}'),
-          onPressed: () => renewNow(context, ref, m),
+          onPressed: hold ? () {} : () => renewNow(context, ref, m),
           child: cardBusy ? const PerkBusySpinner() : const Text('续了'),
         ),
       if (m != null && alert.kind == PerkAlertKind.renewCheck)
         TextButton(
           key: ValueKey('alert-stop-${m.id}'),
-          onPressed: () => stopMembership(context, ref, m),
+          onPressed: hold ? () {} : () => stopMembership(context, ref, m),
           child: Text(renewable ? '停了' : '归档'),
         ),
       if (alert.kind != PerkAlertKind.renewCheck || !renewable)

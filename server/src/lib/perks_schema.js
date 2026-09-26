@@ -82,6 +82,7 @@ const BENEFIT_FIELDS = Object.freeze({
 });
 
 const MAX_ALIASES = 20;
+const MAX_PAY_KEYWORDS = 5;
 const MAX_QUOTA = 3;
 const MAX_LIMITS = 12;
 /** 派生会员沿「来源权益 → 它的会员 → 那张卡的来源权益 …」最多查几层。 */
@@ -111,6 +112,36 @@ function aliasesOf(raw, field = 'aliases') {
     out.push(s);
   }
   if (out.length > MAX_ALIASES) v.bad(field, `别名最多 ${MAX_ALIASES} 个`);
+  return out;
+}
+
+/**
+ * 扣费特征 `{keywords:[…], minCents?, maxCents?}`（P6 会员表单手填，P7 流水识别写）：商户或备注里含任一关键词、
+ * 金额落在 [minCents, maxCents]（缺哪头哪头不设限）的确认支出，算这张卡的一次扣费（lib/charge_hints.js）。
+ * 关键词 1–5 个、每个 ≤30 字：去空白，按规范化名去重，规范化后是空串的（全是标点）丢掉；金额下限不能高于上限。
+ * 只留这三个键。
+ */
+function payPatternOf(raw, field = 'payPattern') {
+  if (!v.isObject(raw)) v.bad(field, '扣费特征要写成 {keywords, minCents, maxCents}');
+  const keywords = [];
+  const seen = new Set();
+  for (const item of v.list(raw.keywords, field, { max: 50 })) {
+    if (typeof item !== 'string') v.bad(field, '商户关键词必须是字符串');
+    const s = item.trim();
+    if (s.length > 30) v.bad(field, '每个商户关键词最多 30 个字');
+    const key = normalizeName(s);
+    if (key === '' || seen.has(key)) continue;
+    seen.add(key);
+    keywords.push(s);
+  }
+  if (keywords.length === 0) v.bad(field, '扣费特征至少要一个商户关键词');
+  if (keywords.length > MAX_PAY_KEYWORDS) v.bad(field, `商户关键词最多 ${MAX_PAY_KEYWORDS} 个`);
+  const minCents = v.optInt(raw.minCents, field, { min: 0, max: MAX_AMOUNT });
+  const maxCents = v.optInt(raw.maxCents, field, { min: 0, max: MAX_AMOUNT });
+  if (minCents !== null && maxCents !== null && minCents > maxCents) v.bad(field, '金额下限不能高于上限');
+  const out = { keywords };
+  if (minCents !== null) out.minCents = minCents;
+  if (maxCents !== null) out.maxCents = maxCents;
   return out;
 }
 
@@ -348,9 +379,11 @@ module.exports = {
   MEMBERSHIP_FIELDS,
   BENEFIT_FIELDS,
   MAX_ALIASES,
+  MAX_PAY_KEYWORDS,
   MAX_SOURCE_DEPTH,
   normalizeName,
   aliasesOf,
+  payPatternOf,
   quotaOf,
   limitsOf,
   originOf,

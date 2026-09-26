@@ -35,6 +35,7 @@ class SettingsPage extends ConsumerWidget {
             _Entry(Icons.people_outline, '成员', '/settings/members'),
             _Entry(Icons.account_balance_wallet_outlined, '账户', '/settings/accounts'),
             _Entry(Icons.inventory_2_outlined, '资产', '/assets'),
+            _Entry(Icons.notifications_active_outlined, '会员提醒', '/settings/perk-reminders'),
             _Entry(Icons.local_offer_outlined, '类别', '/settings/categories'),
             _Entry(Icons.pie_chart_outline, '预算', '/settings/budgets'),
           ]),

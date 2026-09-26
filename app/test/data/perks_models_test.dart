@@ -184,4 +184,35 @@ void main() {
     expect(bare.count, 1);
     expect(bare.kind, 'claim');
   });
+
+  test('PerkPayPattern：缓存里的 Map 读成扣费特征（去空白、没有关键词当没设），写回只带有值的键', () {
+    final p = PerkPayPattern.tryParse({
+      'keywords': [' 腾讯视频 ', '', 3, 'QQ会员'],
+      'minCents': 2000,
+    })!;
+    expect(p.keywords, ['腾讯视频', 'QQ会员']);
+    expect((p.minCents, p.maxCents), (2000, null));
+    expect(p.toJson(), {
+      'keywords': ['腾讯视频', 'QQ会员'],
+      'minCents': 2000,
+    });
+    expect(PerkPayPattern.tryParse(null), isNull);
+    expect(PerkPayPattern.tryParse({'keywords': []}), isNull);
+    expect(PerkPayPattern.tryParse({'merchant': '淘宝'}), isNull, reason: '不认识的形状当没设');
+  });
+
+  test('扣费线索的说法：「已看到 9/21 扣 ¥25.00 → 续到 10/20」；跨年写全年份', () {
+    final today = parseDay('2026-09-23')!;
+    const hint = ChargeHint(
+      membershipId: 'tv',
+      transactionId: 'tx1',
+      occurredOn: '2026-09-21',
+      amountCents: 2500,
+      expiresOn: '2026-09-20',
+      renewTo: '2026-10-20',
+    );
+    expect(chargeHintLine(hint, today), '已看到 9/21 扣 ¥25.00 → 续到 10/20');
+    expect(perkSlashDay('2027-09-20', today), '2027/9/20');
+    expect(perkSlashDay('坏的', today), '坏的');
+  });
 }

@@ -14,6 +14,7 @@ object CapturePrefs {
     private const val KEY_TX_PREFIX = "tx:"
     private const val KEY_TX_ORDER = "tx_order"
     private const val KEY_LAST_MODEL_SYNC = "last_model_sync"
+    private const val KEY_NOTIFICATION_ASKED = "notification_permission_asked"
 
     /** `adb shell cmd notification post` 发出的通知来自这个包，仅调试构建放行。 */
     const val SHELL_PACKAGE = "com.android.shell"
@@ -84,5 +85,12 @@ object CapturePrefs {
 
     fun markModelSync(context: Context, at: Long = System.currentTimeMillis()) {
         prefs(context).edit().putLong(KEY_LAST_MODEL_SYNC, at).apply()
+    }
+
+    /** 弹过系统的通知权限框没有（Android 13+）：拒绝两次后系统不再弹，靠它判断该改去通知设置页。 */
+    fun notificationAsked(context: Context): Boolean = prefs(context).getBoolean(KEY_NOTIFICATION_ASKED, false)
+
+    fun markNotificationAsked(context: Context) {
+        prefs(context).edit().putBoolean(KEY_NOTIFICATION_ASKED, true).apply()
     }
 }

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 会员提醒的图标只在 Dart 里按名字引用（AndroidInitializationSettings('ic_stat_perk')），release 的资源压缩看不到，
+     得在这里点名保住，不然通知发不出来（flutter_local_notifications 说明里的「Release build configuration」）。 -->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@drawable/ic_stat_perk" />

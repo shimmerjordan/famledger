@@ -6,6 +6,7 @@ import 'package:famledger/app/theme.dart';
 import 'package:famledger/data/local/local_store.dart';
 import 'package:famledger/data/local/secure_store.dart';
 import 'package:famledger/data/repos/session_repo.dart';
+import 'package:famledger/ui/settings/perk_reminder_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -116,10 +117,23 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('妈妈'), findsOneWidget);
     expect(find.text('资产'), findsOneWidget);
+    expect(find.text('会员提醒'), findsOneWidget);
     // 设置页是懒加载列表，靠后的分组要滚到了才会建出来。
     await tester.dragUntilVisible(find.text('关于'), find.byType(ListView).last, const Offset(0, -200));
     expect(find.text('导入账单'), findsOneWidget);
     expect(find.text('服务器与账号'), findsOneWidget);
     expect(find.text('关于'), findsOneWidget);
+  });
+
+  testWidgets('「我的 › 会员提醒」进得去', (tester) async {
+    await pumpApp(
+      tester,
+      await boot(baseUrl: 'https://ledger.example.com', loggedIn: true),
+    );
+    await tester.tap(find.text('我的').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('会员提醒'));
+    await tester.pumpAndSettle();
+    expect(find.byType(PerkReminderPage), findsOneWidget);
   });
 }
