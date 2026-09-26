@@ -1,7 +1,9 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:famledger/data/api/api_client.dart';
 import 'package:famledger/data/models/models.dart';
+import 'package:famledger/data/repos/ai_repo.dart';
 import 'package:famledger/data/repos/asset_import_repo.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -131,5 +133,153 @@ void main() {
     final p = AiProvider.fromJson({'id': 'p', 'name': 'x', 'extra': {'requestExtras': {'temperature': 0.2}, 'importMaxTokens': 8000}});
     expect([p.requestExtras, p.importMaxTokens], [{'temperature': 0.2}, 8000]);
     expect(AiProvider.fromJson({'id': 'q', 'name': 'y'}).importMaxTokens, isNull);
+  });
+
+  test('截图识别：给了 images 就是 kind=image，每片 {mediaType:image/png, data:base64}，不带 text', () async {
+    final rig = Rig({
+      'POST $api/asset-import/extract': [sseBody('event: done\ndata: {"importId":"imp-2","draft":{"importId":"imp-2"}}\n\n')],
+    });
+    final a = Uint8List.fromList([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+    final b = Uint8List.fromList([0x89, 0x50, 0x4e, 0x47, 4, 5]);
+    await repoOf(rig).extract(images: [a, b], want: ImportWant.items, providerId: 'p2').toList();
+    expect(rig.server.bodyOf('POST', '$api/asset-import/extract'), {
+      'kind': 'image',
+      'images': [
+        {'mediaType': 'image/png', 'data': base64Encode(a)},
+        {'mediaType': 'image/png', 'data': base64Encode(b)},
+      ],
+      'want': 'items',
+      'providerId': 'p2',
+    });
+  });
+
+  test('撤销：POST /asset-import/:id/undo，结果解析好，然后同步一次；超过 7 天的 409 原样抛、不同步', () async {
+    final rig = Rig({
+      'POST $api/asset-import/imp-1/undo': [
+        {
+          'importId': 'imp-1',
+          'undone': {'platforms': 0, 'memberships': 0, 'benefits': 0, 'items': 2, 'transactions': 1, 'events': 0},
+          'restored': {'memberships': 1, 'benefits': 0},
+          'aliasesRemoved': 1,
+          'skippedChanged': [
+            {'table': 'memberships', 'id': 'vip', 'name': '88VIP'},
+          ],
+          'skippedInUse': [
+            {'table': 'assets', 'id': 'a1', 'name': 'iPhone', 'reason': 'sold'},
+          ],
+        },
+      ],
+      'GET $api/changes': [changes(next: 7)],
+    });
+    final r = await repoOf(rig).undo('imp-1');
+    expect([r.undoneOf('items'), r.undoneOf('transactions'), r.restoredOf('memberships'), r.aliasesRemoved], [2, 1, 1, 1]);
+    expect([r.skippedChanged.single['name'], r.skippedInUse.single['reason'], r.replayed], ['88VIP', 'sold', false]);
+    expect(rig.server.all('GET', '$api/changes'), hasLength(1));
+
+    final late = Rig({
+      'POST $api/asset-import/imp-9/undo': [apiError(409, 'undo_expired', '导入超过 7 天了')],
+    });
+    await expectLater(repoOf(late).undo('imp-9'), throwsA(isA<ApiException>().having((e) => e.code, 'code', 'undo_expired')));
+    expect(late.server.all('GET', '$api/changes'), isEmpty);
+  });
+
+  test('最近的 AI 导入：GET /asset-import/recent 解析成 RecentImport（谁导的、截图还是粘贴、计数、还能撤几天）；缺字段有兜底', () async {
+    final rig = Rig({
+      'GET $api/asset-import/recent': [
+        {
+          'items': [
+            {
+              'importId': 'imp-1',
+              'memberId': 'm2',
+              'memberName': '小红',
+              'mine': false,
+              'sourceKind': 'image',
+              'createdAt': '2026-09-22T05:55:00.000Z',
+              'appliedAt': '2026-09-22T06:03:00.000Z',
+              'created': {'platforms': 1, 'memberships': 1, 'benefits': 3, 'items': 0, 'transactions': 0},
+              'updated': {'platforms': 0, 'memberships': 1, 'benefits': 0},
+              'daysLeft': 3,
+            },
+            {'importId': 'imp-2'},
+          ],
+        },
+      ],
+    });
+    final list = await repoOf(rig).recent();
+    expect(list, hasLength(2));
+    final a = list.first;
+    expect([a.importId, a.memberName, a.mine, a.sourceKind, a.daysLeft], ['imp-1', '小红', false, 'image', 3]);
+    expect(a.appliedAt!.toUtc(), DateTime.utc(2026, 9, 22, 6, 3));
+    expect([a.created['benefits'], a.updated['memberships']], [3, 1]);
+    final b = list.last;
+    expect([b.mine, b.sourceKind, b.daysLeft, b.appliedAt, b.created], [true, 'text', 1, null, <String, int>{}]);
+  });
+
+  test('撤销结果：skippedChanged 带 deleted（被删了还是被改了）、skippedInUse 的 choice_in_use 原样解析', () {
+    final r = PerkImportUndoResult.fromJson({
+      'skippedChanged': [
+        {'table': 'benefits', 'id': 'b1', 'name': '88 折购物券', 'deleted': true},
+      ],
+      'skippedInUse': [
+        {'table': 'benefits', 'id': 'b2', 'name': '三选一', 'reason': 'choice_in_use'},
+      ],
+      'replayed': true,
+    });
+    expect([r.skippedChanged.single['deleted'], r.skippedInUse.single['reason'], r.replayed], [true, 'choice_in_use', true]);
+  });
+
+  test('看图探测：POST /ai/providers/:id/test?vision=1，结果和写好的渠道解析出来；渠道的 vision / maybeVision', () async {
+    final rig = Rig({
+      'POST $api/ai/providers/p1/test?vision=1': [
+        {
+          'ok': true,
+          'vision': false,
+          'sample': '蓝色',
+          'message': '它说「蓝色」，看起来没看到图',
+          'latencyMs': 420,
+          'provider': {'id': 'p1', 'name': 'DeepSeek', 'extra': {'vision': false}},
+        },
+      ],
+    });
+    final r = await AiRepo(rig.api).testVision('p1');
+    expect([r.vision, r.sample, r.latencyMs, r.provider!.vision], [false, '蓝色', 420, false]);
+    expect(rig.server.seen.single.url.query, 'vision=1');
+    expect(AiVisionTest.fromJson(const {'ok': false, 'vision': null, 'message': '上游返回 500'}).vision, isNull);
+    expect([AiProvider.fromJson(const {'id': 'a', 'name': 'x'}).vision, AiProvider.fromJson(const {'id': 'a', 'name': 'x'}).maybeVision], [null, true]);
+    final no = AiProvider.fromJson(const {'id': 'b', 'name': 'y', 'extra': {'vision': false}});
+    expect([no.vision, no.maybeVision], [false, false]);
+    expect(AiProvider.fromJson(const {'id': 'c', 'name': 'z', 'extra': {'vision': 'yes'}}).vision, isNull, reason: '不是布尔的当没测过');
+  });
+
+  test('草稿节点存本机：toJson → fromJson 原样（动作、勾选、差异勾选、关联、img、edited）', () {
+    final n = ImportNode.fromJson({
+      'key': 'i1',
+      't': 'item',
+      'action': 'create',
+      'fields': {'name': 'iPhone', 'priceCents': 899900},
+      'ev': 'iPhone',
+      'img': 2,
+      'conf': 0.9,
+      'unverified': ['purchasedOn'],
+      'badges': ['ev_unverified'],
+      'diff': [
+        {'field': 'expiresOn', 'old': '2026-10-01', 'new': '2026-12-31', 'take': true},
+      ],
+      'txCandidates': [
+        {'id': 'tx1', 'occurredAt': '2026-09-21T09:00:00+08:00', 'merchant': 'Apple', 'amountCents': 899900},
+      ],
+      'link': {'mode': 'link', 'transactionId': 'tx1'},
+    });
+    n
+      ..checked = false
+      ..link = ItemLink.record
+      ..linkTransactionId = null
+      ..edited.add('priceCents');
+    n.diff.single.take = false;
+    final back = ImportNode.fromJson(jsonDecode(jsonEncode(n.toJson())) as Map<String, dynamic>);
+    expect([back.key, back.t, back.action, back.checked, back.img, back.ev, back.conf], ['i1', 'item', 'create', false, 2, 'iPhone', 0.9]);
+    expect([back.link, back.linkTransactionId, back.edited, back.badges, back.unverified], [ItemLink.record, null, {'priceCents'}, {'ev_unverified'}, ['purchasedOn']]);
+    expect([back.diff.single.field, back.diff.single.take, back.diff.single.hasOld], ['expiresOn', false, true]);
+    expect(back.txCandidates.single.amountCents, 899900);
   });
 }

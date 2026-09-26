@@ -4,8 +4,17 @@
 //
 //   POST /asset-import/extract   SSE：stage → record*（已识别 N 条）→ done{importId, draft} | error{code, message}
 //   POST /asset-import/apply     单个事务落库（lib/perk_import_apply.js），只增改、不删
+//   POST /asset-import/:id/undo  7 天内整批撤销（lib/perk_import_undo.js）；本人或管理员；撤销过的再来原样回上次的结果
+//   GET  /asset-import/recent    7 天内导入了、还没撤销的（App「最近的 AI 导入」列出来逐个撤）：本人的；管理员看全家的
 //
-// 本阶段只接 kind=text（粘贴文字）；image / url / transactions 在 P5 / P7 接进来，这里先回 400 kind_unsupported。
+// 来源接 kind=text（粘贴文字）和 kind=image（截图：App 切好片、缩好、编成 PNG，这里 lib/perk_import_image.js 只守门，
+// 渠道要看得了图 —— pickProvider(…, {needVision:true})）；url / transactions 在 P7 接进来，先回 400 kind_unsupported。
+//
+// 截断（stopReason = max_tokens 或没有 done 哨兵）且已经收到 ≥ CONTINUE_MIN 条时，带着「已收到」名单续写一次
+// （同一个导入、同一个流名额，不另算限流；总时长仍是 AI_IMPORT_TOTAL_MS）。草稿（和 ai_imports.summary）用三个标记说清楚
+// 截断的情形，App 照着在预览顶部说哪种情况、提示分段导入（截断那句不再放进 notices）：
+//   truncated        最后仍没写完；continued  续写过（试过）一次；continueFailed  续写那次出错了（上游报错、超时）。
+// 续写期间客户端断开：第一次的用量已经知道了，照样记一行 ai_imports（status failed，error client_aborted）。
 //
 // 花钱的闸门（除了 ai.js 的每人每分钟和并发流名额）：
 //   · 每人每小时 AI_IMPORT_PER_HOUR 次（默认 20），超了 429 rate_limited；
@@ -26,8 +35,10 @@ const { pickParagraphs } = require('../lib/perk_import_text');
 const { parseImportOutput, createRecordCounter } = require('../lib/perk_import_parse');
 const { normalizeImport } = require('../lib/perk_import_normalize');
 const { matchImport } = require('../lib/perk_import_match');
-const { buildImportPrompt, IMPORT_MAX_TOKENS, MAX_EXISTING } = require('../lib/perk_import_prompt');
+const { buildImportPrompt, continueNote, IMPORT_MAX_TOKENS, MAX_EXISTING } = require('../lib/perk_import_prompt');
 const { applyImport } = require('../lib/perk_import_apply');
+const { undoImport } = require('../lib/perk_import_undo');
+const { readImages } = require('../lib/perk_import_image');
 
 const providers = require('./ai_providers');
 
@@ -37,6 +48,11 @@ const MAX_TEXT = 20000;
 const EXTRACT_MAX_BODY = 8 * 1024 * 1024;
 const APPLY_MAX_BODY = 1024 * 1024;
 const KEEP_DAYS = 90;
+const UNDO_DAYS = 7;
+/** 截断后至少收到这么多条才续写（太少多半是模型根本没按格式写，续写也救不回来）。 */
+const CONTINUE_MIN = 5;
+/** 续写前剩下的总时长不到这么多就不续了（续到一半被总超时掐断，白花 token）。 */
+const CONTINUE_MIN_LEFT_MS = 15000;
 
 /** 和 ai.js 的 envInt 同义：缺失或非法一律回默认值。 */
 function envInt(name, dflt, min = 1) {
@@ -74,13 +90,13 @@ module.exports = (ctx) => {
   }
 
   /** 记一行用量（extract 结束时；用户最后没导入也有记录），顺手清掉 90 天前的。 */
-  function recordImport({ id, reqCtx, status, row, usage, summary }) {
+  function recordImport({ id, reqCtx, status, row, usage, summary, sourceKind }) {
     const now = db.now();
     db.tx(() => {
       db.run(
         'INSERT INTO ai_imports(id, member_id, created_at, status, source_kind, provider_id, model, usage_in, usage_out, summary)' +
-          " VALUES(?, ?, ?, ?, 'text', ?, ?, ?, ?, ?)",
-        id, reqCtx.member.id, now, status, row.id, row.model, usage.input || 0, usage.output || 0, JSON.stringify(summary),
+          ' VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        id, reqCtx.member.id, now, status, sourceKind, row.id, row.model, usage.input || 0, usage.output || 0, JSON.stringify(summary),
       );
       db.run('DELETE FROM ai_imports WHERE created_at < ?', new Date(Date.now() - KEEP_DAYS * 86400000).toISOString());
     });
@@ -89,10 +105,16 @@ module.exports = (ctx) => {
   async function extract(req, res, reqCtx) {
     const b = v.body(reqCtx.body);
     const kind = b.kind === undefined || b.kind === null ? 'text' : v.enumOf(b.kind, 'kind', KINDS);
-    if (kind !== 'text') throw new HttpError(400, 'kind_unsupported', '这个版本只支持粘贴文字导入，截图、网址、从流水识别还在路上');
+    if (kind !== 'text' && kind !== 'image') throw new HttpError(400, 'kind_unsupported', '这个版本支持粘贴文字和截图导入，网址、从流水识别还在路上');
     const want = b.want === undefined || b.want === null ? 'auto' : v.enumOf(b.want, 'want', WANTS);
-    const raw = v.str(b.text, 'text', { max: MAX_TEXT, trim: false });
-    if (!raw.trim()) v.bad('text', '先粘点东西进来');
+    let input;
+    if (kind === 'image') {
+      input = { kind, images: readImages(b.images) };
+    } else {
+      const raw = v.str(b.text, 'text', { max: MAX_TEXT, trim: false });
+      if (!raw.trim()) v.bad('text', '先粘点东西进来');
+      input = { kind, raw };
+    }
     let target = null;
     if (!v.isMissing(b.targetMembershipId) && b.targetMembershipId !== '') {
       const id = v.str(b.targetMembershipId, 'targetMembershipId', { max: 64 });
@@ -115,49 +137,91 @@ module.exports = (ctx) => {
         log.warn('import', `成员 ${reqCtx.member.username} 触发导入限流（${perHour}/h）`);
         throw new HttpError(429, 'rate_limited', `识别太频繁了（每小时最多 ${perHour} 次），过一会儿再试`);
       }
-      const row = ctx.ai.pickProvider(b.providerId);
-      await ctx.ai.withStreamSlot(() => run(res, reqCtx, row, { raw, want, target }));
+      const row = ctx.ai.pickProvider(b.providerId, { needVision: kind === 'image' });
+      await ctx.ai.withStreamSlot(() => run(res, reqCtx, row, { input, want, target }));
     } finally {
       running.delete(memberId);
     }
   }
 
-  async function run(res, reqCtx, row, { raw, want, target }) {
-    const use = ctx.ai.toUse(row);
+  /**
+   * 这次要发给模型的东西：文字 → 挑段落、脱敏后的原文（依据核对也用它）；截图 → 图片块在前、说明文字在后。
+   * content(note) 返回 user 消息的 content；note 是续写时附在文字部分末尾的一段（Task 4），首次发送给 null。
+   */
+  function prepare(input, prompt) {
+    if (input.kind === 'image') {
+      const { images } = input;
+      const bytes = images.reduce((n, i) => n + i.bytes, 0);
+      const blocks = images.map((i) => ({ type: 'image', mediaType: i.mediaType, data: i.data }));
+      const text = prompt.userForImages(images.length);
+      return {
+        source: '',
+        notices: [],
+        logLine: `截图 ${images.length} 块 共 ${Math.round(bytes / 1024)}KB`,
+        summary: { sourceKind: 'image', images: images.length, bytes },
+        draftSource: { kind: 'image', count: images.length },
+        imageCount: images.length,
+        content: (note) => [...blocks, { type: 'text', text: note ? `${text}\n\n${note}` : text }],
+      };
+    }
+    const { raw } = input;
     const picked = pickParagraphs(raw);
     const { text: source, phones, cards } = redactPii(picked.text);
-    const prompt = buildImportPrompt({ want, existing: existingNames(), target: target && { name: target.name, platform: target.platform } });
-    const maxTokens = Number.isInteger(use.extra.importMaxTokens) ? use.extra.importMaxTokens : IMPORT_MAX_TOKENS;
     const notices = [];
     if (picked.picked) notices.push(`材料有 ${raw.length} 字，只挑了最相关的 ${picked.kept} 段（约 ${source.length} 字）`);
-    log.info('import', `识别 ${row.kind}/${row.model} 原文 ${raw.length} 字 发送 ${source.length} 字 want=${want} 打码 ${phones}/${cards}`);
     log.debug('import', `原文=${source}`);
+    return {
+      source,
+      notices,
+      logLine: `原文 ${raw.length} 字 发送 ${source.length} 字 打码 ${phones}/${cards}`,
+      summary: { sourceKind: 'text', textLength: raw.length, sentLength: source.length },
+      draftSource: { kind: 'text', text: source },
+      imageCount: 0,
+      content: (note) => (note ? `${prompt.user(source)}\n\n${note}` : prompt.user(source)),
+    };
+  }
+
+  async function run(res, reqCtx, row, { input, want, target }) {
+    const use = ctx.ai.toUse(row);
+    const prompt = buildImportPrompt({ want, existing: existingNames(), target: target && { name: target.name, platform: target.platform } });
+    const prep = prepare(input, prompt);
+    const maxTokens = Number.isInteger(use.extra.importMaxTokens) ? use.extra.importMaxTokens : IMPORT_MAX_TOKENS;
+    const { notices } = prep;
+    // info 只记长度和用量；图片的 base64 哪一级都不记。
+    log.info('import', `识别 ${row.kind}/${row.model} ${prep.logLine} want=${want}`);
 
     const sse = openSse(res);
     const ctl = new AbortController();
     const onClose = () => ctl.abort();
     res.on('close', onClose);
     const started = Date.now();
+    /** 第一次问完就知道的用量和摘要（续写到一半客户端断开时也要记进 ai_imports）。 */
+    let usage = null;
+    let summaryBase = null;
     try {
-      sse.send('stage', { stage: 'asking', message: notices[0] || '正在请模型识别…' });
-      const counter = createRecordCounter();
+      sse.send('stage', { stage: 'asking', message: notices[0] || (input.kind === 'image' ? '正在请模型看图…' : '正在请模型识别…') });
       let seen = 0;
-      const out = await providers.streamChat(
-        use,
-        { system: prompt.system, messages: [{ role: 'user', content: prompt.user(source) }], maxTokens, signal: ctl.signal, timeoutMs: totalMs, idleMs },
-        (delta) => {
-          const n = counter.push(delta);
-          if (n > seen) {
-            seen = n;
-            sse.send('record', { n });
-          }
-        },
-      );
-      sse.send('stage', { stage: 'matching', message: '正在和账本里已有的对一对…' });
-      const parsed = parseImportOutput(out.text);
-      const summaryBase = { want, textLength: raw.length, sentLength: source.length, stopReason: out.stopReason };
+      /** 流一次：base 是之前已经收到的条数（续写时进度接着往上数）。 */
+      const ask = async (content, base, timeoutMs) => {
+        const counter = createRecordCounter();
+        return providers.streamChat(
+          use,
+          { system: prompt.system, messages: [{ role: 'user', content }], maxTokens, signal: ctl.signal, timeoutMs, idleMs },
+          (delta) => {
+            const n = base + counter.push(delta);
+            if (n > seen) {
+              seen = n;
+              sse.send('record', { n });
+            }
+          },
+        );
+      };
+      const out = await ask(prep.content(null), 0, totalMs);
+      usage = { input: out.usage.input || 0, output: out.usage.output || 0 };
+      summaryBase = { want, ...prep.summary, stopReason: out.stopReason };
+      let parsed = parseImportOutput(out.text);
       if (!parsed.ok) {
-        recordImport({ id: crypto.randomUUID(), reqCtx, status: 'failed', row, usage: out.usage, summary: { ...summaryBase, error: 'ai_bad_output' } });
+        recordImport({ id: crypto.randomUUID(), reqCtx, status: 'failed', row, usage, summary: { ...summaryBase, error: 'ai_bad_output' }, sourceKind: input.kind });
         log.warn('import', `模型输出解析不了（${out.text.length} 字，stop=${out.stopReason}）`);
         const refused = out.stopReason === 'refusal';
         sse.send('error', {
@@ -166,32 +230,67 @@ module.exports = (ctx) => {
         });
         return;
       }
-      const truncated = out.stopReason === 'max_tokens' || !parsed.done;
-      if (truncated) notices.push('材料太长，模型只写了一部分；预览里的是已经收到的，剩下的建议分段再导一次');
-      const draft = normalizeImport(parsed.records, { want, source, sourceKind: 'text', today: v.localDay(), target });
+      let truncated = out.stopReason === 'max_tokens' || !parsed.done;
+      let continued = false;
+      let continueFailed = false;
+      const left = totalMs - (Date.now() - started);
+      if (truncated && parsed.records.length >= CONTINUE_MIN && left >= CONTINUE_MIN_LEFT_MS) {
+        continued = true;
+        sse.send('stage', { stage: 'continuing', message: `材料较长，模型写了 ${parsed.records.length} 条没写完，正在让它接着写…` });
+        let more = null;
+        try {
+          more = await ask(prep.content(continueNote(parsed.records)), parsed.records.length, left);
+        } catch (e) {
+          if (ctl.signal.aborted) throw e;
+          // 续写那次失败（上游出错、超时）：第一次收到的留着、照截断处理 —— 那部分的 token 已经花了，不能跟着一起丢掉。
+          continueFailed = true;
+          log.warn('import', `续写失败，保留第一次的 ${parsed.records.length} 条：${ctx.ai.friendly(e, use.apiKey)}`);
+        }
+        if (more) {
+          usage.input += more.usage.input || 0;
+          usage.output += more.usage.output || 0;
+          const tail = parseImportOutput(more.text);
+          if (tail.ok) {
+            parsed = { ok: true, records: [...parsed.records, ...tail.records], done: tail.done, salvaged: parsed.salvaged || tail.salvaged };
+            truncated = more.stopReason === 'max_tokens' || !tail.done;
+          }
+          log.info('import', `续写一次：又收到 ${tail.ok ? tail.records.length : 0} 条（stop=${more.stopReason}，仍截断 ${truncated}）`);
+        }
+      }
+      sse.send('stage', { stage: 'matching', message: '正在和账本里已有的对一对…' });
+      const draft = normalizeImport(parsed.records, {
+        want, source: prep.source, sourceKind: input.kind, imageCount: prep.imageCount, today: v.localDay(), target,
+      });
       matchImport(db, draft);
       if (!parsed.records.length) notices.push('材料里没找到会员、权益或买的东西');
       const importId = crypto.randomUUID();
       recordImport({
-        id: importId, reqCtx, status: 'extracted', row, usage: out.usage,
-        summary: { ...summaryBase, counts: counts(draft), truncated, salvaged: parsed.salvaged, dropped: draft.dropped },
+        id: importId, reqCtx, status: 'extracted', row, usage, sourceKind: input.kind,
+        summary: { ...summaryBase, counts: counts(draft), truncated, continued, continueFailed, salvaged: parsed.salvaged, dropped: draft.dropped },
       });
       sse.send('done', {
         importId,
         draft: {
-          ...draft, importId, want, truncated, salvaged: parsed.salvaged, notices,
+          ...draft, importId, want, truncated, continued, continueFailed, salvaged: parsed.salvaged, notices,
           targetMembershipId: target ? target.id : null,
-          source: { kind: 'text', text: source },
-          providerId: row.id, model: row.model, usage: out.usage,
+          source: prep.draftSource,
+          providerId: row.id, model: row.model, usage,
         },
       });
       log.info(
         'import',
-        `识别完成 ${row.kind}/${row.model} ${parsed.records.length} 条（截断 ${truncated}，抢救 ${parsed.salvaged}） token ${out.usage.input}/${out.usage.output} ${Date.now() - started}ms`,
+        `识别完成 ${row.kind}/${row.model} ${parsed.records.length} 条（截断 ${truncated}，续写 ${continued}，抢救 ${parsed.salvaged}） token ${usage.input}/${usage.output} ${Date.now() - started}ms`,
       );
     } catch (e) {
       if (ctl.signal.aborted) {
         log.debug('import', `客户端断开，已中止上游 ${row.kind}/${row.model}（${Date.now() - started}ms）`);
+        // 断在续写那次：第一次已经花掉的 token 是知道的，照样记账（spec「每次用量记入 ai_imports」）。
+        if (usage) {
+          recordImport({
+            id: crypto.randomUUID(), reqCtx, status: 'failed', row, usage, sourceKind: input.kind,
+            summary: { ...summaryBase, continued: true, error: 'client_aborted' },
+          });
+        }
       } else {
         const timeout = e && (e.name === 'IdleTimeoutError' || e.name === 'TimeoutError');
         const message = e && e.name === 'TimeoutError' ? `识别超过 ${Math.round(totalMs / 1000)} 秒，已停止` : ctx.ai.friendly(e, use.apiKey);
@@ -210,18 +309,94 @@ module.exports = (ctx) => {
     const hit = idem.lookup(db, 'asset_import.apply', clientId);
     if (hit && hit.response) {
       // 重放也先核对是不是本人发起的那次（refId 就是 importId）：别人的 clientId 撞上了也拿不到结果。
-      const mine = db.get('SELECT member_id FROM ai_imports WHERE id = ?', hit.refId);
+      const mine = db.get('SELECT member_id, status FROM ai_imports WHERE id = ?', hit.refId);
       if (mine && mine.member_id !== reqCtx.member.id) throw new HttpError(403, 'forbidden', '这批识别结果不是你发起的');
+      // 撤销过的不能再回「导入成功」：App 拿旧草稿重发时要知道那批已经没了。
+      if (mine && mine.status === 'undone') throw new HttpError(409, 'import_undone', '这批导入已经撤销了；要再导得重新识别一次');
       return sendJson(res, 200, { ...hit.response, replayed: true });
     }
     const importId = v.str(body.importId, 'importId', { max: 64 });
     const row = db.get('SELECT * FROM ai_imports WHERE id = ?', importId);
     if (!row) throw new HttpError(404, 'not_found', '这批识别结果不在了（超过 90 天会清掉），重新识别一次吧');
     if (row.member_id !== reqCtx.member.id) throw new HttpError(403, 'forbidden', '这批识别结果不是你发起的');
+    if (row.status === 'undone') throw new HttpError(409, 'import_undone', '这批导入已经撤销了；要再导得重新识别一次');
     if (row.status !== 'extracted') throw new HttpError(409, 'import_used', '这批识别结果已经导入过了');
     const out = applyImport({ db, ctx, body, reqCtx, importRow: row, clientId });
     log.info('import', `导入 ${importId} by ${reqCtx.member.username}：${JSON.stringify(out.created)}`);
     sendJson(res, 200, out);
+  }
+
+  /** 整批撤销：7 天内、本人或管理员；撤销过的再来原样回上次的结果（回应丢了 App 重发也不报错）。 */
+  function undo(req, res, reqCtx) {
+    const row = db.get('SELECT * FROM ai_imports WHERE id = ?', reqCtx.params.id);
+    if (!row) throw new HttpError(404, 'not_found', '这批导入的记录不在了（超过 90 天会清掉）');
+    if (row.member_id !== reqCtx.member.id && reqCtx.member.role !== 'admin') {
+      throw new HttpError(403, 'forbidden', '只有发起这次导入的人或管理员能撤销');
+    }
+    if (row.status === 'undone') {
+      let prev = null;
+      try {
+        prev = JSON.parse(row.summary || '{}').undone;
+      } catch {
+        prev = null;
+      }
+      return sendJson(res, 200, { ...(prev || { importId: row.id }), replayed: true });
+    }
+    if (row.status !== 'applied') throw new HttpError(409, 'import_not_applied', '这批识别结果还没导入，没有可撤销的');
+    if (!row.applied_at || Date.now() - Date.parse(row.applied_at) > UNDO_DAYS * 86400000) {
+      throw new HttpError(409, 'undo_expired', `导入超过 ${UNDO_DAYS} 天了，不能整批撤销；要改就去对应的卡、物品里逐条改`);
+    }
+    const out = undoImport({ db, ctx, importRow: row, reqCtx });
+    log.info(
+      'import',
+      `撤销导入 ${row.id} by ${reqCtx.member.username}：删 ${JSON.stringify(out.undone)} 恢复 ${JSON.stringify(out.restored)}` +
+        ` 别名 ${out.aliasesRemoved} 跳过 ${out.skippedChanged.length}/${out.skippedInUse.length}`,
+    );
+    sendJson(res, 200, out);
+  }
+
+  /**
+   * 7 天内导入了、还没撤销的（App「最近的 AI 导入」）：本人发起的；管理员看全家的。新的在前，最多 50 条。
+   * 每条 {importId, memberId, memberName, mine, sourceKind, createdAt, appliedAt, created, updated, daysLeft}：
+   * created / updated 是导入时的计数（和 apply 回应的一样），daysLeft 是还能撤几天（不足一天算 1 天）。
+   */
+  function recent(req, res, reqCtx) {
+    const me = reqCtx.member;
+    const admin = me.role === 'admin';
+    const nowMs = Date.now();
+    const since = new Date(nowMs - UNDO_DAYS * 86400000).toISOString();
+    const rows = db.all(
+      'SELECT i.id, i.member_id, i.created_at, i.applied_at, i.source_kind, i.summary, m.display_name AS member_name' +
+        ' FROM ai_imports i LEFT JOIN members m ON m.id = i.member_id' +
+        ` WHERE i.status = 'applied' AND i.applied_at >= ?${admin ? '' : ' AND i.member_id = ?'}` +
+        ' ORDER BY i.applied_at DESC LIMIT 50',
+      since, ...(admin ? [] : [me.id]),
+    );
+    const items = rows
+      .map((r) => {
+        const left = Date.parse(r.applied_at) + UNDO_DAYS * 86400000 - nowMs;
+        let applied = {};
+        try {
+          applied = JSON.parse(r.summary || '{}').applied || {};
+        } catch {
+          applied = {};
+        }
+        return {
+          importId: r.id,
+          memberId: r.member_id,
+          memberName: r.member_name ?? null,
+          mine: r.member_id === me.id,
+          sourceKind: r.source_kind || 'text',
+          createdAt: r.created_at,
+          appliedAt: r.applied_at,
+          created: applied.created || {},
+          updated: applied.updated || {},
+          left,
+        };
+      })
+      .filter((x) => x.left > 0)
+      .map(({ left, ...x }) => ({ ...x, daysLeft: Math.max(1, Math.ceil(left / 86400000)) }));
+    sendJson(res, 200, { items });
   }
 
   log.debug('import', `导入限流 ${perHour}/h/人，空闲超时 ${idleMs}ms，总时长 ${totalMs}ms`);
@@ -231,6 +406,8 @@ module.exports = (ctx) => {
     routes: [
       { method: 'POST', pattern: '/asset-import/extract', handler: extract, maxBody: EXTRACT_MAX_BODY },
       { method: 'POST', pattern: '/asset-import/apply', handler: apply, maxBody: APPLY_MAX_BODY },
+      { method: 'POST', pattern: '/asset-import/:id/undo', handler: undo, maxBody: 4096 },
+      { method: 'GET', pattern: '/asset-import/recent', handler: recent },
     ],
   };
 };

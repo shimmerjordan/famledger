@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../app/theme.dart';
@@ -14,6 +15,7 @@ import '../perks/perk_widgets.dart';
 import '../perks/quota_editor.dart';
 import 'claim_mapping_sheet.dart' show PlatformMappingChips;
 import 'import_node_tile.dart' show refPlatformName;
+import 'import_undo.dart' show ImportNote;
 import 'perk_import_draft.dart';
 
 /// 手机上点一行：底部弹层里改（改的就是草稿本身，没有「保存」，关掉就好）。宽屏在右栏直接放 [ImportNodeForm]。
@@ -46,11 +48,16 @@ Future<void> showImportNodeSheet(BuildContext context, {required PerkImportDraft
     );
 
 /// 原文依据：高亮模型说的那句在原文里的位置（前后各带 40 字）；找不到就照抄模型给的依据并说明没核实到。
+/// 截图来源（[fromImages]）：显示它出自的那片截图（[image]，点开全屏、能双指放大；从本机恢复的草稿没有图就说一声，
+/// 用 [imageLabel]「图 2 的第 1/3 片」说清楚是哪一片），外加模型读到的原字 —— 截图没法自动核对。
 class EvidenceBlock extends StatelessWidget {
-  const EvidenceBlock({super.key, required this.source, required this.node});
+  const EvidenceBlock({super.key, required this.source, required this.node, this.fromImages = false, this.image, this.imageLabel});
 
   final String source;
   final ImportNode node;
+  final bool fromImages;
+  final Uint8List? image;
+  final String? imageLabel;
 
   static const int _context = 40;
 
@@ -60,7 +67,48 @@ class EvidenceBlock extends StatelessWidget {
     final colors = LedgerColors.of(context);
     final span = node.span;
     final Widget body;
-    if (span != null && span[0] >= 0 && span[1] <= source.length && span[0] < span[1]) {
+    if (fromImages) {
+      final img = image;
+      final where = imageLabel ?? (node.img == null ? null : '第 ${node.img} 片');
+      body = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (img != null)
+            Semantics(
+              button: true,
+              label: '点开放大看截图',
+              child: InkWell(
+                key: const ValueKey('evidence-image-open'),
+                borderRadius: BorderRadius.circular(LedgerShapes.control),
+                onTap: () => showEvidenceImage(context, img, title: where),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(LedgerShapes.control),
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 480),
+                    child: Image.memory(img, key: const ValueKey('evidence-image'), fit: BoxFit.contain, gaplessPlayback: true),
+                  ),
+                ),
+              ),
+            ),
+          Padding(
+            padding: EdgeInsets.only(top: img == null ? 0 : 6),
+            child: Text(
+              where == null
+                  ? '模型没说出自哪一片截图。'
+                  : (img == null ? '出自$where（恢复的草稿没带截图，对照原图看）。' : '出自$where，点图放大看。'),
+              key: const ValueKey('evidence-image-where'),
+              style: theme.textTheme.bodySmall,
+            ),
+          ),
+          if (node.ev != null)
+            ImportNote(
+              '模型读到的是「${node.ev}」，截图里的字没法自动核对，先看一眼。',
+              key: const ValueKey('evidence-image-ev'),
+              padding: const EdgeInsets.only(top: 6),
+            ),
+        ],
+      );
+    } else if (span != null && span[0] >= 0 && span[1] <= source.length && span[0] < span[1]) {
       final from = math.max(0, span[0] - _context);
       final to = math.min(source.length, span[1] + _context);
       body = Text.rich(
@@ -101,6 +149,26 @@ class EvidenceBlock extends StatelessWidget {
     );
   }
 }
+
+/// 全屏看一片截图：能双指 / 滚轮放大、拖动，左上角关掉。依据块里那张缩得太小，字看不清时点开看。
+Future<void> showEvidenceImage(BuildContext context, Uint8List png, {String? title}) => showDialog<void>(
+  context: context,
+  useSafeArea: false,
+  builder: (context) => Dialog.fullscreen(
+    key: const ValueKey('evidence-image-viewer'),
+    child: Scaffold(
+      appBar: AppBar(
+        leading: IconButton(tooltip: '关掉', icon: const Icon(Icons.close), onPressed: () => Navigator.of(context).pop()),
+        title: Text(title == null ? '截图' : '截图 · $title'),
+      ),
+      body: InteractiveViewer(
+        minScale: 1,
+        maxScale: 6,
+        child: Center(child: Image.memory(png, fit: BoxFit.contain, gaplessPlayback: true)),
+      ),
+    ),
+  ),
+);
 
 /// 改一个节点：顶上原文依据，下面按类型的字段（改完立刻写回草稿、算作确认过），更新的还有逐字段差异的勾选。
 class ImportNodeForm extends StatefulWidget {
@@ -215,7 +283,7 @@ class _ImportNodeFormState extends State<ImportNodeForm> {
             ],
           ),
         ),
-        EvidenceBlock(source: draft.sourceText, node: n),
+        EvidenceBlock(source: draft.sourceText, node: n, fromImages: draft.fromImages, image: draft.imageOf(n), imageLabel: draft.imageLabelOf(n)),
         if (draft.errorOf(n.key) != null)
           Padding(
             padding: const EdgeInsets.fromLTRB(LedgerLayout.pagePadding, 8, LedgerLayout.pagePadding, 0),

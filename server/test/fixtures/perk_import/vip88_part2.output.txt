@@ -1,0 +1,4 @@
+{"records":[
+{"t":"benefit","name":"QQ 音乐豪华绿钻年卡","membership":"88VIP","kind":"subscription","claimPlatform":"QQ音乐","choice":{"group":"三选一","pick":1},"flow":"claim","quota":[{"p":"term","n":1}],"anchor":"term","ev":"QQ 音乐豪华绿钻年卡","conf":0.8},
+{"t":"benefit","name":"芒果 TV 年卡","membership":"88VIP","kind":"subscription","claimPlatform":"芒果TV","choice":{"group":"三选一","pick":1},"flow":"claim","quota":[{"p":"term","n":1}],"anchor":"term","ev":"芒果 TV 年卡","conf":0.8}
+],"done":true}

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:famledger/data/api/api_client.dart';
 import 'package:famledger/data/models/models.dart';
@@ -32,11 +33,13 @@ Future<void> typeSource(WidgetTester tester, String text) async {
 }
 
 void main() {
-  testWidgets('输入页：只有「粘贴」，识别范围按入口预选，渠道默认选中，写出 token 估算；识别完进预览', (tester) async {
+  testWidgets('输入页：来源分段是粘贴 / 截图（默认粘贴），识别范围按入口预选，渠道默认选中，写出 token 估算；识别完进预览', (tester) async {
     final backend = importBackend(draft: orderDraft());
     await pumpAssetsAt(tester, bootAssets(backend, session: await sessionAs('admin')), '/assets/import?want=items');
     expect(find.text('智能导入'), findsOneWidget);
-    expect(find.text('截图'), findsNothing, reason: '截图、网址、从流水在 P5 / P7，不放半成品入口');
+    expect(find.text('截图'), findsOneWidget);
+    expect(find.text('网址'), findsNothing, reason: '网址、从流水在 P7，不放半成品入口');
+    expect(tester.widget<SegmentedButton<String>>(find.byKey(const ValueKey('import-source'))).selected, {'paste'});
     expect(tester.widget<ChoiceChip>(find.byKey(const ValueKey('import-want-items'))).selected, isTrue);
     expect(tester.widget<ChoiceChip>(find.byKey(const ValueKey('import-provider-ai-1'))).selected, isTrue);
     expect(find.text('识别完先在预览里逐条核对，确认了才会落库。'), findsOneWidget, reason: '先识别、后核对（Review ⑯ 的文案）');
@@ -120,6 +123,27 @@ void main() {
     expect(find.byType(PerkImportPreviewPage), findsOneWidget);
   });
 
+  testWidgets('进度页：条数出来以后，续写阶段那句（「正在让它接着写」）照样看得到，不会只剩一个不动的数', (tester) async {
+    final backend = importBackend();
+    final events = StreamController<ImportEvent>();
+    addTearDown(events.close);
+    final container = bootAssets(backend, overrides: [assetImportRepoProvider.overrideWithValue(_StreamRepo(events.stream))]);
+    await pumpAssetsAt(tester, container, '/assets/import');
+    await typeSource(tester, vip88Source);
+    await tapVisible(tester, find.byKey(const ValueKey('import-start')));
+    events.add(const ImportProgress(6));
+    await tester.pump();
+    expect(find.text('已识别 6 条'), findsOneWidget);
+    events.add(const ImportStage('材料较长，模型写了 6 条没写完，正在让它接着写…'));
+    await tester.pump();
+    expect(find.text('材料较长，模型写了 6 条没写完，正在让它接着写…'), findsOneWidget);
+    expect(find.text('已识别 6 条'), findsOneWidget, reason: '两行各说各的');
+    events.add(const ImportProgress(8));
+    await tester.pump();
+    expect(find.text('已识别 8 条'), findsOneWidget);
+    expect(find.byKey(const ValueKey('import-stage')), findsOneWidget);
+  });
+
   testWidgets('指定卡（?membership=）：写明归到哪张卡、不给识别范围，请求带 targetMembershipId、want 固定 virtual', (tester) async {
     final backend = importBackend();
     backend.perks.memberships['vip'] = membershipJson('vip');
@@ -165,7 +189,13 @@ class _StreamRepo extends AssetImportRepo {
   final Stream<ImportEvent> events;
 
   @override
-  Stream<ImportEvent> extract({required String text, ImportWant want = ImportWant.auto, String? targetMembershipId, String? providerId}) => events;
+  Stream<ImportEvent> extract({
+    String text = '',
+    List<Uint8List> images = const [],
+    ImportWant want = ImportWant.auto,
+    String? targetMembershipId,
+    String? providerId,
+  }) => events;
 }
 
 class _NoLedger implements LedgerRepo {

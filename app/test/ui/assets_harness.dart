@@ -272,6 +272,12 @@ class AssetsBackend {
     return res;
   });
 
+  /// 撤销导入（test/ui/import_fake.dart）用：删掉这件物品并留墓碑。
+  void buryAsset(String id) {
+    final row = assets.remove(id);
+    if (row != null) _tombstones.add({...row, 'deletedAt': testNow.toUtc().toIso8601String(), 'kind': 'asset'});
+  }
+
   Map<String, dynamic> _changes() => {
     'since': 0,
     'next': frozenSeq ? _seq : ++_seq,

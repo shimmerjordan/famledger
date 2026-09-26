@@ -6,6 +6,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const zlib = require('node:zlib');
 
 const ANT_KEY = 'sk-ant-import';
 const FIX = path.join(__dirname, 'fixtures', 'perk_import');
@@ -45,6 +46,46 @@ async function sse(base, p, { token, body } = {}) {
   return { status: r.status, text, json, events, of: (name) => events.filter((e) => e.event === name) };
 }
 
+/** CRC-32（PNG 块校验用）。 */
+function crc32(buf) {
+  let crc = 0xffffffff;
+  for (const byte of buf) {
+    crc ^= byte;
+    for (let k = 0; k < 8; k++) crc = crc & 1 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1;
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length);
+  const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(body));
+  return Buffer.concat([len, body, crc]);
+}
+
+/** 一张真的灰度 PNG（w×h，全白），给截图导入当材料。服务端只读文件头，但假上游和日志断言要的是真字节。 */
+function pngBuffer(w, h) {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8; // 位深
+  ihdr[9] = 0; // 灰度
+  const row = Buffer.alloc(1 + w, 0xff);
+  row[0] = 0; // 过滤方式：无
+  const raw = Buffer.concat(Array.from({ length: h }, () => row));
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', zlib.deflateSync(raw)),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+/** 请求体里的一片截图：{mediaType, data(base64)}。 */
+const pngImage = (w = 784, h = 1568) => ({ mediaType: 'image/png', data: pngBuffer(w, h).toString('base64') });
+
 /** 建一个指向假 Anthropic 的默认渠道。 */
 async function addProvider(h, up, extra = {}) {
   const r = await h.a.post('/ai/providers', {
@@ -62,6 +103,16 @@ async function extractDraft(h, up, output, source, body = {}) {
   up.state.completions.push(output.endsWith('.txt') ? fixture(output) : output);
   const text = source.endsWith('.txt') ? fixture(source) : source;
   const r = await sse(h.srv.base, '/asset-import/extract', { token: h.token, body: { kind: 'text', text, ...body } });
+  assert.equal(r.status, 200, r.text);
+  const done = r.of('done');
+  assert.equal(done.length, 1, `没有 done：${r.text}`);
+  return done[0].data;
+}
+
+/** 喂一份「模型原样输出」跑一次截图识别（kind=image），返回 done 的 data。 */
+async function extractImages(h, up, output, images, body = {}) {
+  up.state.completions.push(output.endsWith('.txt') ? fixture(output) : output);
+  const r = await sse(h.srv.base, '/asset-import/extract', { token: h.token, body: { kind: 'image', images, ...body } });
   assert.equal(r.status, 200, r.text);
   const done = r.of('done');
   assert.equal(done.length, 1, `没有 done：${r.text}`);
@@ -96,4 +147,4 @@ function applyBodyOf(done, { clientId = 'apply-1', edit = () => {}, picks = {} }
   };
 }
 
-module.exports = { ANT_KEY, fixture, parseSse, sse, addProvider, extractDraft, applyBodyOf };
+module.exports = { ANT_KEY, fixture, parseSse, sse, addProvider, extractDraft, extractImages, applyBodyOf, pngBuffer, pngImage };

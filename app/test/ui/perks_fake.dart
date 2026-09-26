@@ -177,6 +177,17 @@ class PerksFake {
   void _bury(String kind, Map<String, dynamic> row) =>
       _tombstones.add({...row, 'deletedAt': testNow.toUtc().toIso8601String(), '_kind': kind});
 
+  /// 撤销导入（test/ui/import_fake.dart）用：把 [kind]（platform / membership / benefit）那一行删掉并留墓碑，/changes 带出去。
+  void bury(String kind, String id) {
+    final table = switch (kind) {
+      'platform' => platforms,
+      'membership' => memberships,
+      _ => benefits,
+    };
+    final row = table.remove(id);
+    if (row != null) _bury(kind, row);
+  }
+
   String _id(String prefix) => '$prefix-new${++_ids}';
 
   http.Response handle(String method, List<String> seg, Map<String, dynamic> body, Map<String, String> query) {

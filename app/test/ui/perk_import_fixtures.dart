@@ -267,3 +267,17 @@ Map<String, dynamic> vipPickJson() {
   };
   return json;
 }
+
+/// 订单截图的草稿（服务端 kind=image 回的形状）：两块截图，iPhone 出自第 2 块、依据「未核实」、没有 span；照样默认关联唯一那笔流水。
+Map<String, dynamic> orderImageDraft({String importId = 'imp-shot', String txId = 'tx-phone'}) {
+  final json = orderDraft(importId: importId, txId: txId);
+  json['source'] = {'kind': 'image', 'count': 2};
+  final item = (json['items'] as List).first as Map<String, dynamic>;
+  // 截图来源（服务端 perk_import_normalize.js）：不逐条标「依据未核实」，关键字段进 unverified（落库后是「AI 推断」小点）。
+  item
+    ..['img'] = 2
+    ..['span'] = null
+    ..['badges'] = <String>[]
+    ..['unverified'] = ['priceCents', 'purchasedOn'];
+  return json;
+}

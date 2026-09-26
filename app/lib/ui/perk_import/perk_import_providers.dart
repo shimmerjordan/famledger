@@ -1,9 +1,11 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/providers.dart';
 import '../../data/models/models.dart';
 import '../../data/repos/asset_import_repo.dart';
 import 'perk_import_draft.dart';
+import 'screenshots.dart';
 
 final assetImportRepoProvider = Provider<AssetImportRepo>(
   (ref) => AssetImportRepo(api: ref.watch(apiProvider), ledger: ref.watch(ledgerRepoProvider)),
@@ -21,3 +23,25 @@ String perkImportLocation({ImportWant want = ImportWant.auto, String? membership
   };
   return Uri(path: '/assets/import', queryParameters: q.isEmpty ? null : q).toString();
 }
+
+/// 选截图（spec §6：file_picker，`FileType.image` + `withData`，可以多选）。取消回空列表。网页上拿不到路径，只要字节。
+typedef ScreenshotPicker = Future<List<PickedScreenshot>> Function();
+
+final screenshotPickerProvider = Provider<ScreenshotPicker>(
+  (ref) => () async {
+    final result = await FilePicker.pickFiles(type: FileType.image, allowMultiple: true, withData: true);
+    if (result == null) return const [];
+    return [
+      for (final f in result.files)
+        if (f.bytes != null) PickedScreenshot(name: f.name, bytes: f.bytes!),
+    ];
+  },
+);
+
+/// 切片、缩放、编码（真用时就是 [prepareScreenshots]），[onProgress] 按原图报进度。
+/// widget 测试换成现成的结果：dart:ui 的编码要真实的异步，假时钟里等不到。
+typedef ScreenshotPreparer = Future<ScreenshotBatch> Function(List<PickedScreenshot> files, Set<String> removed, ScreenshotProgress onProgress);
+
+final screenshotPreparerProvider = Provider<ScreenshotPreparer>(
+  (ref) => (files, removed, onProgress) => prepareScreenshots(files, removed: removed, onProgress: onProgress),
+);

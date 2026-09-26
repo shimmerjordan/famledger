@@ -1,0 +1,1 @@
+{"records":[{"t":"item","name":"iPhone 16 Pro 256GB","category":"digital","preset":"apple","price":8999,"purchasedOn":"2026-09-20","ev":"Apple iPhone 16 Pro 256GB 沙漠色钛金属","conf":0.9,"img":2}],"done":true}

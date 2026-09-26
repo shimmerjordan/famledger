@@ -38,6 +38,8 @@ List<(String, bool)> importBadges(PerkImportDraft draft, ImportNode n, LedgerDat
     'copied_example': '疑似照抄示例',
   };
   for (final e in labels.entries) {
+    // 截图来源每条都「依据未核实」，不逐条挂（预览顶上整批说一次）。
+    if (e.key == 'ev_unverified' && draft.fromImages) continue;
     if (n.badges.contains(e.key)) out.add((e.value, true));
   }
   if (draft.missingOf(n).isNotEmpty) out.add(('缺字段', true));

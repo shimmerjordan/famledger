@@ -33,6 +33,7 @@ class FakeAiRepo extends AiRepo {
     this.testResult,
     this.reportStream,
     this.reportList = const [],
+    this.visionResult,
   }) : super(
          ApiClient(
            baseUrl: 'https://x.dev',
@@ -46,6 +47,11 @@ class FakeAiRepo extends AiRepo {
   final AiProviderTest? testResult;
   final Stream<String>? reportStream;
   final List<AiReport> reportList;
+
+  /// 看图探测回什么；带着 provider 时，之后的渠道列表换成它（像服务端写进了 extra.vision）。
+  final AiVisionTest? visionResult;
+  late List<AiProvider> _providers = [...providerList];
+  final List<String> visionTested = [];
 
   List<AiChatMessage> lastMessages = const [];
   String? lastMonth;
@@ -72,7 +78,16 @@ class FakeAiRepo extends AiRepo {
   Future<List<AiReport>> reports({String? month}) async => reportList;
 
   @override
-  Future<List<AiProvider>> providers() async => providerList;
+  Future<List<AiProvider>> providers() async => _providers;
+
+  @override
+  Future<AiVisionTest> testVision(String id) async {
+    visionTested.add(id);
+    final result = visionResult ?? const AiVisionTest();
+    final updated = result.provider;
+    if (updated != null) _providers = [for (final p in _providers) p.id == updated.id ? updated : p];
+    return result;
+  }
 
   @override
   Future<List<AiPreset>> presets() async => presetList;
@@ -486,6 +501,103 @@ void main() {
       expect(find.text('测试'), findsNothing);
       expect(find.byType(Switch), findsNothing);
       expect(find.byIcon(Icons.add), findsNothing);
+    });
+  });
+
+  group('看图探测', () {
+    const blind = AiProvider(id: 'p1', name: 'DeepSeek', model: 'deepseek-chat', hasKey: true, isDefault: true);
+
+    testWidgets('测过的渠道名字旁边写「支持看图 / 看不了图」，没测过的不写；普通成员也看得到标记、没有「测看图」', (tester) async {
+      final repo = FakeAiRepo(providerList: const [
+        AiProvider(id: 'a', name: 'cc-trans', model: 'claude-sonnet-5', hasKey: true, extra: {'vision': true}),
+        AiProvider(id: 'b', name: 'DeepSeek', model: 'deepseek-chat', hasKey: true, extra: {'vision': false}),
+        AiProvider(id: 'c', name: '硅基流动', model: 'Qwen/Qwen3-32B', hasKey: true),
+      ]);
+      await pumpIn(tester, await boot(role: 'member', overrides: [aiRepoProvider.overrideWithValue(repo)]), const AiProvidersPage());
+      await tester.pumpAndSettle();
+      expect(find.text('支持看图'), findsOneWidget);
+      expect(find.text('看不了图'), findsOneWidget);
+      expect(find.byKey(const ValueKey('ai-vision-tag')), findsNWidgets(2));
+      expect(find.text('测看图'), findsNothing);
+    });
+
+    testWidgets('管理员点「测看图」→ 测出能看图：写一句结果，名字旁边出现「支持看图」', (tester) async {
+      final repo = FakeAiRepo(
+        providerList: const [blind],
+        visionResult: const AiVisionTest(
+          vision: true,
+          sample: '红色',
+          latencyMs: 210,
+          provider: AiProvider(id: 'p1', name: 'DeepSeek', model: 'deepseek-chat', hasKey: true, isDefault: true, extra: {'vision': true}),
+        ),
+      );
+      await pumpIn(tester, await boot(overrides: [aiRepoProvider.overrideWithValue(repo)]), const AiProvidersPage());
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('ai-vision-tag')), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('ai-vision-test-p1')));
+      await tester.pumpAndSettle();
+      expect(repo.visionTested, ['p1']);
+      expect(find.text('支持看图 · 210ms'), findsOneWidget, reason: '结果和「测试」的结果放同一个位置，叫法和标签一致');
+      expect(find.text('支持看图'), findsOneWidget);
+    });
+
+    testWidgets('测出看不了图：结果写原因（正文色，不是报错色），名字旁边变成「看不了图」；再点「测试」，看图的结果让位', (tester) async {
+      final repo = FakeAiRepo(
+        providerList: const [blind],
+        visionResult: const AiVisionTest(
+          vision: false,
+          sample: '蓝色',
+          message: '它说「蓝色」，看起来没看到图',
+          provider: AiProvider(id: 'p1', name: 'DeepSeek', model: 'deepseek-chat', hasKey: true, isDefault: true, extra: {'vision': false}),
+        ),
+      );
+      await pumpIn(tester, await boot(overrides: [aiRepoProvider.overrideWithValue(repo)]), const AiProvidersPage());
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('ai-vision-test-p1')));
+      await tester.pumpAndSettle();
+      final note = tester.widget<Text>(find.byKey(const ValueKey('ai-vision-note-p1')));
+      expect(note.data, '看不了图：它说「蓝色」，看起来没看到图');
+      final context = tester.element(find.byKey(const ValueKey('ai-vision-note-p1')));
+      expect(note.style?.color, Theme.of(context).colorScheme.onSurface);
+      expect(find.text('看不了图'), findsOneWidget, reason: '名字旁边的标记');
+      await tester.tap(find.text('测试'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('ai-vision-note-p1')), findsNothing, reason: '一个位置只放最近那次的结果');
+      expect(find.textContaining('通了'), findsOneWidget);
+    });
+
+    for (final width in [400.0, 800.0, 1400.0]) {
+      testWidgets('宽 $width、字号 1.5 倍：两种标记、默认标记和看图结果都不溢出', (tester) async {
+        tester.view.physicalSize = Size(width, 900);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        tester.platformDispatcher.textScaleFactorTestValue = 1.5;
+        addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+        final repo = FakeAiRepo(
+          providerList: const [
+            AiProvider(id: 'a', name: '家里自建的 cc-trans 反向代理', model: 'claude-sonnet-5', hasKey: true, isDefault: true, extra: {'vision': true}),
+            AiProvider(id: 'b', name: 'DeepSeek', model: 'deepseek-chat', hasKey: true, extra: {'vision': false}),
+          ],
+          visionResult: const AiVisionTest(message: '上游返回 500：fake is unhappy，过一会儿再测一次看看'),
+        );
+        await pumpIn(tester, await boot(overrides: [aiRepoProvider.overrideWithValue(repo)]), const AiProvidersPage());
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const ValueKey('ai-vision-test-b')));
+        await tester.pumpAndSettle();
+        expect(find.byKey(const ValueKey('ai-vision-note-b')), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      });
+    }
+
+    testWidgets('判断不了（连不上、没回答）：写原因，标记不变', (tester) async {
+      final repo = FakeAiRepo(providerList: const [blind], visionResult: const AiVisionTest(message: '上游返回 500：fake is unhappy'));
+      await pumpIn(tester, await boot(overrides: [aiRepoProvider.overrideWithValue(repo)]), const AiProvidersPage());
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('测看图'));
+      await tester.pumpAndSettle();
+      expect(find.text('上游返回 500：fake is unhappy'), findsOneWidget);
+      expect(find.byKey(const ValueKey('ai-vision-tag')), findsNothing);
     });
   });
 

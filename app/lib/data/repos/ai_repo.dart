@@ -70,6 +70,10 @@ class AiRepo {
   Future<AiProviderTest> test(String id) async =>
       AiProviderTest.fromJson(await _api.post('/ai/providers/$id/test', const {}));
 
+  /// 看图探测：发一张小图问颜色，结果写进渠道的 `extra.vision`（只有管理员能测）。
+  Future<AiVisionTest> testVision(String id) async =>
+      AiVisionTest.fromJson(await _api.post('/ai/providers/$id/test?vision=1', const {}));
+
   // —— 对话与月报 ——
 
   /// 一问一答的流：每个 `delta` 事件吐一段文字，`done` 结束，`error` 抛异常。

@@ -7,7 +7,9 @@ import 'perks_fake.dart';
 
 // AI 导入的假服务端（挂在 AssetsBackend 上）：`GET /ai/providers`、`POST /asset-import/extract`（SSE，回测试给的草稿）、
 // `POST /asset-import/apply`（照 server/src/lib/perk_import_apply.js 把平台 / 会员 / 权益 / 物品写进 PerksFake 和物品表，
-// 写完 /changes 就能拿到）。幂等重放、failNext、dropResponseNext 都走 AssetsBackend 那一套。
+// 写完 /changes 就能拿到）、`POST /asset-import/:id/undo`（把那次 apply 新建的删掉、留墓碑；撤过的再来原样回上次的结果并标
+// replayed，照服务端）、`GET /asset-import/recent`（回 [recent]）。
+// 幂等重放、failNext、dropResponseNext 都走 AssetsBackend 那一套。
 
 class ImportFake {
   ImportFake({List<Map<String, dynamic>>? providers})
@@ -36,12 +38,36 @@ class ImportFake {
   /// 下一次导入回 400 这个错误体（{code, message, details}），用一次就恢复。
   Map<String, dynamic>? applyError;
 
+  /// 每次 apply 新建了什么（importId → [(kind, id)]），撤销时照着删。
+  final Map<String, List<(String, String)>> createdBy = {};
+
+  /// 撤销请求的 importId。
+  final List<String> undoCalls = [];
+
+  /// 撤销回应里额外盖上的键（比如 skippedChanged / skippedInUse），不给就只报删了什么。
+  Map<String, dynamic> undoExtra = const {};
+
+  /// 撤过的：importId → 第一次的回应（再撤原样回、带 replayed）。
+  final Map<String, Map<String, dynamic>> _undoReplies = {};
+
+  /// `GET /asset-import/recent` 回的 items（服务端的形状）；撤过的自动不再列。
+  List<Map<String, dynamic>> recent = [];
+
   static const Set<String> resources = {'ai', 'asset-import'};
 
   http.Response handle(String method, List<String> seg, Map<String, dynamic> body, AssetsBackend backend) {
     if (method == 'GET' && seg.join('/') == 'ai/providers') return PerksFake.ok({'items': providers});
+    if (method == 'GET' && seg.join('/') == 'asset-import/recent') {
+      return PerksFake.ok({
+        'items': [
+          for (final r in recent)
+            if (!_undoReplies.containsKey(r['importId'])) r,
+        ],
+      });
+    }
     if (method == 'POST' && seg.join('/') == 'asset-import/extract') return _extract(body);
     if (method == 'POST' && seg.join('/') == 'asset-import/apply') return _apply(body, backend);
+    if (method == 'POST' && seg.length == 3 && seg[0] == 'asset-import' && seg[2] == 'undo') return _undo(seg[1], backend);
     return PerksFake.error(404, 'not_found', '没有这个接口');
   }
 
@@ -93,6 +119,7 @@ class ImportFake {
       } else if (p['action'] == 'create') {
         final id = 'p-imp-${p['key']}';
         perks.platforms[id] = platformJson(id, name: f['name'] as String, sort: perks.platforms.length);
+        (createdBy[body['importId'] as String] ??= []).add(('platform', id));
         ids[p['key'] as String] = id;
         created['platforms'] = created['platforms']! + 1;
       }
@@ -111,6 +138,7 @@ class ImportFake {
           autoRenew: f['autoRenew'] as String? ?? 'unknown',
           sort: perks.memberships.length,
         )..['origin'] = {'src': 'ai_text', 'importId': body['importId'], 'unverified': m['unverified']};
+        (createdBy[body['importId'] as String] ??= []).add(('membership', id));
         ids[m['key'] as String] = id;
         created['memberships'] = created['memberships']! + 1;
       } else if (m['action'] == 'update') {
@@ -163,6 +191,7 @@ class ImportFake {
         faceValueCents: f['faceValueCents'] as int?,
         sort: perks.benefits.length,
       );
+      (createdBy[body['importId'] as String] ??= []).add(('benefit', id));
       ids[b['key'] as String] = id;
       created['benefits'] = created['benefits']! + 1;
     }
@@ -184,10 +213,42 @@ class ImportFake {
         residualBp: f['residualBp'] as int?,
         netWorth: f['netWorth'] as String?,
       )..['origin'] = {'src': 'ai_text', 'importId': body['importId'], 'unverified': i['unverified']};
+      (createdBy[body['importId'] as String] ??= []).add(('asset', id));
+      if (record) (createdBy[body['importId'] as String] ??= []).add(('transaction', 'tx-imp-${i['key']}'));
       ids[i['key'] as String] = id;
       created['items'] = created['items']! + 1;
       if (record) created['transactions'] = created['transactions']! + 1;
     }
     return PerksFake.ok({'importId': body['importId'], 'created': created, 'updated': updated, 'autoMerged': <Object>[], 'ids': ids});
+  }
+
+  http.Response _undo(String importId, AssetsBackend backend) {
+    undoCalls.add(importId);
+    final first = _undoReplies[importId];
+    if (first != null) return PerksFake.ok({...first, 'replayed': true});
+    final undone = {'platforms': 0, 'memberships': 0, 'benefits': 0, 'items': 0, 'transactions': 0, 'events': 0};
+    for (final (kind, id) in (createdBy.remove(importId) ?? const <(String, String)>[]).reversed) {
+      switch (kind) {
+        case 'asset':
+          backend.buryAsset(id);
+          undone['items'] = undone['items']! + 1;
+        case 'transaction':
+          undone['transactions'] = undone['transactions']! + 1;
+        default:
+          backend.perks.bury(kind, id);
+          undone['${kind}s'] = undone['${kind}s']! + 1;
+      }
+    }
+    final reply = {
+      'importId': importId,
+      'undone': undone,
+      'restored': {'memberships': 0, 'benefits': 0},
+      'aliasesRemoved': 0,
+      'skippedChanged': <Object>[],
+      'skippedInUse': <Object>[],
+      ...undoExtra,
+    };
+    _undoReplies[importId] = reply;
+    return PerksFake.ok(reply);
   }
 }

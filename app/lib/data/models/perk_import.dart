@@ -54,7 +54,11 @@ class ImportDiff {
     oldValue: json['old'],
     newValue: json['new'],
     take: jsonBool(json['take']),
+    hasOld: jsonBool(json['hasOld'], true),
   );
+
+  /// 草稿存本机用（[ImportNode.toJson]）：和 fromJson 对得上。
+  Map<String, dynamic> toJson() => {'field': field, 'old': oldValue, 'new': newValue, 'take': take, 'hasOld': hasOld};
 }
 
 /// 物品的关联流水候选（同金额、日期 ±3 天的已确认支出）。
@@ -75,6 +79,8 @@ class ImportTxCandidate {
     merchant: jsonString(json['merchant']),
     amountCents: jsonInt(json['amountCents']),
   );
+
+  Map<String, dynamic> toJson() => {'id': id, 'occurredAt': occurredAt, 'merchant': merchant, 'amountCents': amountCents};
 }
 
 /// 物品落库时和流水的关系：关联一笔已有的 / 同时记一笔支出 / 不记账。
@@ -92,6 +98,7 @@ class ImportNode {
     this.ev,
     this.span,
     this.conf = 0.5,
+    this.img,
     required this.unverified,
     required this.badges,
     this.checked = true,
@@ -128,6 +135,9 @@ class ImportNode {
   /// 依据在原文里的位置 [start, end)；原文里没找到是 null。
   final List<int>? span;
   final double conf;
+
+  /// （截图来源）出自第几块，从 1 开始；文字来源、模型没写的是 null。
+  final int? img;
 
   /// 推断出来、还没人确认的字段名（落库写进 origin.unverified）。
   final List<String> unverified;
@@ -167,7 +177,7 @@ class ImportNode {
   factory ImportNode.fromJson(Map<String, dynamic> json) {
     final link = jsonMap(json['link']);
     final span = json['span'];
-    return ImportNode(
+    final node = ImportNode(
       key: jsonString(json['key']),
       t: jsonString(json['t']),
       action: jsonString(json['action'], 'create'),
@@ -176,6 +186,7 @@ class ImportNode {
       ev: jsonStringOrNull(json['ev']),
       span: span is List && span.length == 2 ? [jsonInt(span[0]), jsonInt(span[1])] : null,
       conf: jsonDouble(json['conf'], 0.5),
+      img: jsonIntOrNull(json['img']),
       unverified: jsonStringList(json['unverified']).toList(),
       badges: jsonStringList(json['badges']).toSet(),
       checked: jsonBool(json['checked'], true),
@@ -193,7 +204,35 @@ class ImportNode {
       byCard: jsonMap(json['byCard']).map((k, v) => MapEntry(k, jsonMap(v))),
       current: jsonMap(json['current']),
     );
+    // 服务端的草稿没有 edited；本机存的草稿有（预览里人工改过的字段）。
+    node.edited.addAll(jsonStringList(json['edited']));
+    return node;
   }
+
+  /// 草稿存本机（spec §6「草稿防丢」）：连同预览里改过的动作、勾选、差异勾选、关联方式和 edited 一起，fromJson 能原样读回来。
+  Map<String, dynamic> toJson() => {
+    'key': key,
+    't': t,
+    'action': action,
+    'targetId': targetId,
+    'fields': fields,
+    'ev': ev,
+    'span': span,
+    'conf': conf,
+    'img': img,
+    'unverified': unverified,
+    'badges': badges.toList(),
+    'checked': checked,
+    'implied': implied,
+    'match': match,
+    'diff': [for (final d in diff) d.toJson()],
+    'notMentioned': notMentioned,
+    'txCandidates': [for (final c in txCandidates) c.toJson()],
+    'link': {'mode': link.name, 'transactionId': linkTransactionId},
+    'byCard': byCard,
+    'current': current,
+    'edited': edited.toList(),
+  };
 }
 
 /// extract 流里的事件：`stage`（进行到哪一步的一句话）、`record`（已经识别出几条）、`done`（草稿）。
@@ -221,6 +260,87 @@ class ImportDone extends ImportEvent {
 
   /// 服务端的草稿原样（交给 PerkImportDraft.fromJson）。
   final Map<String, dynamic> draft;
+}
+
+/// `POST /asset-import/:id/undo` 的结果：删了什么、改回了什么、哪些没动（导入后被改过 / 还被别的数据用着）。
+class PerkImportUndoResult {
+  const PerkImportUndoResult({
+    this.undone = const {},
+    this.restored = const {},
+    this.aliasesRemoved = 0,
+    this.skippedChanged = const [],
+    this.skippedInUse = const [],
+    this.replayed = false,
+  });
+
+  /// {platforms, memberships, benefits, items, transactions, events}
+  final Map<String, int> undone;
+
+  /// {memberships, benefits}
+  final Map<String, int> restored;
+  final int aliasesRemoved;
+
+  /// 导入后被改过（deleted 为真是被删了）、没恢复的：[{table, id, name, deleted}]
+  final List<Map<String, dynamic>> skippedChanged;
+
+  /// 还被导入之外的数据用着、没删（或没改回去）的：
+  /// [{table, id, name, reason: sold|has_options|has_benefits|in_use|choice_in_use}]
+  final List<Map<String, dynamic>> skippedInUse;
+  final bool replayed;
+
+  int undoneOf(String kind) => undone[kind] ?? 0;
+  int restoredOf(String kind) => restored[kind] ?? 0;
+
+  factory PerkImportUndoResult.fromJson(Map<String, dynamic> json) => PerkImportUndoResult(
+    undone: jsonMap(json['undone']).map((k, v) => MapEntry(k, jsonInt(v))),
+    restored: jsonMap(json['restored']).map((k, v) => MapEntry(k, jsonInt(v))),
+    aliasesRemoved: jsonInt(json['aliasesRemoved']),
+    skippedChanged: jsonMapList(json['skippedChanged']),
+    skippedInUse: jsonMapList(json['skippedInUse']),
+    replayed: jsonBool(json['replayed']),
+  );
+}
+
+/// `GET /asset-import/recent` 的一条：7 天内导入了、还没撤销的一次导入（「最近的 AI 导入」逐个撤）。
+class RecentImport {
+  const RecentImport({
+    required this.importId,
+    this.memberName,
+    this.mine = true,
+    this.sourceKind = 'text',
+    this.appliedAt,
+    this.created = const {},
+    this.updated = const {},
+    this.daysLeft = 1,
+  });
+
+  final String importId;
+
+  /// 谁导的（管理员看全家的时候用得上）。
+  final String? memberName;
+  final bool mine;
+
+  /// text（粘贴）| image（截图）。
+  final String sourceKind;
+  final DateTime? appliedAt;
+
+  /// 导入时的计数（和 apply 回应一样）：{platforms, memberships, benefits, items, transactions} / {platforms, memberships, benefits}
+  final Map<String, int> created;
+  final Map<String, int> updated;
+
+  /// 还能撤几天（不足一天算 1 天）。
+  final int daysLeft;
+
+  factory RecentImport.fromJson(Map<String, dynamic> json) => RecentImport(
+    importId: jsonString(json['importId']),
+    memberName: jsonStringOrNull(json['memberName']),
+    mine: jsonBool(json['mine'], true),
+    sourceKind: jsonString(json['sourceKind'], 'text'),
+    appliedAt: jsonDateOrNull(json['appliedAt']),
+    created: jsonMap(json['created']).map((k, v) => MapEntry(k, jsonInt(v))),
+    updated: jsonMap(json['updated']).map((k, v) => MapEntry(k, jsonInt(v))),
+    daysLeft: jsonInt(json['daysLeft'], 1),
+  );
 }
 
 /// `POST /asset-import/apply` 的结果。

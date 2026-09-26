@@ -8,7 +8,7 @@ import '../../data/repos/ai_repo.dart';
 import '../widgets/widgets.dart';
 import 'ai_provider_form.dart';
 
-/// AI 渠道列表：默认标记、启停、测试（给延迟和一句样例）、增删改。
+/// AI 渠道列表：默认标记、启停、测试（给延迟和一句样例）、测看图（结果写进渠道，名字旁边显示「支持看图 / 看不了图」）、增删改。
 class AiProvidersPage extends ConsumerStatefulWidget {
   const AiProvidersPage({super.key});
 
@@ -22,6 +22,39 @@ class _AiProvidersPageState extends ConsumerState<AiProvidersPage> {
   final Set<String> _testing = {};
   final Set<String> _busy = {};
 
+  /// 看图探测：进行中的、这次的结果（和「测试」的结果放同一个位置、同一套颜色：测出来了 income 色、判断不了 error 色、
+  /// 看不了图是正文色 —— 这是结论不是故障）。测出结果的同时写进渠道，名字旁边的标记跟着变。
+  final Set<String> _probing = {};
+  final Map<String, (String, bool?)> _visionNotes = {};
+
+  Future<void> _testVision(AiProvider provider) async {
+    setState(() {
+      _probing.add(provider.id);
+      _visionNotes.remove(provider.id);
+      _results.remove(provider.id);
+      _failures.remove(provider.id);
+    });
+    try {
+      final result = await ref.read(aiRepoProvider).testVision(provider.id);
+      if (!mounted) return;
+      setState(() {
+        _probing.remove(provider.id);
+        _visionNotes[provider.id] = switch (result.vision) {
+          true => ('支持看图 · ${result.latencyMs}ms', true),
+          false => (result.message.isEmpty ? '看不了图' : '看不了图：${result.message}', false),
+          null => (result.message.isEmpty ? '判断不了能不能看图' : result.message, null),
+        };
+      });
+      if (result.vision != null) ref.invalidate(aiProvidersProvider);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _probing.remove(provider.id);
+        _visionNotes[provider.id] = (describeError(e), null);
+      });
+    }
+  }
+
   Future<void> _openForm([AiProvider? provider]) =>
       showAiProviderForm(context, provider: provider);
 
@@ -30,6 +63,7 @@ class _AiProvidersPageState extends ConsumerState<AiProvidersPage> {
       _testing.add(provider.id);
       _failures.remove(provider.id);
       _results.remove(provider.id);
+      _visionNotes.remove(provider.id);
     });
     try {
       final result = await ref.read(aiRepoProvider).test(provider.id);
@@ -159,6 +193,7 @@ class _AiProvidersPageState extends ConsumerState<AiProvidersPage> {
     final result = _results[provider.id];
     final failure = _failures[provider.id];
     final testing = _testing.contains(provider.id);
+    final visionNote = _visionNotes[provider.id];
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(
@@ -190,6 +225,10 @@ class _AiProvidersPageState extends ConsumerState<AiProvidersPage> {
                                 style: theme.textTheme.titleMedium,
                               ),
                             ),
+                            if (provider.vision != null) ...[
+                              const SizedBox(width: 8),
+                              _VisionTag(vision: provider.vision!),
+                            ],
                             if (provider.isDefault) ...[
                               const SizedBox(width: 8),
                               Container(
@@ -256,6 +295,11 @@ class _AiProvidersPageState extends ConsumerState<AiProvidersPage> {
                   onPressed: testing ? null : () => _test(provider),
                   child: Text(testing ? '测试中…' : '测试'),
                 ),
+                TextButton(
+                  key: ValueKey('ai-vision-test-${provider.id}'),
+                  onPressed: _probing.contains(provider.id) ? null : () => _testVision(provider),
+                  child: Text(_probing.contains(provider.id) ? '测看图中…' : '测看图'),
+                ),
                 const SizedBox(width: 8),
                 if (result != null)
                   Expanded(
@@ -279,6 +323,22 @@ class _AiProvidersPageState extends ConsumerState<AiProvidersPage> {
                         color: theme.colorScheme.error,
                       ),
                     ),
+                  )
+                else if (visionNote case (final text, final vision))
+                  Expanded(
+                    child: Text(
+                      text,
+                      key: ValueKey('ai-vision-note-${provider.id}'),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: switch (vision) {
+                          true => ledger.income,
+                          false => theme.colorScheme.onSurface,
+                          null => theme.colorScheme.error,
+                        },
+                      ),
+                    ),
                   ),
               ],
             )
@@ -297,5 +357,28 @@ class _AiProvidersPageState extends ConsumerState<AiProvidersPage> {
         : '还没填密钥';
     final model = provider.model.isEmpty ? '未设模型' : provider.model;
     return '$kind · $model · $key';
+  }
+}
+
+/// 名字旁边的「支持看图 / 看不了图」（测过才有；换了模型会回到没测过）。两种底色分得开（收入绿底 / 警告黄底），
+/// 字一律正文色 —— 文字才是主要的载体，底色只是扫一眼时的区分。
+class _VisionTag extends StatelessWidget {
+  const _VisionTag({required this.vision});
+
+  final bool vision;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final ledger = LedgerColors.of(context);
+    return Container(
+      key: const ValueKey('ai-vision-tag'),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: vision ? ledger.incomeContainer : ledger.warningContainer,
+        borderRadius: BorderRadius.circular(LedgerShapes.chip),
+      ),
+      child: Text(vision ? '支持看图' : '看不了图', style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurface)),
+    );
   }
 }

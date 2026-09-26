@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 import '../../data/models/models.dart';
 import '../perk_import/perk_import_page.dart';
 import '../perk_import/perk_import_preview_page.dart';
+import '../perk_import/recent_imports_page.dart';
 import '../perks/benefit_form_page.dart';
 import '../perks/membership_detail_page.dart';
 import '../perks/membership_form_page.dart';
@@ -43,6 +44,8 @@ GoRoute assetsRoute() => GoRoute(
     ),
     // 预览和输入页是兄弟路由：草稿靠 pendingPerkImportProvider 交接（输入页 push 过来），网页刷新到这一页时给「去粘贴」。
     GoRoute(path: 'import/preview', builder: (context, state) => const PerkImportPreviewRoute()),
+    // 「最近的 AI 导入」：7 天内导进来的逐个撤销（会员权益 tab、物品 tab 的溢出菜单进来）。
+    GoRoute(path: 'import/recent', builder: (context, state) => const RecentImportsPage()),
     GoRoute(
       path: 'items/new',
       builder: (context, state) => const AssetFormPage(),

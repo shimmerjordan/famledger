@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
@@ -14,19 +16,28 @@ class AssetImportRepo {
   final ApiClient _api;
   final LedgerRepo _ledger;
 
-  /// 粘贴文字识别（本阶段只有 `kind: 'text'`）。取消订阅 = 断开连接，服务端随即中止上游。
+  /// 识别：给了 [images]（截图切好的 PNG）就是 `kind: 'image'`，否则是粘贴文字 `kind: 'text'`。取消订阅 = 断开连接，服务端随即中止上游。
   /// `error` 事件抛成 [ApiException]（status 0，code 是服务端给的 ai_bad_output / ai_timeout / ai_upstream / ai_refusal）；
   /// 没等到 done 流就断了，抛「可能已经送到」的网络错误。
   ///
   /// 用转换器而不是在 async* 的 await for 里 throw：那样要先等底下的 SSE 连接收尾才把错误交出去，收尾慢（长连接、代理）
   /// 时界面就一直停在「正在识别」。
   Stream<ImportEvent> extract({
-    required String text,
+    String text = '',
+    List<Uint8List> images = const [],
     ImportWant want = ImportWant.auto,
     String? targetMembershipId,
     String? providerId,
   }) {
-    final body = <String, dynamic>{'kind': 'text', 'text': text, 'want': want.wire};
+    final body = images.isEmpty
+        ? <String, dynamic>{'kind': 'text', 'text': text, 'want': want.wire}
+        : <String, dynamic>{
+            'kind': 'image',
+            'images': [
+              for (final png in images) {'mediaType': 'image/png', 'data': base64Encode(png)},
+            ],
+            'want': want.wire,
+          };
     putIfNotNull(body, 'targetMembershipId', targetMembershipId);
     putIfNotNull(body, 'providerId', providerId);
     var finished = false;
@@ -73,6 +84,23 @@ class AssetImportRepo {
         },
       ),
     );
+  }
+
+  /// 7 天内导入了、还没撤销的（本人的；管理员看全家的），新的在前。
+  Future<List<RecentImport>> recent() async {
+    final json = await _api.get('/asset-import/recent');
+    return jsonList(json['items'], RecentImport.fromJson);
+  }
+
+  /// 撤销一次导入（7 天内、本人或管理员）。撤完同步一次，删掉的、改回去的跟着过来；撤过的再来服务端原样回（replayed）。
+  Future<PerkImportUndoResult> undo(String importId) async {
+    final result = PerkImportUndoResult.fromJson(await _api.post('/asset-import/$importId/undo', const {}));
+    try {
+      await _ledger.sync();
+    } catch (_) {
+      // 撤掉了，只是这次没同步下来；下拉刷新或下次打开会补上。
+    }
+    return result;
   }
 
   /// 导入。[body] 由 PerkImportDraft.toApplyBody 生成（带 clientId：回应丢了重发只导一次）。

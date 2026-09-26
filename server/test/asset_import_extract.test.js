@@ -72,13 +72,14 @@ test('订单文字：发给模型前手机号打码、info 日志只有长度；
   assert.ok(!out.includes('王小明') && !out.includes('13912345678') && !out.includes('iPhone 16 Pro'), 'info 日志里不该有原文');
 });
 
-test('截断：第 5 条中间断掉 → 救回 4 条、truncated、顶部提示分段；stopReason=max_tokens 也算截断', async (t) => {
+test('截断：第 5 条中间断掉 → 救回 4 条、truncated（App 照着在顶部提示分段，截断那句不放进 notices）；stopReason=max_tokens 也算截断', async (t) => {
   const { up, h } = await setup(t);
   const cut = await extractDraft(h, up, 'vip88_truncated.output.txt', 'vip88.source.txt');
   assert.equal(cut.draft.truncated, true);
   assert.equal(cut.draft.salvaged, true);
   assert.deepEqual(cut.draft.benefits.map((b) => b.fields.name), ['优酷视频年卡', '饿了么超级会员年卡']);
-  assert.ok(cut.draft.notices.some((n) => n.includes('分段')));
+  assert.deepEqual([cut.draft.continued, cut.draft.continueFailed], [false, false]);
+  assert.ok(!cut.draft.notices.some((n) => n.includes('分段')), '截断的说法由 App 按标记给，不在 notices 里重复');
 
   up.state.completions.push({ text: fixture('vip88.output.txt'), stopReason: 'max_tokens' });
   const r = await sse(h.srv.base, '/asset-import/extract', { token: h.token, body: { kind: 'text', text: fixture('vip88.source.txt') } });
@@ -108,7 +109,7 @@ test('坏输出：一条都救不回来 → error ai_bad_output，用量照样�
   }
 });
 
-test('校验：只接 kind=text；原文最多 20000 字、不能是空白；要补充的卡得存在；没有渠道 400 —— 都在花钱之前', async (t) => {
+test('校验：只接 kind=text / image（url、transactions 还没有）；原文最多 20000 字、不能是空白；要补充的卡得存在；没有渠道 400 —— 都在花钱之前', async (t) => {
   const up = await startFakeAnthropic({ key: ANT_KEY });
   t.after(() => up.stop());
   const h = await household(t);
@@ -116,7 +117,9 @@ test('校验：只接 kind=text；原文最多 20000 字、不能是空白；要
   assert.equal((await post({})).json.error.code, 'no_provider');
   await addProvider(h, up);
   const cases = [
-    [{ kind: 'image' }, 'kind_unsupported'],
+    [{ kind: 'url' }, 'kind_unsupported'],
+    [{ kind: 'transactions' }, 'kind_unsupported'],
+    [{ kind: 'image' }, 'invalid_images'],
     [{ kind: 'fax' }, 'invalid_kind'],
     [{ want: 'all' }, 'invalid_want'],
     [{ text: '字'.repeat(20001) }, 'invalid_text'],

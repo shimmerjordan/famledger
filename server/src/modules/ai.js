@@ -8,6 +8,9 @@
 //   PATCH  /ai/providers/:id        改；apiKey 缺省或空串 = 不动密钥（admin）
 //   DELETE /ai/providers/:id        删（admin，硬删：渠道不参与同步）
 //   POST   /ai/providers/:id/test   一次非流式往返，回 {ok, model, latencyMs, sample}
+//          ?vision=1                看图探测：发一张 2×2 的红色 PNG 问颜色，结果写进渠道 extra.vision（true / false；
+//                                   判断不了——连不上、401、5xx、没回答、测的时候渠道被改了——不写），
+//                                   回 {ok, vision, model, latencyMs, sample, message, provider}；测的时候渠道被删了回 404
 //   POST   /ai/chat                 SSE：delta* → done | error
 //   POST   /ai/report?month=        SSE 同上，完成后落 ai_reports，done 里带 reportId
 //   GET    /ai/reports?month=       月报列表（新的在前）
@@ -36,6 +39,7 @@ const { openSse } = require('../lib/sse');
 const { encrypt, decrypt } = require('../lib/secret');
 const { logActivity } = require('../lib/activity');
 const v = require('../lib/validate');
+const { judgeVisionAnswer } = require('../lib/vision_probe');
 
 const providers = require('./ai_providers');
 const prompts = require('./ai_prompts');
@@ -48,6 +52,14 @@ const CHAT_MAX_TOKENS = 2048;
 const REPORT_MAX_TOKENS = 3000;
 const CLASSIFY_MAX_TOKENS = 300;
 const TEST_MAX_TOKENS = 8;
+/** 看图探测的输出上限：答一个颜色词够了，但给带思考的模型留点余量（8 个 token 常常还没开口就用完了）。 */
+const VISION_TEST_MAX_TOKENS = 64;
+/** 2×2 的纯红 PNG（74 字节）。 */
+const VISION_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEUlEQVR4nGP4z8DwnwGMgRQAH+4D/dJQfRoAAAAASUVORK5CYII=';
+/** 上游 400 的报文里提到这些词：这个模型不收图片（DeepSeek：unknown variant `image_url`；别的：does not support image input）。 */
+const NO_VISION_HINT = /image|vision|multimodal|多模态|图片|图像/i;
+/** 改了这几列，看图探测的结果就作废（换了模型，能不能看图得重新测）。 */
+const VISION_KEYS = ['kind', 'base_url', 'model'];
 const REPORTS_LIMIT = 20;
 const MAX_CANDIDATES = 200;
 
@@ -267,6 +279,14 @@ module.exports = (ctx) => {
     const row = byId(reqCtx.params.id);
     if (!row) throw new HttpError(404, 'not_found', 'AI 渠道不存在');
     const cols = readWrite(v.body(reqCtx.body), row);
+    // 换了协议、地址或模型：上次测出来的「能不能看图」不算数了，回到「没测过」（表单带着旧的 extra 发回来也一样拿掉）。
+    if (VISION_KEYS.some((k) => cols[k] !== undefined && cols[k] !== row[k])) {
+      const extra = extraOf({ ...row, extra: cols.extra ?? row.extra });
+      if ('vision' in extra) {
+        delete extra.vision;
+        cols.extra = JSON.stringify(extra);
+      }
+    }
     const now = db.now();
     db.tx(() => {
       const keys = Object.keys(cols);
@@ -299,6 +319,7 @@ module.exports = (ctx) => {
     takeToken(reqCtx);
     const row = byId(reqCtx.params.id);
     if (!row) throw new HttpError(404, 'not_found', 'AI 渠道不存在');
+    if (reqCtx.query.vision === '1') return testVision(res, reqCtx, row);
     const use = toUse(row);
     const started = Date.now();
     try {
@@ -319,6 +340,75 @@ module.exports = (ctx) => {
       log.warn('ai', `渠道自检失败 ${row.kind}/${row.model}: ${message}`);
       sendJson(res, 200, { ok: false, model: row.model, latencyMs: Date.now() - started, message });
     }
+  }
+
+  /**
+   * 看图探测（spec §4）。明确答出「红色 / red」→ vision:true（判定规则在 lib/vision_probe.js：否定、反问、猜测、
+   * delivered 这类子串、同时说别的颜色都不算）；答了别的或上游 400 说不收图片 → vision:false；
+   * 连不上、401、5xx、超时、没回答 → 判断不了，extra 不动，vision:null。
+   * 写回时重新读这一行（探测要等上游，期间可能有人改过或删了渠道）：删了回 404；协议、地址、模型换了，这次结论不算数
+   * （vision:null，请人重测）；没换就把 vision 合进**现在的** extra（期间别的键的改动不会被回滚）。
+   */
+  async function testVision(res, reqCtx, row) {
+    const use = toUse(row);
+    const started = Date.now();
+    let vision = null;
+    let sample = '';
+    let message = '';
+    let usage = null;
+    try {
+      const out = await providers.complete(use, {
+        system: '你在做一次看图自检。',
+        messages: [{ role: 'user', content: [
+          { type: 'image', mediaType: 'image/png', data: VISION_PNG },
+          { type: 'text', text: '这张图是什么颜色？只回答一个颜色词。' },
+        ] }],
+        maxTokens: VISION_TEST_MAX_TOKENS,
+      });
+      sample = (out.text || '').trim().slice(0, 200);
+      usage = out.usage;
+      if (!sample) message = '模型没有回答，判断不了能不能看图；换个模型或关掉思考再测';
+      else if (judgeVisionAnswer(sample)) vision = true;
+      else {
+        vision = false;
+        message = `它说「${sample.slice(0, 40)}」，看起来没看到图`;
+      }
+    } catch (e) {
+      if (e instanceof providers.UpstreamError && e.status === 400 && NO_VISION_HINT.test(e.snippet)) {
+        vision = false;
+        message = '这个模型不收图片（上游回了 400）';
+      } else {
+        message = friendly(e, use.apiKey);
+      }
+    }
+    if (vision !== null) {
+      const outcome = db.tx(() => {
+        const now = byId(row.id);
+        if (!now) return 'gone';
+        if (VISION_KEYS.some((k) => now[k] !== row[k])) return 'changed';
+        db.run('UPDATE ai_providers SET extra = ?, updated_at = ? WHERE id = ?', JSON.stringify({ ...extraOf(now), vision }), db.now(), row.id);
+        logActivity(db, { memberId: reqCtx.member.id, action: 'update', entity: 'ai_provider', entityId: row.id });
+        return 'written';
+      });
+      if (outcome === 'gone') throw new HttpError(404, 'not_found', 'AI 渠道在测看图的时候被删了');
+      if (outcome === 'changed') {
+        vision = null;
+        message = '测的时候渠道被改过（换了协议、地址或模型），这次的结果不算数，再测一次';
+      }
+    }
+    const latest = byId(row.id);
+    if (!latest) throw new HttpError(404, 'not_found', 'AI 渠道在测看图的时候被删了');
+    log.info('ai', `看图探测 ${row.kind}/${row.model}：${vision === null ? '判断不了' : vision ? '能看图' : '看不了图'}`);
+    sendJson(res, 200, {
+      ok: vision !== null,
+      vision,
+      model: row.model,
+      latencyMs: Date.now() - started,
+      sample,
+      message,
+      usage,
+      provider: toJson(latest),
+    });
   }
 
   // ------------------------------------------------------------------ 流

@@ -168,13 +168,24 @@ class _AssetsPageState extends ConsumerState<AssetsPage>
                 ? showPerkAddSheet(context)
                 : context.push(invest ? '/assets/holdings/new' : '/assets/items/new'),
           ),
+          // 溢出菜单：会员权益 tab 有平台管理；两个 tab 都有「最近的 AI 导入」（7 天内导进来的可以整批撤销，spec §1）。
           if (perks)
             PopupMenuButton<String>(
               key: const ValueKey('perks-menu'),
               tooltip: '更多',
-              onSelected: (_) => context.push('/assets/platforms'),
+              onSelected: (value) => context.push(value == 'imports' ? '/assets/import/recent' : '/assets/platforms'),
               itemBuilder: (context) => const [
                 PopupMenuItem(value: 'platforms', child: Text('平台管理')),
+                PopupMenuItem(key: ValueKey('menu-recent-imports'), value: 'imports', child: Text('最近的 AI 导入')),
+              ],
+            ),
+          if (!invest && !perks)
+            PopupMenuButton<String>(
+              key: const ValueKey('items-menu'),
+              tooltip: '更多',
+              onSelected: (_) => context.push('/assets/import/recent'),
+              itemBuilder: (context) => const [
+                PopupMenuItem(key: ValueKey('menu-recent-imports'), value: 'imports', child: Text('最近的 AI 导入')),
               ],
             ),
         ],

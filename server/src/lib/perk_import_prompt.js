@@ -5,12 +5,16 @@
 //     外加两个**虚构**的 few-shot 示例（一个会员权益、一个订单物品）；
 //   · user：账本里已有的平台和卡的名字（各最多 80 个，名字一致时照抄）、识别范围、归到哪张卡，最后是材料原文。
 //
-//   buildImportPrompt({want, existing:{platforms, memberships}, target}) → { system, user(text) }
+//   buildImportPrompt({want, existing:{platforms, memberships}, target}) → { system, user(text), userForImages(n) }
+//       userForImages(n)：截图模式的文字部分（图片块由调用方放在它前面）：同样的已有名字、识别范围，外加「第几块」的说明，
+//       要求每条带 "img"（出自第几块，从 1 开始）；长截图切成的相邻块有重叠，重叠处的同一条只写一次。
+//   continueNote(records) → string   续写一次时附在原来那条 user 消息后面：「已经收到这些记录，不要再写」的名单（最多 200 条）
 //   EXAMPLE_NAMES   示例里出现的名字：依据查不到又和它们同名的记录标「疑似照抄示例」
 //   IMPORT_MAX_TOKENS 单次输出上限默认值（渠道 extra.importMaxTokens 可以覆盖）
 
 const IMPORT_MAX_TOKENS = 12000;
 const MAX_EXISTING = 80;
+const CONTINUE_MAX_NAMES = 200;
 
 /** 物品预设的封闭名单（照抄 App 的 kValuationPresets：key → 能用在哪些类别）。spec §2：预设只写在客户端，这里只认键。 */
 const ITEM_PRESETS = {
@@ -108,7 +112,7 @@ const WANT_LINE = {
 /**
  * @param {{want?:'auto'|'virtual'|'items', existing?:{platforms?:string[], memberships?:{name:string, platform:string}[]},
  *          target?:{name:string, platform:string}|null}} opts
- * @returns {{system:string, user:(text:string)=>string}}
+ * @returns {{system:string, user:(text:string)=>string, userForImages:(n:number)=>string}}
  */
 function buildImportPrompt({ want = 'auto', existing = {}, target = null } = {}) {
   const platforms = (existing.platforms || []).slice(0, MAX_EXISTING);
@@ -122,7 +126,27 @@ function buildImportPrompt({ want = 'auto', existing = {}, target = null } = {})
   return {
     system: SYSTEM,
     user: (text) => [...head, '', '材料如下（手机号和卡号已打码）：', '<<<', text, '>>>'].join('\n'),
+    userForImages: (n) => [
+      ...head,
+      '',
+      `材料是上面按顺序附的 ${n} 张截图（第 1 块 … 第 ${n} 块）。长截图是切成几块发的，相邻两块有一小段重叠，重叠处的同一条只写一次。`,
+      '每条记录多写一个 "img"：它出自第几块（从 1 开始的数字）；"ev" 照抄图里的原字。',
+    ].join('\n'),
   };
 }
 
-module.exports = { IMPORT_MAX_TOKENS, MAX_EXISTING, ITEM_PRESETS, EXAMPLE_NAMES, buildImportPrompt };
+/** 续写一次的附言：已经收到的记录（类型：名字（所属））逐行列出，要求从没写过的接着写、格式不变、最后写哨兵。 */
+function continueNote(records) {
+  const clip = (s) => (typeof s === 'string' && s.trim() ? s.trim().slice(0, 40) : null);
+  const lines = records.slice(0, CONTINUE_MAX_NAMES).map((r) => {
+    const owner = clip(r && r.membership) || clip(r && r.platform);
+    return `- ${clip(r && r.t) || '?'}：${clip(r && r.name) || '（没写名字）'}${owner ? `（${owner}）` : ''}`;
+  });
+  return [
+    '上一次的输出写到一半被截断了。下面这些记录已经收到，不要再写：',
+    ...lines,
+    '从还没写过的记录接着写，格式不变：{"records":[…],"done":true}；全部写完一定写 "done":true。',
+  ].join('\n');
+}
+
+module.exports = { IMPORT_MAX_TOKENS, MAX_EXISTING, CONTINUE_MAX_NAMES, ITEM_PRESETS, EXAMPLE_NAMES, buildImportPrompt, continueNote };

@@ -26,7 +26,7 @@
 // 任意一条出错就整体回滚，400 import_invalid，details.errors = [{key, field, message}] —— 一次把所有错都报回去，
 // App 标到对应节点上。上限（只数不是 skip 的）：平台 50、会员 50、权益 200、物品 50。
 //
-// 新建和更新的行都写 origin {src:'ai_text', importId, ev, unverified}；ai_imports 那行改成 applied，undo 里记下
+// 新建和更新的行都写 origin {src, importId, ev, unverified}（src = 'ai_' + 这批识别的来源：ai_text / ai_image）；ai_imports 那行改成 applied，undo 里记下
 // P5 撤销要用的东西：{created:[{table,id}], updated:[{table,id,seq,before}], aliases:[{platformId,alias}], transactions:[id]}。
 
 const crypto = require('node:crypto');
@@ -74,6 +74,7 @@ function applyImport({ db, ctx, body, reqCtx, importRow, clientId }) {
     }
   }
   const importId = importRow.id;
+  const src = `ai_${importRow.source_kind || 'text'}`;
   const errors = [];
   const ids = new Map(); // key → 落库后的 id
   const keys = new Set();
@@ -134,7 +135,7 @@ function applyImport({ db, ctx, body, reqCtx, importRow, clientId }) {
   function originFor(item, onlyFields = null) {
     const unverified = Array.isArray(item.unverified) ? item.unverified.filter((f) => typeof f === 'string') : [];
     return perks.originOf({
-      src: 'ai_text',
+      src,
       importId,
       ev: typeof item.ev === 'string' ? item.ev.slice(0, 200) : null,
       unverified: onlyFields ? unverified.filter((f) => onlyFields.includes(f)) : unverified,

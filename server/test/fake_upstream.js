@@ -7,10 +7,13 @@
 //   const up = await startFakeAnthropic({ key: 'sk-x' });
 //   up.base                       → http://127.0.0.1:<port>
 //   up.state.status = 500         → 下一次请求回 500
+//   up.state.errorMessage         → 非 200 时错误体里的 message（默认 `fake <name> is unhappy`；看图探测用它模拟「不收图片」的 400）
 //   up.state.parts / completion   → 流式分片 / 非流式文本
 //   up.state.hang = true          → 发完第一片就挂住（测客户端断线 → 中止上游）
 //   up.state.stopReason           → 结束原因的原话（anthropic 'end_turn' / openai 'stop'）；'' = 不发（cc-trans 这类反代）
-//   up.state.completions          → 队列：每次请求取一条（字符串或 {text, stopReason}），取空了再用 parts / completion
+//   up.state.completions          → 队列：每次请求取一条（字符串或 {text, stopReason, hang?}；{status, message?} = 这一次回错误；
+//                                   hang:true = 这一条发完第一片就挂住，只管这一次），取空了再用 parts / completion
+//   up.state.delayMs = 300        → 每个请求先等这么久再回（测「等上游的时候有人改了数据」）
 //   up.state.maxTokensCap = 8192  → 请求的 max_tokens 超过它就 400，报文照各家原话写明合法范围
 //   up.state.stallMs = 500        → 流式发完第一片后停这么久再接着发（测空闲超时）
 //   up.lastBody() / up.lastHeaders() / up.requests   （每个请求的 body 都记着）
@@ -86,6 +89,8 @@ async function start(name, route, handle, opts) {
     completions: [],
     maxTokensCap: 0,
     stallMs: 0,
+    errorMessage: null,
+    delayMs: 0,
     aborted: 0,
     inputTokens: 123,
     outputTokens: 45,
@@ -110,8 +115,15 @@ async function start(name, route, handle, opts) {
     if (req.url !== route || req.method !== 'POST') return json(res, 404, { error: { message: `no route ${req.method} ${req.url}` } });
     const authErr = opts.checkAuth(req);
     if (authErr) return json(res, 401, authErr);
+    if (state.delayMs) await sleep(state.delayMs);
+    // 队列里的 {status, message}：只这一次回这个错误（测「第一次好好的、第二次才出错」）。
+    const head = state.completions[0];
+    if (head && typeof head === 'object' && head.status) {
+      state.completions.shift();
+      return json(res, head.status, { error: { type: 'upstream_error', message: head.message ?? `fake ${name} is unhappy` } });
+    }
     if (state.status !== 200) {
-      return json(res, state.status, { error: { type: 'upstream_error', message: `fake ${name} is unhappy` } });
+      return json(res, state.status, { error: { type: 'upstream_error', message: state.errorMessage ?? `fake ${name} is unhappy` } });
     }
     await handle(req, res, body || {}, state);
   });
@@ -184,7 +196,7 @@ async function startFakeAnthropic(opts = {}) {
           await writeChunked(res, frame('error', { type: 'error', error: { type: 'overloaded_error', message: '服务繁忙，稍后再试' } }));
           return res.end();
         }
-        if (state.hang) {
+        if (state.hang || (answer && answer.hang)) {
           // 永远不结束：等客户端自己断
           for (let k = 0; k < 600 && !res.writableEnded && !res.destroyed; k++) await sleep(10);
           return;

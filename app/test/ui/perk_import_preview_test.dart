@@ -402,12 +402,14 @@ void main() {
     expect(backend.perks.memberships.values.where((m) => m['name'] == '88VIP'), hasLength(1));
   });
 
-  testWidgets('截断：顶部横幅提示分段导入；返回时先问「不导了？」', (tester) async {
+  testWidgets('截断：顶部横幅提示分段导入（说法按草稿的标记来，服务端别的提示照常列出）；返回时先问「不导了？」', (tester) async {
     final json = vip88Draft()
       ..['truncated'] = true
-      ..['notices'] = ['材料太长，模型只写了一部分；预览里的是已经收到的，剩下的建议分段再导一次'];
+      ..['notices'] = ['材料有 15000 字，只挑了最相关的 6 段（约 9000 字）'];
     await openPreview(tester, previewBackend(), json);
     expect(find.byKey(const ValueKey('import-truncated')), findsOneWidget);
+    expect(find.textContaining('剩下的建议分段再粘一次'), findsOneWidget);
+    expect(find.text('材料有 15000 字，只挑了最相关的 6 段（约 9000 字）'), findsOneWidget, reason: '不再按「分段」两个字过滤服务端的提示');
     await tester.pageBack();
     await settle(tester);
     expect(find.text('不导了？'), findsOneWidget);

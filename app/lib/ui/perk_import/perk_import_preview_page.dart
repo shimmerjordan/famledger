@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -10,13 +12,16 @@ import '../../data/repos/ledger_repo.dart';
 import '../assets/asset_widgets.dart';
 import '../widgets/widgets.dart';
 import 'claim_mapping_sheet.dart';
+import 'draft_store.dart';
 import 'import_batch_sheets.dart';
 import 'import_node_form.dart';
 import 'import_node_tile.dart';
+import 'import_undo.dart';
 import 'perk_import_draft.dart';
 import 'perk_import_providers.dart';
 
-/// 网页刷新后交过来的草稿就没了，只能请人回去重新识别。
+/// 核对页的路由：草稿由输入页交过来（pendingPerkImportProvider）。网页刷新后交过来的那份没了：本机存着核对到一半的
+/// （draft_store.dart）就原地接着核对；也没有，才请人回导入页重新识别。
 class PerkImportPreviewRoute extends ConsumerStatefulWidget {
   const PerkImportPreviewRoute({super.key});
 
@@ -26,24 +31,37 @@ class PerkImportPreviewRoute extends ConsumerStatefulWidget {
 
 class _PerkImportPreviewRouteState extends ConsumerState<PerkImportPreviewRoute> {
   PerkImportDraft? _draft;
+  Future<SavedPerkImport?>? _saved;
 
   @override
   Widget build(BuildContext context) {
     // 接到手就自己拿着：导完会把交过来的那份清掉，这一页的结果不能跟着变空。
     final draft = _draft ??= ref.watch(pendingPerkImportProvider);
-    if (draft == null) {
-      return Scaffold(
-        appBar: AppBar(title: const Text('核对识别结果')),
-        body: EmptyState(
-          icon: Icons.auto_awesome_outlined,
-          title: '没有要核对的识别结果',
-          message: '页面刷新过的话，要重新识别一次',
-          actionLabel: '去粘贴',
-          onAction: () => context.go('/assets/import'),
-        ),
-      );
-    }
-    return PerkImportPreviewPage(key: ObjectKey(draft), draft: draft);
+    if (draft != null) return PerkImportPreviewPage(key: ObjectKey(draft), draft: draft);
+    final saved = _saved ??= ref.read(perkImportDraftStoreProvider).load();
+    return FutureBuilder<SavedPerkImport?>(
+      future: saved,
+      builder: (context, snap) {
+        final restored = snap.data?.draft;
+        if (restored != null) {
+          _draft = restored;
+          return PerkImportPreviewPage(key: ObjectKey(restored), draft: restored);
+        }
+        return Scaffold(
+          appBar: AppBar(title: const Text('核对识别结果')),
+          body: snap.connectionState != ConnectionState.done
+              ? const SkeletonList()
+              : EmptyState(
+                  key: const ValueKey('perk-import-preview-lost'),
+                  icon: Icons.auto_awesome_outlined,
+                  title: '没有要核对的识别结果',
+                  message: '页面刷新过，本机也没存着核对到一半的，回导入页重新识别一次',
+                  actionLabel: '回导入页',
+                  onAction: () => context.go('/assets/import'),
+                ),
+        );
+      },
+    );
   }
 }
 
@@ -55,10 +73,13 @@ const double _paneWidth = 420;
 /// AI 导入的预览（spec §6）：树形列表（平台 → 会员 → 权益，外加「补充到已有的卡」「未归属」「实物」「单独的平台」）、徽章、
 /// 带计数的筛选、勾选联动、「领取平台」映射视图、长按多选的批量操作；宽屏（≥ 840）左边树、右边表单（顶上原文依据高亮）。
 /// 导入只被两类情况拦住：同名多张卡没选、缺必填项。失败留在这一页，改过的都在，错误标到对应节点上。
+/// 草稿每改一次（防抖 [saveDelay]）存一份到本机（draft_store.dart），意外关闭后能在输入页恢复；导入成功、选了「不导了」就清掉。
 class PerkImportPreviewPage extends ConsumerStatefulWidget {
   const PerkImportPreviewPage({super.key, required this.draft});
 
   final PerkImportDraft draft;
+
+  static const Duration saveDelay = Duration(milliseconds: 400);
 
   @override
   ConsumerState<PerkImportPreviewPage> createState() => _PerkImportPreviewPageState();
@@ -75,6 +96,46 @@ class _PerkImportPreviewPageState extends ConsumerState<PerkImportPreviewPage> {
   String? _current;
   PerkImportResult? _result;
   String? _submitError;
+
+  late final PerkImportDraftStore _store = ref.read(perkImportDraftStoreProvider);
+  Timer? _saveTimer;
+
+  /// 导完了或者选了「不导了」：本机那份已经清掉，别再存回去。
+  bool _settled = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (draft.all.isEmpty) return; // 什么都没识别出来，没什么可丢的
+    draft.addListener(_scheduleSave);
+    unawaited(_store.save(draft));
+  }
+
+  @override
+  void dispose() {
+    draft.removeListener(_scheduleSave);
+    // 还有没落盘的改动（防抖没到点就离开了）：走之前补一次。
+    if (_saveTimer?.isActive ?? false) {
+      _saveTimer!.cancel();
+      if (!_settled) unawaited(_store.save(draft));
+    }
+    super.dispose();
+  }
+
+  void _scheduleSave() {
+    if (_settled) return;
+    _saveTimer?.cancel();
+    _saveTimer = Timer(PerkImportPreviewPage.saveDelay, () {
+      if (!_settled) unawaited(_store.save(draft));
+    });
+  }
+
+  /// 这份草稿用完了（导进去了、放弃了、服务端说已经导过或撤销了）：本机那份清掉。
+  void _settle() {
+    _settled = true;
+    _saveTimer?.cancel();
+    unawaited(_store.clear());
+  }
 
   static const Map<ImportFilter, String> _filterLabels = {
     ImportFilter.all: '全部',
@@ -129,6 +190,7 @@ class _PerkImportPreviewPageState extends ConsumerState<PerkImportPreviewPage> {
       if (!mounted) return;
       // 导完就把交过来的那份清掉：浏览器后退再回到这一页，不能原样再导一次。
       ref.read(pendingPerkImportProvider.notifier).state = null;
+      _settle();
       setState(() {
         _result = result;
         _stage = _Stage.done;
@@ -144,7 +206,18 @@ class _PerkImportPreviewPageState extends ConsumerState<PerkImportPreviewPage> {
             return '有 ${errors.length} 处要改，已经标在对应的项上；一条都没导入。';
           }(),
           ApiException(isNetwork: true, maybeSent: true) => '没等到服务器回应，不确定导进去没有。再点一次也不会重复导入。',
-          ApiException(code: 'import_used') => '这批识别结果已经导入过了，去看看有没有；要重来得重新识别一次。',
+          ApiException(code: 'import_used') => () {
+            _settle();
+            return '这批识别结果已经导入过了，去看看有没有；要重来得重新识别一次。';
+          }(),
+          ApiException(code: 'import_undone') => () {
+            _settle();
+            return '这批导入已经撤销了；要再导得重新识别一次。';
+          }(),
+          ApiException(code: 'not_found') => () {
+            _settle();
+            return '这批识别结果在服务器上找不到了（超过 90 天会清掉），重新识别一次吧。';
+          }(),
           _ => describeError(e),
         };
       });
@@ -165,15 +238,16 @@ class _PerkImportPreviewPageState extends ConsumerState<PerkImportPreviewPage> {
         stayLabel: '接着核对',
         leaveLabel: '不导了',
         onBlocked: _onPopBlocked,
+        onDiscard: _settle,
         child: Scaffold(
           appBar: _appBar(),
           body: switch (_stage) {
             _Stage.review when nothing => EmptyState(
               key: const ValueKey('perk-import-nothing'),
               icon: Icons.search_off_outlined,
-              title: '材料里没找到会员、权益或买的东西',
+              title: draft.fromImages ? '截图里没找到会员、权益或买的东西' : '材料里没找到会员、权益或买的东西',
               message: _nothingMessage,
-              actionLabel: '回去改一下材料',
+              actionLabel: draft.fromImages ? '回去换截图' : '回去改一下材料',
               onAction: () => context.canPop() ? context.pop() : context.go('/assets/import'),
             ),
             _Stage.review => _review(context, ledger),
@@ -189,7 +263,8 @@ class _PerkImportPreviewPageState extends ConsumerState<PerkImportPreviewPage> {
   /// 什么都没识别出来时的说明：服务端的提示（去掉和标题重复的那句），没有就给个下一步的建议。
   String get _nothingMessage {
     final notes = draft.notices.where((n) => !n.startsWith('材料里没找到')).join('\n');
-    return notes.isEmpty ? '换一段更完整的权益说明或订单详情再试' : notes;
+    if (notes.isNotEmpty) return notes;
+    return draft.fromImages ? '换几张更清楚、带权益说明或订单详情的截图再试' : '换一段更完整的权益说明或订单详情再试';
   }
 
   PreferredSizeWidget _appBar() {
@@ -230,7 +305,11 @@ class _PerkImportPreviewPageState extends ConsumerState<PerkImportPreviewPage> {
             SizedBox(
               width: _paneWidth,
               child: current == null
-                  ? const EmptyState(title: '点左边一项，在这里改', message: '顶上会高亮原文里的依据', compact: true)
+                  ? EmptyState(
+                      title: '点左边一项，在这里改',
+                      message: draft.fromImages ? '顶上会显示它出自的那片截图' : '顶上会高亮原文里的依据',
+                      compact: true,
+                    )
                   : ImportNodeForm(key: ValueKey('node-form-${current.key}'), draft: draft, nodeKey: current.key, ledger: ledger),
             ),
           ],
@@ -278,9 +357,22 @@ class _PerkImportPreviewPageState extends ConsumerState<PerkImportPreviewPage> {
             margin: const EdgeInsets.fromLTRB(LedgerLayout.pagePadding, LedgerLayout.itemGap, LedgerLayout.pagePadding, 0),
             padding: const EdgeInsets.all(LedgerLayout.itemGap),
             decoration: BoxDecoration(color: LedgerColors.of(context).warningContainer, borderRadius: BorderRadius.circular(LedgerShapes.control)),
-            child: Text('材料太长，模型只写完了一部分（下面是已经收到的 ${draft.all.length} 条）。剩下的建议分段再粘一次。', style: theme.textTheme.bodyMedium),
+            child: Text(_truncatedText, style: theme.textTheme.bodyMedium),
           ),
-        for (final notice in draft.notices.where((n) => !draft.truncated || !n.contains('分段')))
+        // 截图来源：整批说一次「没法逐字核对」，不给每一条挂「依据未核实」（那样「需确认」就是全部，分不出轻重）。
+        if (draft.fromImages)
+          Container(
+            key: const ValueKey('import-image-hint'),
+            margin: const EdgeInsets.fromLTRB(LedgerLayout.pagePadding, LedgerLayout.itemGap, LedgerLayout.pagePadding, 0),
+            padding: const EdgeInsets.all(LedgerLayout.itemGap),
+            decoration: BoxDecoration(color: LedgerColors.of(context).surface2, borderRadius: BorderRadius.circular(LedgerShapes.control)),
+            child: ImportNote(
+              '这批是从截图识别的：截图里的字没法逐字核对，点开每一项对照截图检查。价格、日期、领取平台这些导进去会标「AI 推断」，确认过再点掉。',
+              icon: Icons.image_search_outlined,
+              padding: EdgeInsets.zero,
+            ),
+          ),
+        for (final notice in draft.notices)
           Padding(
             padding: const EdgeInsets.fromLTRB(LedgerLayout.pagePadding, 8, LedgerLayout.pagePadding, 0),
             child: Text(notice, style: theme.textTheme.bodySmall),
@@ -388,6 +480,15 @@ class _PerkImportPreviewPageState extends ConsumerState<PerkImportPreviewPage> {
         ],
       ],
     );
+  }
+
+  /// 截断横幅：三种情形各说各的 —— 没续写、续写了还没写完、续写那次出错了；截图的「分段」是只选后面那几片。
+  String get _truncatedText {
+    final head = draft.continueFailed
+        ? '材料太长，模型只写了一部分，让它接着写时出错了'
+        : (draft.continued ? '材料太长，模型续写了一次还是没写完' : '材料太长，模型只写了一部分');
+    final tail = draft.fromImages ? '没识别到的部分，只选后面那几片截图再导一次。' : '剩下的建议分段再粘一次。';
+    return '$head（下面是已经收到的 ${draft.all.length} 条）。$tail';
   }
 
   /// 平铺时的「在哪」：权益写它的卡，会员写它的平台。
@@ -558,20 +659,24 @@ class _BarAction extends StatelessWidget {
 }
 
 /// 结果页：新建 / 更新了什么、自动并入的平台、随物品记的流水；「去看看」按导入的内容去物品 tab、会员详情或会员权益的本期。
-/// 「撤销本次导入」在 P5。
-class _ResultView extends StatelessWidget {
+/// 「撤销本次导入」（spec §4 undo）：确认后整批撤掉，结果原地换成撤了什么、改回了什么、哪些没动。
+class _ResultView extends ConsumerStatefulWidget {
   const _ResultView({required this.result, required this.draft});
 
   final PerkImportResult result;
   final PerkImportDraft draft;
 
-  String _line(Map<String, int> counts) {
-    const units = {'platforms': ('平台', '个'), 'memberships': ('会员卡', '张'), 'benefits': ('权益', '项'), 'items': ('物品', '件')};
-    return [
-      for (final e in units.entries)
-        if ((counts[e.key] ?? 0) > 0) '${e.value.$1} ${counts[e.key]} ${e.value.$2}',
-    ].join('、');
-  }
+  @override
+  ConsumerState<_ResultView> createState() => _ResultViewState();
+}
+
+class _ResultViewState extends ConsumerState<_ResultView> {
+  PerkImportResult get result => widget.result;
+  PerkImportDraft get draft => widget.draft;
+
+  bool _undoing = false;
+  PerkImportUndoResult? _undone;
+  String? _undoError;
 
   /// 「去看看」去哪：只导了物品 → 物品 tab；补充到某张卡 → 那张卡的详情；其余 → 会员权益的本期。
   String get _destination {
@@ -582,41 +687,96 @@ class _ResultView extends StatelessWidget {
     return '/assets?tab=perks&view=current';
   }
 
+  Future<void> _undo() async {
+    if (!await confirmImportUndo(context) || !mounted) return;
+    setState(() {
+      _undoing = true;
+      _undoError = null;
+    });
+    try {
+      final undone = await ref.read(assetImportRepoProvider).undo(draft.importId);
+      if (!mounted) return;
+      setState(() {
+        _undone = undone;
+        _undoing = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _undoing = false;
+        _undoError = describeUndoError(e);
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final created = _line(result.created);
-    final updated = _line(result.updated);
     final width = MediaQuery.sizeOf(context).width;
+    final undone = _undone;
     return ListView(
       padding: readableInsets(width, maxWidth: 720).add(const EdgeInsets.all(LedgerLayout.pagePadding)),
-      children: [
-        Text('导入好了', key: const ValueKey('perk-import-result-title'), style: theme.textTheme.titleLarge),
-        const SizedBox(height: LedgerLayout.itemGap),
-        Text(created.isEmpty ? '没有新建的' : '新建：$created', key: const ValueKey('perk-import-created'), style: theme.textTheme.bodyLarge),
-        if (updated.isNotEmpty) Text('更新：$updated', style: theme.textTheme.bodyLarge),
-        if (result.createdOf('transactions') > 0) Text('同时记了 ${result.createdOf('transactions')} 笔支出', style: theme.textTheme.bodyMedium),
-        if (result.autoMerged.isNotEmpty) ...[
-          const SizedBox(height: 8),
-          // 原因不止「家里别人刚建了」：同名多张卡选定后卡里已有的权益、并入已有平台后那边已有的卡也会走到这里。
-          Text(
-            '${result.autoMerged.map((m) => '「${m['name']}」').join('')}账本里已经有了，并进了原来那条，没有重复建。',
-            key: const ValueKey('perk-import-auto-merged'),
-            style: theme.textTheme.bodySmall,
-          ),
-        ],
+      children: undone == null ? _imported(context) : _reverted(context, undone),
+    );
+  }
+
+  List<Widget> _imported(BuildContext context) {
+    final theme = Theme.of(context);
+    final created = importCountLine(result.created);
+    final updated = importCountLine(result.updated);
+    return [
+      Text('导入好了', key: const ValueKey('perk-import-result-title'), style: theme.textTheme.titleLarge),
+      const SizedBox(height: LedgerLayout.itemGap),
+      Text(created.isEmpty ? '没有新建的' : '新建：$created', key: const ValueKey('perk-import-created'), style: theme.textTheme.bodyLarge),
+      if (updated.isNotEmpty) Text('更新：$updated', style: theme.textTheme.bodyLarge),
+      if (result.createdOf('transactions') > 0) Text('同时记了 ${result.createdOf('transactions')} 笔支出', style: theme.textTheme.bodyMedium),
+      if (result.autoMerged.isNotEmpty) ...[
         const SizedBox(height: 8),
-        Text('标着「AI 推断」的字段，点一下能确认或修改。', style: theme.textTheme.bodySmall),
-        const SizedBox(height: LedgerLayout.groupGap),
-        Wrap(
-          spacing: 12,
-          runSpacing: 8,
-          children: [
-            FilledButton(key: const ValueKey('perk-import-go'), onPressed: () => context.go(_destination), child: const Text('去看看')),
-            OutlinedButton(onPressed: () => context.canPop() ? context.pop() : context.go('/assets/import'), child: const Text('再导一段')),
-          ],
+        // 原因不止「家里别人刚建了」：同名多张卡选定后卡里已有的权益、并入已有平台后那边已有的卡也会走到这里。
+        Text(
+          '${result.autoMerged.map((m) => '「${m['name']}」').join('')}账本里已经有了，并进了原来那条，没有重复建。',
+          key: const ValueKey('perk-import-auto-merged'),
+          style: theme.textTheme.bodySmall,
         ),
       ],
-    );
+      const SizedBox(height: 8),
+      Text(
+        '标着「AI 推断」的字段，点一下能确认或修改。导错了可以整批撤销：现在点下面的「撤销本次导入」，'
+        '或者 7 天内到资产页右上角的「最近的 AI 导入」里撤。',
+        key: const ValueKey('perk-import-undo-hint'),
+        style: theme.textTheme.bodySmall,
+      ),
+      if (_undoError != null)
+        InlineError(key: const ValueKey('perk-import-undo-error'), message: _undoError!, padding: const EdgeInsets.only(top: LedgerLayout.itemGap)),
+      const SizedBox(height: LedgerLayout.groupGap),
+      Wrap(
+        spacing: 12,
+        runSpacing: 8,
+        children: [
+          FilledButton(key: const ValueKey('perk-import-go'), onPressed: _undoing ? null : () => context.go(_destination), child: const Text('去看看')),
+          OutlinedButton(onPressed: _undoing ? null : () => context.canPop() ? context.pop() : context.go('/assets/import'), child: const Text('再导一段')),
+          TextButton(
+            key: const ValueKey('perk-import-undo'),
+            onPressed: _undoing ? null : _undo,
+            style: TextButton.styleFrom(foregroundColor: theme.colorScheme.error),
+            child: Text(_undoing ? '正在撤销…' : '撤销本次导入'),
+          ),
+        ],
+      ),
+    ];
+  }
+
+  List<Widget> _reverted(BuildContext context, PerkImportUndoResult undone) {
+    final theme = Theme.of(context);
+    return [
+      Text('已撤销', key: const ValueKey('perk-import-undone-title'), style: theme.textTheme.titleLarge),
+      const SizedBox(height: LedgerLayout.itemGap),
+      ImportUndoSummary(undone: undone),
+      const SizedBox(height: LedgerLayout.groupGap),
+      OutlinedButton(
+        key: const ValueKey('perk-import-again'),
+        onPressed: () => context.canPop() ? context.pop() : context.go('/assets/import'),
+        child: const Text('再导一段'),
+      ),
+    ];
   }
 }

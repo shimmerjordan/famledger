@@ -87,6 +87,7 @@ int? _daysBetween(String? a, String? b) {
 ///
 /// 草稿用 autoDispose 的 StateProvider 从识别页交给预览页（ui/perk_import/perk_import_providers.dart），不走路由 extra。
 /// [clientId] 在草稿活着的时候不变：导入的回应丢在路上再点一次，服务端认得出是同一次（只导一次）。
+/// 本机防丢（spec §6）：[toJson] 连同改动一起存，[PerkImportDraft.restore] 原样读回来（不再套一遍默认勾选）；截图本身不存。
 class PerkImportDraft extends ChangeNotifier {
   PerkImportDraft({
     required this.importId,
@@ -96,11 +97,19 @@ class PerkImportDraft extends ChangeNotifier {
     required this.benefits,
     required this.items,
     this.truncated = false,
+    this.continued = false,
+    this.continueFailed = false,
     this.notices = const [],
+    this.sourceKind = 'text',
     this.sourceText = '',
+    this.imageCount = 0,
+    this.images = const [],
+    this.imageLabels = const [],
     this.targetMembershipId,
     String? clientId,
+    bool applyDefaults = true,
   }) : clientId = clientId ?? newClientId() {
+    if (!applyDefaults) return;
     // 服务端给的默认勾选里，没归属、疑似照抄示例的权益不勾；只被它们当领取平台的补建平台也别导。
     _releaseClaimPlatforms();
     // 单独的平台（下面没挂卡、也没有权益去它那领）默认不导：导了只是多一个空平台，或者悄悄给已有平台加个别名。
@@ -109,19 +118,88 @@ class PerkImportDraft extends ChangeNotifier {
     }
   }
 
-  factory PerkImportDraft.fromJson(Map<String, dynamic> json, {String? clientId}) => PerkImportDraft(
-    importId: jsonString(json['importId']),
-    want: ImportWant.parse(jsonStringOrNull(json['want'])),
-    platforms: jsonList(json['platforms'], ImportNode.fromJson),
-    memberships: jsonList(json['memberships'], ImportNode.fromJson),
-    benefits: jsonList(json['benefits'], ImportNode.fromJson),
-    items: jsonList(json['items'], ImportNode.fromJson),
-    truncated: jsonBool(json['truncated']),
-    notices: jsonStringList(json['notices']),
-    sourceText: jsonString(jsonMap(json['source'])['text']),
-    targetMembershipId: jsonStringOrNull(json['targetMembershipId']),
-    clientId: clientId,
-  );
+  /// 服务端 done 事件里的草稿。[images] 是这次发出去的截图切片（按块号顺序，只在内存里，给依据块显示对应的那片）；
+  /// [imageLabels] 是每片在输入页上的叫法（「图 2 的第 1/3 片」，跟着草稿存本机，恢复后没有图也说得清是哪一片）。
+  factory PerkImportDraft.fromJson(
+    Map<String, dynamic> json, {
+    String? clientId,
+    List<Uint8List> images = const [],
+    List<String> imageLabels = const [],
+  }) {
+    final source = jsonMap(json['source']);
+    return PerkImportDraft(
+      importId: jsonString(json['importId']),
+      want: ImportWant.parse(jsonStringOrNull(json['want'])),
+      platforms: jsonList(json['platforms'], ImportNode.fromJson),
+      memberships: jsonList(json['memberships'], ImportNode.fromJson),
+      benefits: jsonList(json['benefits'], ImportNode.fromJson),
+      items: jsonList(json['items'], ImportNode.fromJson),
+      truncated: jsonBool(json['truncated']),
+      continued: jsonBool(json['continued']),
+      continueFailed: jsonBool(json['continueFailed']),
+      notices: jsonStringList(json['notices']),
+      sourceKind: jsonString(source['kind'], 'text'),
+      sourceText: jsonString(source['text']),
+      imageCount: jsonInt(source['count']),
+      images: images,
+      imageLabels: imageLabels,
+      targetMembershipId: jsonStringOrNull(json['targetMembershipId']),
+      clientId: clientId,
+    );
+  }
+
+  /// 本机存的草稿（[toJson] 写的）：改过的都在，clientId 也是原来那个（导入的回应丢了、App 被杀掉之后再点，服务端认得出是同一次）。
+  factory PerkImportDraft.restore(Map<String, dynamic> json) {
+    final source = jsonMap(json['source']);
+    final draft = PerkImportDraft(
+      importId: jsonString(json['importId']),
+      want: ImportWant.parse(jsonStringOrNull(json['want'])),
+      platforms: jsonList(json['platforms'], ImportNode.fromJson),
+      memberships: jsonList(json['memberships'], ImportNode.fromJson),
+      benefits: jsonList(json['benefits'], ImportNode.fromJson),
+      items: jsonList(json['items'], ImportNode.fromJson),
+      truncated: jsonBool(json['truncated']),
+      continued: jsonBool(json['continued']),
+      continueFailed: jsonBool(json['continueFailed']),
+      notices: jsonStringList(json['notices']),
+      sourceKind: jsonString(source['kind'], 'text'),
+      sourceText: jsonString(source['text']),
+      imageCount: jsonInt(source['count']),
+      imageLabels: jsonStringList(source['labels']),
+      targetMembershipId: jsonStringOrNull(json['targetMembershipId']),
+      clientId: jsonStringOrNull(json['clientId']),
+      applyDefaults: false,
+    );
+    for (final MapEntry(:key, :value) in jsonMap(json['claimModes']).entries) {
+      final mode = ClaimMode.values.where((m) => m.name == value).firstOrNull;
+      if (mode != null) draft._claimModes[key] = mode;
+    }
+    return draft;
+  }
+
+  /// 存本机的形状（[PerkImportDraft.restore] 读）。[withSource] 为假时不带原文（草稿太大时先丢它：依据高亮没了，改动都在）。
+  Map<String, dynamic> toJson({bool withSource = true}) => {
+    'version': 1,
+    'importId': importId,
+    'want': want.wire,
+    'clientId': clientId,
+    'truncated': truncated,
+    'continued': continued,
+    'continueFailed': continueFailed,
+    'notices': notices,
+    'source': {
+      'kind': sourceKind,
+      if (sourceKind == 'text' && withSource) 'text': sourceText,
+      if (sourceKind == 'image') 'count': imageCount,
+      if (sourceKind == 'image' && imageLabels.isNotEmpty) 'labels': imageLabels,
+    },
+    'targetMembershipId': targetMembershipId,
+    'claimModes': {for (final e in _claimModes.entries) e.key: e.value.name},
+    'platforms': [for (final n in platforms) n.toJson()],
+    'memberships': [for (final n in memberships) n.toJson()],
+    'benefits': [for (final n in benefits) n.toJson()],
+    'items': [for (final n in items) n.toJson()],
+  };
 
   final String importId;
   final ImportWant want;
@@ -132,10 +210,41 @@ class PerkImportDraft extends ChangeNotifier {
 
   /// 模型没写完（截断）：预览顶部横幅提示分段导入。
   final bool truncated;
+
+  /// 截断后服务端让模型续写过（试过）一次（[truncated] 仍为真就是续写后还没写完，或者续写那次出错了：[continueFailed]）。
+  final bool continued;
+
+  /// 续写那次出错了（上游报错、超时）：预览里的只是第一次收到的。
+  final bool continueFailed;
   final List<String> notices;
 
-  /// 发给模型的原文（打过码、可能挑过段落）：依据的 span 是它的下标。
+  /// 这批的来源：text（粘贴）| image（截图）。
+  final String sourceKind;
+
+  /// 发给模型的原文（打过码、可能挑过段落）：依据的 span 是它的下标。截图来源是空的。
   final String sourceText;
+
+  /// （截图来源）发了几块；[images] 是那几块本身（只在内存里：从本机恢复的草稿没有）。
+  final int imageCount;
+  final List<Uint8List> images;
+
+  /// 每块在输入页上的叫法（「图 2 的第 1/3 片」），按块号顺序；老草稿、没给的是空。
+  final List<String> imageLabels;
+
+  bool get fromImages => sourceKind == 'image';
+
+  /// 节点 [n] 出自的那块截图（块号从 1 开始）；没有、或者恢复的草稿没带图，回 null。
+  Uint8List? imageOf(ImportNode n) {
+    final i = n.img;
+    return i == null || i < 1 || i > images.length ? null : images[i - 1];
+  }
+
+  /// 节点 [n] 出自哪一片，按输入页的叫法（「图 2 的第 1/3 片」）；没有叫法就是「第 N 片」，模型没说是 null。
+  String? imageLabelOf(ImportNode n) {
+    final i = n.img;
+    if (i == null || i < 1) return null;
+    return i <= imageLabels.length ? imageLabels[i - 1] : '第 $i 片';
+  }
   final String? targetMembershipId;
   final String clientId;
 
@@ -611,8 +720,13 @@ class PerkImportDraft extends ChangeNotifier {
       if (n.fields[f] == null || n.fields[f] == '') f,
   ];
 
+  /// 这一项该不该出现在「需确认」里。截图来源的「依据未核实」不算（每条都是，整批在预览顶上说一次；
+  /// 服务端现在也不逐条标了，这里防的是老草稿）。
   bool needsAttention(ImportNode n) =>
-      n.badges.any(_attentionBadges.contains) || missingOf(n).isNotEmpty || n.action == 'pick' || _errors.containsKey(n.key);
+      n.badges.any((b) => _attentionBadges.contains(b) && !(fromImages && b == 'ev_unverified')) ||
+      missingOf(n).isNotEmpty ||
+      n.action == 'pick' ||
+      _errors.containsKey(n.key);
 
   bool matches(ImportNode n, ImportFilter f) => switch (f) {
     ImportFilter.all => true,

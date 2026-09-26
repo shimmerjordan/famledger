@@ -2,7 +2,7 @@
 
 // 模型的 records → 预览草稿（spec §6「规范化」「依据核对」）。纯函数，不查库；比对已有数据在 perk_import_match.js。
 //
-//   normalizeImport(records, {want, source, sourceKind, today, target}) → draft
+//   normalizeImport(records, {want, source, sourceKind, imageCount, today, target}) → draft
 //
 // 草稿是四张扁平的节点表 {platforms, memberships, benefits, items}，另带 dropped（丢掉了几条认不出的）。
 // 每个节点：
@@ -11,9 +11,13 @@
 //   fields       API 形状的字段（camelCase，金额是分）；引用写成 'key:m1' / 'id:<已有 id>' / null：
 //                  membership.platform、benefit.membership / parent / claimPlatform
 //   ev / span    模型给的依据原话、它在原文里的位置 [start, end)（找不到是 null）
+//   img          （截图来源）出自第几块，1..imageCount；模型没写或写错是 null。文字来源一律 null
 //   conf         0–1；依据查不到时压到 ≤0.4
-//   unverified   推断出来的字段名（年份不在原文里、领取平台原文没提）——落库写进 origin.unverified
+//   unverified   推断出来的字段名 —— 落库写进 origin.unverified，详情页字段旁显示「AI 推断」小点：
+//                  文字来源：年份不在原文里的日期、原文没提的领取平台；
+//                  截图来源：截图里的字没法逐字核对，关键字段（IMAGE_KEY_FIELDS，有值的）一律算推断
 //   badges       low_conf / claim_unsure / missing / ev_unverified / copied_example（比对后还会加 maybe_dup / ambiguous / exists）
+//                截图来源不逐条标 ev_unverified（每条都会标上，「需确认」就失去了分诊作用）：App 在预览顶部整批提示一次
 //   missing      缺的必填字段名
 //   checked      默认勾不勾：疑似照抄示例、找不到归属的权益默认不勾
 //   implied      （平台）材料里没单独列、从会员或权益里补建出来的
@@ -31,6 +35,12 @@ const CONF_NO_EVIDENCE = 0.4;
 const CONF_INFERRED = 0.6;
 const LOW_CONF = 0.6;
 const CATEGORIES = Object.keys(CATEGORY_DEFAULTS);
+/** 截图来源落库时标成「AI 推断」的字段（origin.unverified 里的 API 字段名 → 草稿 fields 里的名字）。 */
+const IMAGE_KEY_FIELDS = {
+  membership: { expiresOn: 'expiresOn', termStartOn: 'termStartOn', feeCents: 'feeCents', autoRenew: 'autoRenew' },
+  benefit: { claimPlatformId: 'claimPlatform', quota: 'quota', validUntil: 'validUntil', faceValueCents: 'faceValueCents' },
+  item: { priceCents: 'priceCents', purchasedOn: 'purchasedOn' },
+};
 const EXAMPLE_KEYS = new Set(EXAMPLE_NAMES.map(normalizeName));
 
 const T_OF = {
@@ -188,14 +198,20 @@ function autoRenewOf(raw) {
 
 /**
  * @param {object[]} records  parseImportOutput 的 records
- * @param {{want?:string, source?:string, sourceKind?:'text'|'image', today:string, target?:{id:string}|null}} opts
+ * @param {{want?:string, source?:string, sourceKind?:'text'|'image', imageCount?:number, today:string, target?:{id:string}|null}} opts
  */
-function normalizeImport(records, { want = 'auto', source = '', sourceKind = 'text', today, target = null } = {}) {
+function normalizeImport(records, { want = 'auto', source = '', sourceKind = 'text', imageCount = 0, today, target = null } = {}) {
   const draft = { platforms: [], memberships: [], benefits: [], items: [], dropped: 0 };
   const seq = { p: 0, m: 0, b: 0, i: 0 };
   const nextKey = (k) => `${k}${++seq[k]}`;
+  /** 截图来源的「出自第几块」：1..imageCount 的整数（"2" 也认），别的都是 null。 */
+  const imgOf = (raw) => {
+    if (sourceKind !== 'image') return null;
+    const n = Number(raw);
+    return Number.isInteger(n) && n >= 1 && n <= imageCount ? n : null;
+  };
   const node = (t, key, fields, r) => ({
-    key, t, fields, ev: clip(r && r.ev, 200), span: null, conf: confOf(r && r.conf),
+    key, t, fields, ev: clip(r && r.ev, 200), span: null, conf: confOf(r && r.conf), img: imgOf(r && r.img),
     unverified: [], badges: [], missing: [], checked: true, implied: false,
   });
 
@@ -210,7 +226,10 @@ function normalizeImport(records, { want = 'auto', source = '', sourceKind = 'te
     }
     const n = node('platform', nextKey('p'), { name: clip(name, 40), kind: pick(PLATFORM_KIND, r && r.kind, 'other') }, implied ? null : r);
     n.implied = implied;
-    if (implied && r) n.conf = confOf(r.conf);
+    if (implied && r) {
+      n.conf = confOf(r.conf);
+      n.img = imgOf(r.img);
+    }
     platformByName.set(k, n);
     draft.platforms.push(n);
     return n;
@@ -350,6 +369,7 @@ function normalizeImport(records, { want = 'auto', source = '', sourceKind = 'te
       limits: [],
     }, null);
     parent.ev = first.ev;
+    parent.img = first.img;
     parent.conf = Math.min(...g.options.map((o) => o.conf));
     // 父权益排在它第一个选项前面，树形列表里才是「父 → 选项」的顺序。
     draft.benefits.splice(draft.benefits.indexOf(first), 0, parent);
@@ -389,18 +409,16 @@ function normalizeImport(records, { want = 'auto', source = '', sourceKind = 'te
     return p ? p.fields.name : null;
   };
   for (const n of [...draft.platforms, ...draft.memberships, ...draft.benefits, ...draft.items]) {
-    if (n.ev) {
-      if (sourceKind === 'text') {
-        n.span = locateEvidence(n.ev, source);
-        if (!n.span) {
-          n.conf = Math.min(n.conf, CONF_NO_EVIDENCE);
-          n.badges.push('ev_unverified');
-        }
-      } else {
+    if (n.ev && sourceKind === 'text') {
+      n.span = locateEvidence(n.ev, source);
+      if (!n.span) {
+        n.conf = Math.min(n.conf, CONF_NO_EVIDENCE);
         n.badges.push('ev_unverified');
       }
     }
-    if (EXAMPLE_KEYS.has(normalizeName(n.fields.name)) && !n.span && sourceKind === 'text' && !mentions(source, n.fields.name)) {
+    // 和示例同名：文字来源要原文里也找不到才算照抄；截图核对不了原文，示例里的名字又是编的，同名就标出来。
+    const example = EXAMPLE_KEYS.has(normalizeName(n.fields.name));
+    if (sourceKind === 'text' ? example && !n.span && !mentions(source, n.fields.name) : example) {
       n.badges.push('copied_example');
       n.checked = false;
     }
@@ -415,6 +433,13 @@ function normalizeImport(records, { want = 'auto', source = '', sourceKind = 'te
           n.unverified.push('claimPlatformId');
           n.badges.push('claim_unsure');
         }
+      }
+    } else {
+      // 截图：有值的关键字段都算推断（autoRenew 没写是 unknown，额度没写是空列表，都不算）。
+      for (const [api, f] of Object.entries(IMAGE_KEY_FIELDS[n.t] || {})) {
+        const val = n.fields[f];
+        const empty = val === null || val === undefined || (Array.isArray(val) && !val.length) || (f === 'autoRenew' && val === 'unknown');
+        if (!empty) n.unverified.push(api);
       }
     }
     if (n.unverified.length) n.fieldConf = Object.fromEntries(n.unverified.map((f) => [f, Math.min(n.conf, CONF_INFERRED)]));
@@ -434,4 +459,4 @@ function normalizeImport(records, { want = 'auto', source = '', sourceKind = 'te
   return draft;
 }
 
-module.exports = { normalizeImport, yuanToCents, dayOf, MAX_CENTS };
+module.exports = { normalizeImport, yuanToCents, dayOf, MAX_CENTS, IMAGE_KEY_FIELDS };

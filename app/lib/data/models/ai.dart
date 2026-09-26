@@ -37,6 +37,12 @@ class AiProvider {
   /// `extra.importMaxTokens`：AI 导入单次输出上限的渠道覆盖；null = 用默认 12000。
   int? get importMaxTokens => jsonIntOrNull(extra['importMaxTokens']);
 
+  /// `extra.vision`：看图探测的结果。true = 测过能看图，false = 测过看不了，null = 没测过（换了模型也会回到 null）。
+  bool? get vision => extra['vision'] is bool ? extra['vision'] as bool : null;
+
+  /// 截图导入能不能用它：只有明确测出来看不了图的才排除（spec §6「截图模式只列 vision !== false 的渠道」）。
+  bool get maybeVision => vision != false;
+
   AiProvider copyWith({bool? enabled, bool? isDefault}) => AiProvider(
     id: id,
     name: name,
@@ -178,6 +184,27 @@ class AiProviderTest {
     latencyMs: jsonInt(json['latencyMs']),
     sample: jsonString(json['sample']),
     message: jsonString(json['message']),
+  );
+}
+
+/// `POST /ai/providers/:id/test?vision=1` 的结果：[vision] true / false 已写进渠道；null = 判断不了（连不上、没回答），渠道没动。
+class AiVisionTest {
+  const AiVisionTest({this.vision, this.sample = '', this.message = '', this.latencyMs = 0, this.provider});
+
+  final bool? vision;
+  final String sample;
+  final String message;
+  final int latencyMs;
+
+  /// 写完结果的渠道（判断不了时是原样）；列表页拿它刷新「支持看图」。
+  final AiProvider? provider;
+
+  factory AiVisionTest.fromJson(Map<String, dynamic> json) => AiVisionTest(
+    vision: json['vision'] is bool ? json['vision'] as bool : null,
+    sample: jsonString(json['sample']),
+    message: jsonString(json['message']),
+    latencyMs: jsonInt(json['latencyMs']),
+    provider: json['provider'] is Map ? AiProvider.fromJson(jsonMap(json['provider'])) : null,
   );
 }
 
