@@ -15,7 +15,7 @@ import 'import_fake.dart';
 import 'perk_import_fixtures.dart';
 import 'perks_fake.dart';
 
-// AI 导入的输入页和进度（spec §6「输入页」「识别中」）：只开放「粘贴」、识别范围 chip、渠道 chip（没有渠道时去设置）、
+// AI 导入的输入页和进度（spec §6「输入页」「识别中」）：四个来源分段（网址、从流水在 perk_import_sources_test.dart）、识别范围 chip、渠道 chip（没有渠道时去设置）、
 // token 估算、SSE 进度可取消、识别失败 / 连接断了留在输入页、指定卡。四个入口在 perk_import_entry_test.dart。
 
 AssetsBackend importBackend({Map<String, dynamic>? draft, ImportFake? imports}) {
@@ -33,12 +33,13 @@ Future<void> typeSource(WidgetTester tester, String text) async {
 }
 
 void main() {
-  testWidgets('输入页：来源分段是粘贴 / 截图（默认粘贴），识别范围按入口预选，渠道默认选中，写出 token 估算；识别完进预览', (tester) async {
+  testWidgets('输入页：来源分段是粘贴 / 截图 / 网址 / 从流水（默认粘贴），识别范围按入口预选，渠道默认选中，写出 token 估算；识别完进预览', (tester) async {
     final backend = importBackend(draft: orderDraft());
     await pumpAssetsAt(tester, bootAssets(backend, session: await sessionAs('admin')), '/assets/import?want=items');
     expect(find.text('智能导入'), findsOneWidget);
-    expect(find.text('截图'), findsOneWidget);
-    expect(find.text('网址'), findsNothing, reason: '网址、从流水在 P7，不放半成品入口');
+    for (final label in ['粘贴', '截图', '网址', '从流水']) {
+      expect(find.text(label), findsOneWidget, reason: label);
+    }
     expect(tester.widget<SegmentedButton<String>>(find.byKey(const ValueKey('import-source'))).selected, {'paste'});
     expect(tester.widget<ChoiceChip>(find.byKey(const ValueKey('import-want-items'))).selected, isTrue);
     expect(tester.widget<ChoiceChip>(find.byKey(const ValueKey('import-provider-ai-1'))).selected, isTrue);

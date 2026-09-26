@@ -58,6 +58,21 @@ List<String> rawPayKeywords(String text) => [
     if (raw.trim().isNotEmpty) raw.trim(),
 ];
 
+/// 「「腾讯视频」· ¥24.00–¥36.00」：AI 导入的预览（从流水识别的卡）、差异里说扣费特征。
+String payPatternLabel(PerkPayPattern p) {
+  final words = p.keywords.map((k) => '「$k」').join('');
+  final min = p.minCents;
+  final max = p.maxCents;
+  final range = min != null && max != null
+      ? '${Money.format(min)}–${Money.format(max)}'
+      : min != null
+          ? '${Money.format(min)} 以上'
+          : max != null
+              ? '${Money.format(max)} 以下'
+              : '';
+  return range.isEmpty ? words : '$words · $range';
+}
+
 /// 表单回显：用「，」连起来，再拆回去还是这几个。
 String joinPayKeywords(List<String> keywords) => keywords.join('，');
 

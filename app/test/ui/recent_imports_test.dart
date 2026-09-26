@@ -6,7 +6,7 @@ import 'assets_harness.dart';
 import 'perks_fake.dart';
 
 // 「最近的 AI 导入」（spec §1「7 天内可以整批撤销」、§4 `GET /asset-import/recent`）：会员权益 tab 和物品 tab 的溢出菜单都能进；
-// 列出 7 天内导入了、还没撤销的（什么时候、截图还是粘贴、新建和更新了什么、还能撤几天；管理员看到家里人的写明是谁导的）；
+// 列出 7 天内导入了、还没撤销的（什么时候、从哪导的、新建和更新了什么、还能撤几天；管理员看到家里人的写明是谁导的）；
 // 撤销和结果页同一套 —— 先确认、撤完原地说撤了什么、哪些没动；过期行内说；三种宽度、1.5 倍字号不溢出。
 
 Map<String, dynamic> recentJson(
@@ -69,6 +69,13 @@ void main() {
     expect(find.text('同时记了 1 笔支出'), findsOneWidget);
     expect(find.text('还能撤 1 天 · 小红导入的'), findsOneWidget);
     expect(find.textContaining('家里 7 天内导进来的都在这'), findsOneWidget);
+  });
+
+  testWidgets('网址、从流水导入的写成「网址导入」「流水导入」', (tester) async {
+    await openFromMenu(tester, recentBackend([recentJson('imp-u', sourceKind: 'url'), recentJson('imp-t', sourceKind: 'transactions')]));
+    expect(find.textContaining('网址导入'), findsOneWidget);
+    expect(find.textContaining('流水导入'), findsOneWidget);
+    expect(find.textContaining('粘贴导入'), findsNothing);
   });
 
   testWidgets('撤销：先问，「不撤了」什么都不发；确认后原地换成「已撤销」和撤了什么、没动什么，按钮没了；别的那条照旧能撤', (tester) async {

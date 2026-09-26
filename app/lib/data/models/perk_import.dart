@@ -33,6 +33,136 @@ int estimateImportTokens(String text) {
   return 1500 + cjk + ((sent.length - cjk) / 4).ceil();
 }
 
+/// 「AI 整理名称」发送前的 token 估算：说明约 600，每组一行约 30。只是量级提示。
+int estimateNamingTokens(int groups) => 600 + 30 * groups;
+
+/// 从流水识别的一组候选（`GET /asset-import/candidates` 的一项，服务端 lib/subscription_detect.js）：同一个归一化商户、
+/// 同一档金额的确认支出。[checked] 是服务端给的默认勾选（分数 ≥4、没关联、不是「只扣过一次又没有年费这类字」的）；
+/// [linkedName] 不为空 = 这组的流水已经有主了：有卡在管这笔扣费，或者（[linkedAsset]）是某件物品的购买流水。
+class SubscriptionCandidate {
+  const SubscriptionCandidate({
+    required this.key,
+    required this.merchant,
+    required this.amountCents,
+    required this.minCents,
+    required this.maxCents,
+    required this.count,
+    required this.period,
+    this.periodSource = 'observed',
+    required this.firstOn,
+    required this.lastOn,
+    this.nextOn,
+    this.score = 0,
+    this.reasons = const [],
+    this.checked = false,
+    this.linkedId,
+    this.linkedName,
+    this.linkedAsset = false,
+  });
+
+  final String key;
+  final String merchant;
+
+  /// 中位数（落库的续费价就用它）；[minCents] / [maxCents] 是这组里最便宜、最贵的一笔。
+  final int amountCents;
+  final int minCents;
+  final int maxCents;
+  final int count;
+
+  /// month | quarter | year
+  final String period;
+
+  /// observed（从间隔看出来的）| keyword（字面上写了年卡、包月）| guess（只扣过一次按年、间隔乱的大致归一档）
+  final String periodSource;
+  final String firstOn;
+  final String lastOn;
+
+  /// 最近一次 + 一个周期（导进去就是到期日）。
+  final String? nextOn;
+  final int score;
+
+  /// 打分的原因（服务端的叫法）：keyword、period、regular、count、same_amount、round、active、stale（好像停了）、
+  /// once（只扣过一次、名字里又没有年费这类字，默认不勾）。
+  final List<String> reasons;
+  final bool checked;
+  final String? linkedId;
+  final String? linkedName;
+
+  /// 关联的是物品（这笔是买东西的流水），不是卡。
+  final bool linkedAsset;
+
+  bool get linked => linkedId != null;
+
+  /// 该扣的那期过了宽限期还没扣：多半停了。
+  bool get stale => reasons.contains('stale');
+
+  factory SubscriptionCandidate.fromJson(Map<String, dynamic> json) {
+    final linked = jsonMap(json['linked']);
+    return SubscriptionCandidate(
+      key: jsonString(json['key']),
+      merchant: jsonString(json['merchant']),
+      amountCents: jsonInt(json['amountCents']),
+      minCents: jsonInt(json['minCents']),
+      maxCents: jsonInt(json['maxCents']),
+      count: jsonInt(json['count']),
+      period: jsonString(json['period'], 'year'),
+      periodSource: jsonString(json['periodSource'], 'observed'),
+      firstOn: jsonString(json['firstOn']),
+      lastOn: jsonString(json['lastOn']),
+      nextOn: jsonStringOrNull(json['nextOn']),
+      score: jsonInt(json['score']),
+      reasons: jsonStringList(json['reasons']),
+      checked: jsonBool(json['checked']),
+      linkedId: jsonStringOrNull(linked['membershipId']) ?? jsonStringOrNull(linked['assetId']),
+      linkedName: jsonStringOrNull(linked['name']),
+      linkedAsset: jsonStringOrNull(linked['membershipId']) == null && jsonStringOrNull(linked['assetId']) != null,
+    );
+  }
+}
+
+/// `GET /asset-import/candidates` 的回应：看了最近几个月、一共认出几组、前 40 组。
+class SubscriptionCandidates {
+  const SubscriptionCandidates({this.months = 13, this.total = 0, this.items = const []});
+
+  final int months;
+  final int total;
+  final List<SubscriptionCandidate> items;
+
+  factory SubscriptionCandidates.fromJson(Map<String, dynamic> json) => SubscriptionCandidates(
+    months: jsonInt(json['months'], 13),
+    total: jsonInt(json['total']),
+    items: jsonList(json['items'], SubscriptionCandidate.fromJson),
+  );
+}
+
+/// `POST /asset-import/fetch` 的结果（服务端 lib/page_fetch.js）。[hint] 是降级提示：pdf（读不了 PDF）| login（要登录）|
+/// short（正文太短，多半靠脚本加载）；有 hint 时 [message] 是给人看的说明，App 给「改用截图 / 改用粘贴」。
+class FetchedPage {
+  const FetchedPage({required this.url, required this.finalUrl, this.title = '', this.text = '', this.truncated = false, this.hint, this.message});
+
+  final String url;
+
+  /// 跟完跳转之后的地址（识别时作为 sourceUrl 发回去）。
+  final String finalUrl;
+  final String title;
+  final String text;
+
+  /// 正文超过 20000 字，只留了前 20000 字。
+  final bool truncated;
+  final String? hint;
+  final String? message;
+
+  factory FetchedPage.fromJson(Map<String, dynamic> json) => FetchedPage(
+    url: jsonString(json['url']),
+    finalUrl: jsonString(json['finalUrl'], jsonString(json['url'])),
+    title: jsonString(json['title']),
+    text: jsonString(json['text']),
+    truncated: jsonBool(json['truncated']),
+    hint: jsonStringOrNull(json['hint']),
+    message: jsonStringOrNull(json['message']),
+  );
+}
+
 /// 行的 `origin.unverified`（AI 推断、还没人确认的字段名）；没有就是空。
 List<String> originUnverified(Map<String, dynamic> origin) => jsonStringList(origin['unverified']);
 
@@ -320,7 +450,7 @@ class RecentImport {
   final String? memberName;
   final bool mine;
 
-  /// text（粘贴）| image（截图）。
+  /// text（粘贴）| image（截图）| url（网址）| transactions（从流水）。
   final String sourceKind;
   final DateTime? appliedAt;
 

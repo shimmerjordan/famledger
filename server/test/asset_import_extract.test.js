@@ -109,7 +109,7 @@ test('坏输出：一条都救不回来 → error ai_bad_output，用量照样�
   }
 });
 
-test('校验：只接 kind=text / image（url、transactions 还没有）；原文最多 20000 字、不能是空白；要补充的卡得存在；没有渠道 400 —— 都在花钱之前', async (t) => {
+test('校验：kind 只认 text / image / url / transactions（网址要带 sourceUrl、从流水要带 groups）；原文最多 20000 字、不能是空白；要补充的卡得存在；没有渠道 400 —— 都在花钱之前', async (t) => {
   const up = await startFakeAnthropic({ key: ANT_KEY });
   t.after(() => up.stop());
   const h = await household(t);
@@ -117,8 +117,8 @@ test('校验：只接 kind=text / image（url、transactions 还没有）；原�
   assert.equal((await post({})).json.error.code, 'no_provider');
   await addProvider(h, up);
   const cases = [
-    [{ kind: 'url' }, 'kind_unsupported'],
-    [{ kind: 'transactions' }, 'kind_unsupported'],
+    [{ kind: 'url' }, 'invalid_sourceUrl'],
+    [{ kind: 'transactions' }, 'invalid_groups'],
     [{ kind: 'image' }, 'invalid_images'],
     [{ kind: 'fax' }, 'invalid_kind'],
     [{ want: 'all' }, 'invalid_want'],

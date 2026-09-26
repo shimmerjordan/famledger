@@ -19,9 +19,6 @@ class AssetImportRepo {
   /// 识别：给了 [images]（截图切好的 PNG）就是 `kind: 'image'`，否则是粘贴文字 `kind: 'text'`。取消订阅 = 断开连接，服务端随即中止上游。
   /// `error` 事件抛成 [ApiException]（status 0，code 是服务端给的 ai_bad_output / ai_timeout / ai_upstream / ai_refusal）；
   /// 没等到 done 流就断了，抛「可能已经送到」的网络错误。
-  ///
-  /// 用转换器而不是在 async* 的 await for 里 throw：那样要先等底下的 SSE 连接收尾才把错误交出去，收尾慢（长连接、代理）
-  /// 时界面就一直停在「正在识别」。
   Stream<ImportEvent> extract({
     String text = '',
     List<Uint8List> images = const [],
@@ -40,6 +37,42 @@ class AssetImportRepo {
           };
     putIfNotNull(body, 'targetMembershipId', targetMembershipId);
     putIfNotNull(body, 'providerId', providerId);
+    return _extract(body);
+  }
+
+  /// 网址：[text] 是先抓下来（[fetchPage]）、给人改过的正文，[sourceUrl] 是抓到的地址（跟完跳转之后的）。服务端当粘贴文字识别。
+  Stream<ImportEvent> extractUrl({
+    required String text,
+    required String sourceUrl,
+    ImportWant want = ImportWant.auto,
+    String? targetMembershipId,
+    String? providerId,
+  }) {
+    final body = <String, dynamic>{'kind': 'url', 'text': text, 'sourceUrl': sourceUrl, 'want': want.wire};
+    putIfNotNull(body, 'targetMembershipId', targetMembershipId);
+    putIfNotNull(body, 'providerId', providerId);
+    return _extract(body);
+  }
+
+  /// 从流水：[groups] 是勾选的候选分组 key（[candidates] 给的），[months] 要和取候选时一样。[useAi] 为假是「直接生成」（不调模型、
+  /// 不带渠道）；为真是「AI 整理名称」。
+  Stream<ImportEvent> extractTransactions({required List<String> groups, bool useAi = false, int months = 13, String? providerId}) {
+    final body = <String, dynamic>{'kind': 'transactions', 'groups': groups, 'months': months, 'useAi': useAi};
+    if (useAi) putIfNotNull(body, 'providerId', providerId);
+    return _extract(body);
+  }
+
+  /// 从流水识别的候选分组（纯规则，不花 token）。
+  Future<SubscriptionCandidates> candidates({int months = 13}) async =>
+      SubscriptionCandidates.fromJson(await _api.get('/asset-import/candidates', query: {'months': '$months'}));
+
+  /// 抓一个网页的正文（服务端抓、防 SSRF）。被拦、超时、打不开抛 [ApiException]（message 是给人看的说明）；
+  /// PDF、登录墙、正文太短不算失败，看 [FetchedPage.hint]。
+  Future<FetchedPage> fetchPage(String url) async => FetchedPage.fromJson(await _api.post('/asset-import/fetch', {'url': url}));
+
+  /// 用转换器而不是在 async* 的 await for 里 throw：那样要先等底下的 SSE 连接收尾才把错误交出去，收尾慢（长连接、代理）
+  /// 时界面就一直停在「正在识别」。
+  Stream<ImportEvent> _extract(Map<String, dynamic> body) {
     var finished = false;
     void finish(EventSink<ImportEvent> sink) {
       if (finished) return;

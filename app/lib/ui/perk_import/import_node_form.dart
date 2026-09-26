@@ -50,12 +50,22 @@ Future<void> showImportNodeSheet(BuildContext context, {required PerkImportDraft
 /// 原文依据：高亮模型说的那句在原文里的位置（前后各带 40 字）；找不到就照抄模型给的依据并说明没核实到。
 /// 截图来源（[fromImages]）：显示它出自的那片截图（[image]，点开全屏、能双指放大；从本机恢复的草稿没有图就说一声，
 /// 用 [imageLabel]「图 2 的第 1/3 片」说清楚是哪一片），外加模型读到的原字 —— 截图没法自动核对。
+/// 从流水识别（[fromTransactions]）：写它来自哪几笔扣费（「腾讯视频 ¥30.00 × 7 次（…）」）。
 class EvidenceBlock extends StatelessWidget {
-  const EvidenceBlock({super.key, required this.source, required this.node, this.fromImages = false, this.image, this.imageLabel});
+  const EvidenceBlock({
+    super.key,
+    required this.source,
+    required this.node,
+    this.fromImages = false,
+    this.fromTransactions = false,
+    this.image,
+    this.imageLabel,
+  });
 
   final String source;
   final ImportNode node;
   final bool fromImages;
+  final bool fromTransactions;
   final Uint8List? image;
   final String? imageLabel;
 
@@ -67,7 +77,13 @@ class EvidenceBlock extends StatelessWidget {
     final colors = LedgerColors.of(context);
     final span = node.span;
     final Widget body;
-    if (fromImages) {
+    if (fromTransactions) {
+      body = Text(
+        node.ev == null ? '从流水里归出来的。' : '从流水里看到：${node.ev}',
+        key: const ValueKey('evidence-transactions'),
+        style: theme.textTheme.bodyMedium,
+      );
+    } else if (fromImages) {
       final img = image;
       final where = imageLabel ?? (node.img == null ? null : '第 ${node.img} 片');
       body = Column(
@@ -141,7 +157,7 @@ class EvidenceBlock extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('原文依据', style: theme.textTheme.labelMedium),
+          Text(fromTransactions ? '来自这些扣费' : '原文依据', key: const ValueKey('evidence-title'), style: theme.textTheme.labelMedium),
           const SizedBox(height: 6),
           body,
         ],
@@ -283,7 +299,14 @@ class _ImportNodeFormState extends State<ImportNodeForm> {
             ],
           ),
         ),
-        EvidenceBlock(source: draft.sourceText, node: n, fromImages: draft.fromImages, image: draft.imageOf(n), imageLabel: draft.imageLabelOf(n)),
+        EvidenceBlock(
+          source: draft.sourceText,
+          node: n,
+          fromImages: draft.fromImages,
+          fromTransactions: draft.fromTransactions,
+          image: draft.imageOf(n),
+          imageLabel: draft.imageLabelOf(n),
+        ),
         if (draft.errorOf(n.key) != null)
           Padding(
             padding: const EdgeInsets.fromLTRB(LedgerLayout.pagePadding, 8, LedgerLayout.pagePadding, 0),
@@ -438,8 +461,24 @@ class _ImportNodeFormState extends State<ImportNodeForm> {
             ),
         ]),
       ),
+      // 从流水识别的卡带着扣费特征（导入后扣费线索靠它），这里只说一声，导入后在卡的「更多」里能改。
+      if (PerkPayPattern.tryParse(f['payPattern'] is Map ? jsonMap(f['payPattern']) : null) case final pay?)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(LedgerLayout.pagePadding, 8, LedgerLayout.pagePadding, 0),
+          child: Text(
+            _payPatternSkipped
+                ? '这次不改原来的扣费特征；要换成${payPatternLabel(pay)}，在下面的差异里勾上「扣费特征」。'
+                : '扣费特征：${payPatternLabel(pay)}。导入后流水里再出现对得上的扣款，会提示「续上」；在卡的「更多」里能改。',
+            key: const ValueKey('node-pay-pattern'),
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ),
     ];
   }
+
+  /// 更新已有的卡、而差异里的「扣费特征」没勾（原来设过、不一样的默认不勾；也可能是人取消了）：导入不会写它。
+  bool get _payPatternSkipped =>
+      _node.action == 'update' && _node.diff.any((d) => d.field == 'payPattern' && !d.take);
 
   /// 领取平台的选项：会员本平台、草稿里的平台（新建的标一下）、库里已有的平台。
   List<(String?, String)> _claimOptions() => [
@@ -717,6 +756,7 @@ class _ImportNodeFormState extends State<ImportNodeForm> {
     'faceValueCents': '面值',
     'limits': '限制条件',
     'isTrial': '试用',
+    'payPattern': '扣费特征',
     'archived': '归档',
   };
 
@@ -734,6 +774,10 @@ class _ImportNodeFormState extends State<ImportNodeForm> {
     if (field == 'autoRenew') return Membership.autoRenewLabels[v] ?? v.toString();
     if (field == 'feePeriod') return Membership.feePeriodLabels[v] ?? v.toString();
     if (field == 'flow') return Benefit.flowLabels[v] ?? v.toString();
+    if (field == 'payPattern') {
+      final pay = v is Map ? PerkPayPattern.tryParse(jsonMap(v)) : null;
+      return pay == null ? '空' : payPatternLabel(pay);
+    }
     if (v is bool) return v ? '是' : '否';
     return v.toString();
   }

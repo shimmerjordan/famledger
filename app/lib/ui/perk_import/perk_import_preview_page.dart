@@ -224,6 +224,13 @@ class _PerkImportPreviewPageState extends ConsumerState<PerkImportPreviewPage> {
     }
   }
 
+  /// 「不导了？」的说明：「直接生成」没问模型，不说 token。
+  String get _discardMessage => switch ((draft.fromTransactions, draft.usedAi)) {
+    (true, false) => '生成的结果和刚才的修改都会丢掉，要再导得回去重新勾选、生成（不花 token）。',
+    (true, true) => '整理出的结果和刚才的修改都会丢掉，要再导得重新整理（会再花一次 token），或者回去点「直接生成」。',
+    _ => '识别结果和刚才的修改都会丢掉，要再导得重新识别（会再花一次 token）。',
+  };
+
   @override
   Widget build(BuildContext context) {
     final ledger = ref.watch(ledgerProvider).valueOrNull ?? const LedgerData();
@@ -234,7 +241,7 @@ class _PerkImportPreviewPageState extends ConsumerState<PerkImportPreviewPage> {
       builder: (context, _) => DiscardGuard(
         canPop: _stage == _Stage.done || nothing,
         title: '不导了？',
-        message: '识别结果和刚才的修改都会丢掉，要再导得重新识别（会再花一次 token）。',
+        message: _discardMessage,
         stayLabel: '接着核对',
         leaveLabel: '不导了',
         onBlocked: _onPopBlocked,
@@ -307,7 +314,11 @@ class _PerkImportPreviewPageState extends ConsumerState<PerkImportPreviewPage> {
               child: current == null
                   ? EmptyState(
                       title: '点左边一项，在这里改',
-                      message: draft.fromImages ? '顶上会显示它出自的那片截图' : '顶上会高亮原文里的依据',
+                      message: draft.fromImages
+                          ? '顶上会显示它出自的那片截图'
+                          : draft.fromTransactions
+                              ? '顶上会写它来自哪几笔扣费'
+                              : '顶上会高亮原文里的依据',
                       compact: true,
                     )
                   : ImportNodeForm(key: ValueKey('node-form-${current.key}'), draft: draft, nodeKey: current.key, ledger: ledger),
@@ -380,7 +391,9 @@ class _PerkImportPreviewPageState extends ConsumerState<PerkImportPreviewPage> {
         Padding(
           padding: const EdgeInsets.fromLTRB(LedgerLayout.pagePadding, LedgerLayout.itemGap, LedgerLayout.pagePadding, 4),
           child: Text(
-            counts.isEmpty ? '材料里没找到会员、权益或买的东西。' : '识别出 ${counts.join('、')}，勾了 ${draft.includedCount} 项。',
+            counts.isEmpty
+                ? '材料里没找到会员、权益或买的东西。'
+                : '${draft.fromTransactions ? '从流水生成了' : '识别出'} ${counts.join('、')}，勾了 ${draft.includedCount} 项。',
             key: const ValueKey('import-summary'),
             style: theme.textTheme.bodyMedium,
           ),
@@ -740,7 +753,8 @@ class _ResultViewState extends ConsumerState<_ResultView> {
       ],
       const SizedBox(height: 8),
       Text(
-        '标着「AI 推断」的字段，点一下能确认或修改。导错了可以整批撤销：现在点下面的「撤销本次导入」，'
+        // 从流水来的卡不标「AI 推断」（价格、日期都是流水里看到的），不提那个小点。
+        '${draft.fromTransactions ? '' : '标着「AI 推断」的字段，点一下能确认或修改。'}导错了可以整批撤销：现在点下面的「撤销本次导入」，'
         '或者 7 天内到资产页右上角的「最近的 AI 导入」里撤。',
         key: const ValueKey('perk-import-undo-hint'),
         style: theme.textTheme.bodySmall,

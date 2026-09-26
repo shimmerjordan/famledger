@@ -20,13 +20,15 @@ import 'perk_import_draft.dart';
 import 'perk_import_providers.dart';
 import 'screenshot_pane.dart';
 import 'screenshots.dart';
+import 'transactions_pane.dart';
+import 'url_pane.dart';
 
-/// AI 智能导入的输入页（`/assets/import`，spec §6）：来源分段（粘贴 / 截图）、识别范围、AI 渠道、发送前的 token 估算；
+/// AI 智能导入的输入页（`/assets/import`，spec §6）：来源分段（粘贴 / 截图 / 网址 / 从流水）、识别范围、AI 渠道、发送前的 token 估算；
 /// 点「开始识别」后原地换成进度（SSE，已识别 N 条，可以取消），识别完把草稿交给预览页。
 /// 截图模式只列没被测出「看不了图」的渠道（vision != false）；切片、缩放在本机做（screenshots.dart）。
+/// 网址：先抓取、正文放进框里改，再按文字识别（url_pane.dart）。从流水：进分段就取候选分组（纯规则），「直接生成」不调 AI、
+/// 没有渠道也能用，「AI 整理名称」只发商户、金额、周期、次数（transactions_pane.dart）；从流水只出会员卡，不给识别范围。
 /// 本机有上次没导完的草稿（意外关闭）时，顶上给「继续核对 / 不要了」。
-///
-/// 网址和从流水 P7 加进 [PerkImportPage.sources]。
 class PerkImportPage extends ConsumerStatefulWidget {
   const PerkImportPage({super.key, this.want = ImportWant.auto, this.targetMembershipId});
 
@@ -36,8 +38,8 @@ class PerkImportPage extends ConsumerStatefulWidget {
   /// 会员详情的「AI 补充权益」：识别出的权益都归到这张卡（识别范围固定为会员权益）。
   final String? targetMembershipId;
 
-  /// 这一版开放的来源。
-  static const List<String> sources = ['paste', 'image'];
+  /// 开放的来源。会员详情的「AI 补充权益」（指定卡）不给从流水：那里识别的是权益，从流水只出会员卡。
+  static const List<String> sources = ['paste', 'image', 'url', 'transactions'];
 
   @override
   ConsumerState<PerkImportPage> createState() => _PerkImportPageState();
@@ -53,8 +55,22 @@ class _PerkImportPageState extends ConsumerState<PerkImportPage> {
   String? _error;
   StreamSubscription<ImportEvent>? _sub;
 
-  /// 来源：paste | image。
+  /// 来源：paste | image | url | transactions。
   String _source = 'paste';
+
+  /// 网址：地址、抓到的正文（可以改）、抓取结果和失败原因。
+  final TextEditingController _url = TextEditingController();
+  final TextEditingController _urlText = TextEditingController();
+  FetchedPage? _page;
+  bool _fetching = false;
+  String? _fetchError;
+
+  /// 从流水：候选分组（进分段时取一次）和勾了哪几组；这次点的是不是「AI 整理名称」（进度页、出错时的说法跟着它走）。
+  SubscriptionCandidates? _candidates;
+  bool _loadingCandidates = false;
+  String? _candidatesError;
+  Set<String> _picked = const {};
+  bool _txUseAi = false;
   List<PickedScreenshot> _shots = const [];
   Set<String> _removed = const {};
   ScreenshotBatch _batch = const ScreenshotBatch();
@@ -71,6 +87,8 @@ class _PerkImportPageState extends ConsumerState<PerkImportPage> {
   SavedPerkImport? _saved;
 
   bool get _imageMode => _source == 'image';
+  bool get _urlMode => _source == 'url';
+  bool get _txMode => _source == 'transactions';
 
   @override
   void initState() {
@@ -84,6 +102,8 @@ class _PerkImportPageState extends ConsumerState<PerkImportPage> {
   void dispose() {
     _sub?.cancel();
     _text.dispose();
+    _url.dispose();
+    _urlText.dispose();
     super.dispose();
   }
 
@@ -107,30 +127,160 @@ class _PerkImportPageState extends ConsumerState<PerkImportPage> {
   }
 
   void _start(AiProvider? provider) {
-    if (_imageMode ? !_batch.sendable : _text.text.trim().isEmpty) {
-      setState(() => _error = _imageMode ? '先选几张截图' : '先粘点东西进来');
+    final empty = _imageMode ? !_batch.sendable : (_urlMode ? _urlText.text : _text.text).trim().isEmpty;
+    if (empty) {
+      // 网址分段只有抓到正文才有框可改，没东西时指向「改用粘贴」，不说「粘进来」（没地方粘）。
+      setState(() => _error = _imageMode ? '先选几张截图' : (_urlMode ? '先抓取网页；抓不到就点「改用粘贴」' : '先粘点东西进来'));
       return;
     }
-    FocusScope.of(context).unfocus();
     _sentImages = _imageMode ? [for (final s in _batch.slices) s.png] : const [];
     _sentLabels = _imageMode ? [for (final s in _batch.slices) s.label] : const [];
+    final repo = ref.read(assetImportRepoProvider);
+    final Stream<ImportEvent> events;
+    if (_urlMode) {
+      events = repo.extractUrl(
+        text: _urlText.text,
+        sourceUrl: _page?.finalUrl ?? _url.text.trim(),
+        want: _want,
+        targetMembershipId: widget.targetMembershipId,
+        providerId: provider?.id,
+      );
+    } else {
+      events = repo.extract(
+        text: _imageMode ? '' : _text.text,
+        images: _sentImages,
+        want: _want,
+        targetMembershipId: widget.targetMembershipId,
+        providerId: provider?.id,
+      );
+    }
+    _run(events, _imageMode ? '正在请模型看图…' : '正在请模型识别…');
+  }
+
+  /// 从流水：「直接生成」（[useAi] 假，不带渠道）或「AI 整理名称」。勾的组按名单里的顺序发。
+  void _startTransactions({required bool useAi, AiProvider? provider}) {
+    final c = _candidates;
+    final groups = [
+      for (final item in c?.items ?? const <SubscriptionCandidate>[])
+        if (_picked.contains(item.key)) item.key,
+    ];
+    if (c == null || groups.isEmpty) {
+      setState(() => _error = '先勾几组');
+      return;
+    }
+    _sentImages = const [];
+    _sentLabels = const [];
+    _txUseAi = useAi;
+    _run(
+      ref.read(assetImportRepoProvider).extractTransactions(groups: groups, useAi: useAi, months: c.months, providerId: provider?.id),
+      useAi ? '正在请模型整理名称…' : '正在按商户名生成…',
+    );
+  }
+
+  /// 开始识别（换成进度页）并听事件流。
+  void _run(Stream<ImportEvent> events, String stage) {
+    FocusScope.of(context).unfocus();
     setState(() {
       _extracting = true;
       _count = 0;
-      _stage = _imageMode ? '正在请模型看图…' : '正在请模型识别…';
+      _stage = stage;
       _error = null;
       _saved = null; // 新识别出来的会盖掉本机那份
     });
-    _sub = ref
-        .read(assetImportRepoProvider)
-        .extract(
-          text: _imageMode ? '' : _text.text,
-          images: _sentImages,
-          want: _want,
-          targetMembershipId: widget.targetMembershipId,
-          providerId: provider?.id,
-        )
-        .listen(_onEvent, onError: _onError);
+    _sub = events.listen(_onEvent, onError: _onError);
+  }
+
+  /// 换来源分段；第一次进「从流水」时取候选。
+  void _switchSource(String source) {
+    setState(() {
+      _source = source;
+      _error = null;
+    });
+    if (source == 'transactions' && _candidates == null && !_loadingCandidates) _loadCandidates();
+  }
+
+  /// 取候选。[refetch]（勾的组对不上了、重新取）时保留用户手动改过的勾选：key 对得上的组照旧（勾了的还勾着、取消了的还空着），
+  /// 对不上的（新出现的、金额档变了的）按服务端的默认勾选。
+  Future<void> _loadCandidates({bool refetch = false}) async {
+    final before = _candidates;
+    final kept = _picked;
+    setState(() {
+      _loadingCandidates = true;
+      _candidatesError = null;
+    });
+    try {
+      final c = await ref.read(assetImportRepoProvider).candidates();
+      if (!mounted) return;
+      final known = {for (final item in before?.items ?? const <SubscriptionCandidate>[]) item.key};
+      setState(() {
+        _candidates = c;
+        _picked = {
+          for (final item in c.items)
+            if (refetch && known.contains(item.key) ? kept.contains(item.key) : item.checked) item.key,
+        };
+        _loadingCandidates = false;
+        if (refetch) _error = '重新取好了：还在的组保留了你的勾选，新出现的按默认勾。看一眼再生成。';
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _candidatesError = '没取到流水里像订阅的扣费：${describeError(e)}';
+        _loadingCandidates = false;
+        if (refetch) _error = null; // 取失败的说明和「重试」在列表那里
+      });
+    }
+  }
+
+  void _toggle(String key) => setState(() {
+    _picked = _picked.contains(key) ? ({..._picked}..remove(key)) : {..._picked, key};
+    _error = null;
+  });
+
+  /// 抓网页：正文放进可编辑的框里；失败的说明（被拦、超时、打不开）留在分段里，给「改用截图 / 改用粘贴」。
+  /// 每次点「抓取」（地址是空的也一样）先收起上一次抓到的页面和说明：上一次的正文不能冒充这一次的，也不能和新的说明摆在一起。
+  Future<void> _fetch() async {
+    final url = _url.text.trim();
+    _urlText.clear();
+    if (url.isEmpty) {
+      setState(() {
+        _page = null;
+        _fetchError = '先填一个网址';
+        _error = null;
+      });
+      return;
+    }
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _page = null;
+      _fetching = true;
+      _fetchError = null;
+      _error = null;
+    });
+    try {
+      final page = await ref.read(assetImportRepoProvider).fetchPage(url);
+      if (!mounted) return;
+      _urlText.text = page.text;
+      setState(() {
+        _page = page;
+        _fetching = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _fetchError = _fetchErrorText(e);
+        _fetching = false;
+      });
+    }
+  }
+
+  /// 抓取失败的说明。被当成 fake-ip 拦下的（details.fakeIp）按角色说：管理员看服务端给的完整步骤和代价；成员改不了服务端，
+  /// 只说请管理员看看、现在先换方式。
+  String _fetchErrorText(Object e) {
+    if (e is ApiException && e.code == 'url_blocked' && e.details['fakeIp'] == true) {
+      final isAdmin = ref.read(sessionProvider)?.me.isAdmin ?? false;
+      if (!isAdmin) return '服务端的网络走了 fake-ip 代理，这个网址被当成内网地址拦下了。要放开得请管理员改服务端的设置；现在可以先改用截图或粘贴。';
+    }
+    return describeError(e);
   }
 
   Future<void> _pickShots() async {
@@ -246,16 +396,21 @@ class _PerkImportPageState extends ConsumerState<PerkImportPage> {
   void _onError(Object e) {
     if (!mounted) return;
     _sub = null;
+    final stale = e is ApiException && e.code == 'groups_stale';
     setState(() {
       _extracting = false;
-      _error = switch (e) {
+      final message = switch (e) {
         ApiException(code: 'no_provider') => '还没有可用的 AI 渠道，先去设置里加一个。',
         ApiException(code: 'import_in_progress') => '你还有一次识别没结束（可能在另一台设备上），等它结束再试。',
         ApiException(code: 'provider_no_vision') => '这个渠道看不了图片，换一个支持看图的渠道。',
         ApiException(code: 'body_too_large') => '截图合计太大了，删掉几片再试。',
+        ApiException(code: 'groups_stale') => '勾的几组和现在的流水对不上了（刚记了新流水？），正在重新取…',
         _ => describeError(e),
       };
+      // 「AI 整理名称」出错（上游出错、超时、限流……）：「直接生成」不受这些影响，马上就能用。
+      _error = _txMode && _txUseAi && !stale ? '$message 可以先点「直接生成」（不用 AI），名字导入前能改。' : message;
     });
+    if (stale) _loadCandidates(refetch: true);
   }
 
   /// 取消 = 断开连接，服务端随即中止上游，不再花 token。粘贴的内容都还在。
@@ -296,7 +451,15 @@ class _PerkImportPageState extends ConsumerState<PerkImportPage> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('正在识别…', style: theme.textTheme.titleMedium),
+              Text(
+                switch ((_source, _txUseAi)) {
+                  ('transactions', false) => '正在生成…',
+                  ('transactions', true) => '正在整理名称…',
+                  _ => '正在识别…',
+                },
+                key: const ValueKey('import-progress-title'),
+                style: theme.textTheme.titleMedium,
+              ),
               const SizedBox(height: LedgerLayout.itemGap),
               const LinearProgressIndicator(),
               const SizedBox(height: LedgerLayout.itemGap),
@@ -307,7 +470,13 @@ class _PerkImportPageState extends ConsumerState<PerkImportPage> {
                 Text('已识别 $_count 条', key: const ValueKey('import-progress'), style: theme.textTheme.bodyMedium),
               const SizedBox(height: 4),
               Text(
-                _imageMode ? '截图多的要一两分钟。取消就不再花 token，选的截图都还在。' : '长材料要一两分钟。取消就不再花 token，粘贴的内容都还在。',
+                switch (_source) {
+                  'image' => '截图多的要一两分钟。取消就不再花 token，选的截图都还在。',
+                  'url' => '长材料要一两分钟。取消就不再花 token，抓到的正文都还在。',
+                  'transactions' when !_txUseAi => '按商户名生成，不用 AI，很快就好。勾的组都还在。',
+                  'transactions' => '只是整理名称，很快就好。取消就不再花 token，勾的组都还在。',
+                  _ => '长材料要一两分钟。取消就不再花 token，粘贴的内容都还在。',
+                },
                 style: theme.textTheme.bodySmall,
               ),
               const SizedBox(height: LedgerLayout.groupGap),
@@ -323,6 +492,8 @@ class _PerkImportPageState extends ConsumerState<PerkImportPage> {
     final theme = Theme.of(context);
     final providers = ref.watch(aiProvidersProvider);
     final length = _text.text.length;
+    // 四段来源在手机上挤：窄屏只写字（带图标时「从流水」会折成两行）。
+    final compact = MediaQuery.sizeOf(context).width < 480;
     return LayoutBuilder(
       builder: (context, box) => ListView(
         padding: readableInsets(box.maxWidth, maxWidth: 720).copyWith(bottom: 32),
@@ -342,18 +513,44 @@ class _PerkImportPageState extends ConsumerState<PerkImportPage> {
             child: SegmentedButton<String>(
               key: const ValueKey('import-source'),
               showSelectedIcon: false,
-              segments: const [
-                ButtonSegment(value: 'paste', icon: Icon(Icons.content_paste), label: Text('粘贴', key: ValueKey('import-source-paste'))),
-                ButtonSegment(value: 'image', icon: Icon(Icons.image_outlined), label: Text('截图', key: ValueKey('import-source-image'))),
+              segments: [
+                ButtonSegment(value: 'paste', icon: compact ? null : const Icon(Icons.content_paste), label: const Text('粘贴', key: ValueKey('import-source-paste'))),
+                ButtonSegment(value: 'image', icon: compact ? null : const Icon(Icons.image_outlined), label: const Text('截图', key: ValueKey('import-source-image'))),
+                ButtonSegment(value: 'url', icon: compact ? null : const Icon(Icons.link), label: const Text('网址', key: ValueKey('import-source-url'))),
+                if (widget.targetMembershipId == null)
+                  ButtonSegment(
+                    value: 'transactions',
+                    icon: compact ? null : const Icon(Icons.receipt_long_outlined),
+                    label: const Text('从流水', key: ValueKey('import-source-transactions')),
+                  ),
               ],
               selected: {_source},
-              onSelectionChanged: (v) => setState(() {
-                _source = v.first;
-                _error = null;
-              }),
+              onSelectionChanged: (v) => _switchSource(v.first),
             ),
           ),
-          if (_imageMode)
+          if (_urlMode)
+            UrlPane(
+              url: _url,
+              text: _urlText,
+              page: _page,
+              fetching: _fetching,
+              error: _fetchError,
+              onFetch: _fetch,
+              onUseImage: () => _switchSource('image'),
+              onUsePaste: () => _switchSource('paste'),
+              onTextChanged: (_) => setState(() {}),
+            )
+          else if (_txMode)
+            TransactionsPane(
+              candidates: _candidates,
+              loading: _loadingCandidates,
+              error: _candidatesError,
+              picked: _picked,
+              onToggle: _toggle,
+              onRetry: _loadCandidates,
+              onUsePaste: () => _switchSource('paste'),
+            )
+          else if (_imageMode)
             ScreenshotPane(
               sourceCount: _shots.length,
               batch: _batch,
@@ -396,7 +593,7 @@ class _PerkImportPageState extends ConsumerState<PerkImportPage> {
                 ),
               ),
           ],
-          if (widget.targetMembershipId == null)
+          if (widget.targetMembershipId == null && !_txMode)
             PickerField(
               label: '识别范围',
               child: Wrap(
@@ -414,7 +611,8 @@ class _PerkImportPageState extends ConsumerState<PerkImportPage> {
               ),
             ),
           PickerField(
-            label: '用哪个 AI 渠道',
+            // 从流水下「直接生成」不用渠道，只有「AI 整理名称」用。
+            label: _txMode ? '「AI 整理名称」用哪个渠道' : '用哪个 AI 渠道',
             child: providers.when(
               loading: () => const Skeleton(height: 40, radius: 8),
               error: (e, _) => InlineError(message: describeError(e), onRetry: () => ref.invalidate(aiProvidersProvider), padding: EdgeInsets.zero),
@@ -504,6 +702,26 @@ class _PerkImportPageState extends ConsumerState<PerkImportPage> {
         ],
       );
     }
+    if (usable.isEmpty && _txMode) {
+      return Column(
+        key: const ValueKey('import-no-provider-tx'),
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            isAdmin ? '还没有可用的 AI 渠道。「直接生成」不用 AI，照样能用；想让 AI 整理名称，先加一个渠道。' : '还没有可用的 AI 渠道。「直接生成」不用 AI，照样能用。',
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+          if (isAdmin) ...[
+            const SizedBox(height: 8),
+            OutlinedButton(
+              key: const ValueKey('import-no-provider-tx-settings'),
+              onPressed: () => context.push('/settings/ai'),
+              child: const Text('去设置 AI 渠道'),
+            ),
+          ],
+        ],
+      );
+    }
     if (usable.isEmpty) {
       return Column(
         key: const ValueKey('import-no-provider'),
@@ -537,14 +755,16 @@ class _PerkImportPageState extends ConsumerState<PerkImportPage> {
   }
 
   List<Widget> _footer(BuildContext context, List<AiProvider> all) {
+    if (_txMode) return _txFooter(context, all);
     final theme = Theme.of(context);
     final chosen = _chosen(all);
     final error = _error;
-    final text = _text.text;
+    final text = _urlMode ? _urlText.text : _text.text;
     final maxOut = chosen?.importMaxTokens ?? 12000;
     final empty = _imageMode ? _batch.slices.isEmpty : text.trim().isEmpty;
     final input = _imageMode ? _batch.estimatedTokens : estimateImportTokens(text);
-    final ready = chosen != null && (!_imageMode || (_batch.sendable && !_preparing));
+    // 网址抓取中不给点：框里还是空的（上一次的已经收起），点了只会拿不到正文。
+    final ready = chosen != null && (!_imageMode || (_batch.sendable && !_preparing)) && !(_urlMode && _fetching);
     // 截图挡住发送的原因放在按钮旁边（缩略图多的时候上面的提示离按钮很远，只看到一个灰掉的按钮和 token 估算）。
     final blocked = !_imageMode || empty || _preparing
         ? null
@@ -581,6 +801,53 @@ class _PerkImportPageState extends ConsumerState<PerkImportPage> {
           key: const ValueKey('import-start'),
           onPressed: ready ? () => _start(chosen) : null,
           child: const Text('开始识别'),
+        ),
+      ),
+    ];
+  }
+
+  /// 从流水的底栏：「直接生成」不要渠道；「AI 整理名称」要渠道。没勾、候选还在取（勾的组对不上了、正在重新取）时都点不了。
+  /// 没东西可勾（还在取、取失败、一组都没有）时不写「先勾几组」。
+  List<Widget> _txFooter(BuildContext context, List<AiProvider> all) {
+    final theme = Theme.of(context);
+    final chosen = _chosen(all);
+    final count = _picked.length;
+    final error = _error;
+    final pickable = !_loadingCandidates && _candidatesError == null && (_candidates?.items.isNotEmpty ?? false);
+    final ready = pickable && count > 0;
+    return [
+      if (pickable)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(LedgerLayout.pagePadding, LedgerLayout.groupGap, LedgerLayout.pagePadding, 0),
+          child: Text(
+            count == 0 ? '先勾几组。生成之后先在预览里逐条核对，确认了才会落库。' : '勾了 $count 组。直接生成不花 token；AI 整理名称预计输入约 ${estimateNamingTokens(count)} token。',
+            key: const ValueKey('import-estimate'),
+            style: theme.textTheme.bodySmall,
+          ),
+        ),
+      if (error != null)
+        InlineError(
+          key: const ValueKey('import-error'),
+          message: error,
+          padding: const EdgeInsets.fromLTRB(LedgerLayout.pagePadding, LedgerLayout.itemGap, LedgerLayout.pagePadding, 0),
+        ),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(LedgerLayout.pagePadding, LedgerLayout.itemGap, LedgerLayout.pagePadding, 0),
+        child: Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            FilledButton(
+              key: const ValueKey('import-tx-direct'),
+              onPressed: ready ? () => _startTransactions(useAi: false) : null,
+              child: const Text('直接生成'),
+            ),
+            OutlinedButton(
+              key: const ValueKey('import-tx-ai'),
+              onPressed: ready && chosen != null ? () => _startTransactions(useAi: true, provider: chosen) : null,
+              child: const Text('AI 整理名称'),
+            ),
+          ],
         ),
       ),
     ];

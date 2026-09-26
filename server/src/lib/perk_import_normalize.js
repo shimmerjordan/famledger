@@ -3,6 +3,8 @@
 // 模型的 records → 预览草稿（spec §6「规范化」「依据核对」）。纯函数，不查库；比对已有数据在 perk_import_match.js。
 //
 //   normalizeImport(records, {want, source, sourceKind, imageCount, today, target}) → draft
+//     sourceKind：text（粘贴，网址抓来的正文也按它）| image（截图）| transactions（从流水识别：records 是 lib/subscription_import.js
+//     按规则拼的，不核对依据、不标推断；会员多带 payPattern / lastChargeTxId 两个字段，apply 写进 pay_pattern / last_charge_tx_id）
 //
 // 草稿是四张扁平的节点表 {platforms, memberships, benefits, items}，另带 dropped（丢掉了几条认不出的）。
 // 每个节点：
@@ -275,6 +277,10 @@ function normalizeImport(records, { want = 'auto', source = '', sourceKind = 'te
       autoRenew: autoRenewOf(r.autoRenew),
       isTrial: boolOf(r.isTrial),
     };
+    if (sourceKind === 'transactions') {
+      fields.payPattern = isObject(r.payPattern) ? r.payPattern : null;
+      fields.lastChargeTxId = typeof r.lastChargeTxId === 'string' ? r.lastChargeTxId : null;
+    }
     const hit = cardByKey.get(dedupe);
     if (hit) {
       for (const [k, val] of Object.entries(fields)) if (hit.fields[k] === null || hit.fields[k] === undefined) hit.fields[k] = val;
@@ -417,8 +423,9 @@ function normalizeImport(records, { want = 'auto', source = '', sourceKind = 'te
       }
     }
     // 和示例同名：文字来源要原文里也找不到才算照抄；截图核对不了原文，示例里的名字又是编的，同名就标出来。
+    // 从流水识别的名字来自商户名（或只看到商户、金额的模型），和示例无关。
     const example = EXAMPLE_KEYS.has(normalizeName(n.fields.name));
-    if (sourceKind === 'text' ? example && !n.span && !mentions(source, n.fields.name) : example) {
+    if (sourceKind === 'text' ? example && !n.span && !mentions(source, n.fields.name) : sourceKind === 'image' && example) {
       n.badges.push('copied_example');
       n.checked = false;
     }
@@ -434,7 +441,7 @@ function normalizeImport(records, { want = 'auto', source = '', sourceKind = 'te
           n.badges.push('claim_unsure');
         }
       }
-    } else {
+    } else if (sourceKind === 'image') {
       // 截图：有值的关键字段都算推断（autoRenew 没写是 unknown，额度没写是空列表，都不算）。
       for (const [api, f] of Object.entries(IMAGE_KEY_FIELDS[n.t] || {})) {
         const val = n.fields[f];

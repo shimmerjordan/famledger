@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:famledger/ui/perk_import/import_node_form.dart';
 import 'package:famledger/ui/perk_import/perk_import_draft.dart';
 import 'package:famledger/ui/perk_import/perk_import_providers.dart';
 import 'package:flutter/material.dart';
@@ -12,7 +13,8 @@ import 'perks_fake.dart';
 
 // AI 导入的预览页（spec §6「预览」、§8「预览页用 fixture 草稿做 widget 测试」）：树形 + 实物一节、徽章、筛选、勾选联动、
 // 宽屏左树右表单与原文依据高亮、导入被拦住的两类情况、失败留在原地并标到节点、回应丢了再点不重复、结果页。
-// 映射视图和批量操作在 perk_import_batch_test.dart。
+// 从流水的草稿：依据块叫「来自这些扣费」、「直接生成」的不说 token 和「AI 推断」、扣费特征一行跟着差异的勾选走，
+// 三种宽度 × 1.5 倍字号不溢出。映射视图和批量操作在 perk_import_batch_test.dart。
 
 AssetsBackend previewBackend() => AssetsBackend(
   perks: PerksFake(platforms: [platformJson('tb'), platformJson('yk', name: '优酷', sort: 1)]),
@@ -417,6 +419,88 @@ void main() {
     await settle(tester);
     expect(find.byKey(const ValueKey('import-truncated')), findsOneWidget);
   });
+
+  testWidgets('从流水的草稿：依据块写来自哪几笔扣费，表单里写出扣费特征；更新已有的卡时「扣费特征」差异默认勾着、提交带上', (tester) async {
+    final backend = AssetsBackend(perks: PerksFake(platforms: [platformJson('tv-platform', name: '腾讯视频')]));
+    backend.perks.memberships['old-tv'] = membershipJson('old-tv', platformId: 'tv-platform', name: '腾讯视频', feeCents: 2500, feePeriod: 'month', expiresOn: '2026-09-01');
+    await openPreview(tester, backend, txUpdateDraft(), size: const Size(1400, 1400));
+    expect(find.text('顶上会写它来自哪几笔扣费'), findsOneWidget);
+    await tester.tap(tileOf('m1'));
+    await settle(tester);
+    expect(find.text('从流水里看到：$txEvidenceTv'), findsOneWidget);
+    expect(find.byKey(const ValueKey('evidence-missing')), findsNothing, reason: '流水来源没有「原文里没找到」这回事');
+    expect(find.textContaining('扣费特征：「腾讯视频」 · ¥24.00–¥36.00。'), findsOneWidget);
+    await tester.scrollUntilVisible(find.byKey(const ValueKey('node-diff-payPattern')), 200, scrollable: find.byType(Scrollable).last);
+    final diff = tester.widget<CheckboxListTile>(find.byKey(const ValueKey('node-diff-payPattern')));
+    expect([diff.value, (diff.title as Text).data, (diff.subtitle as Text).data], [true, '扣费特征', '空 → 「腾讯视频」 · ¥24.00–¥36.00']);
+    await tapVisible(tester, find.byKey(const ValueKey('perk-import-submit')));
+    final m = (backend.imports.applyBodies.single['memberships'] as List).first as Map<String, dynamic>;
+    expect([m['action'], m['targetId'], m['take']], ['update', 'old-tv', ['termStartOn', 'expiresOn', 'autoRenew', 'payPattern']]);
+    expect((m['fields'] as Map)['payPattern'], {'keywords': ['腾讯视频'], 'minCents': 2400, 'maxCents': 3600});
+  });
+
+  testWidgets('从流水「直接生成」的草稿：依据块叫「来自这些扣费」；返回时说重新生成不花 token；结果页不提「AI 推断」', (tester) async {
+    final backend = AssetsBackend(perks: PerksFake(platforms: [platformJson('tb')]));
+    await openPreview(tester, backend, txDraft());
+    expect(find.text('从流水生成了 平台 2 个、会员卡 2 张，勾了 4 项。'), findsOneWidget);
+    await tapVisible(tester, tileOf('m1'));
+    expect(tester.widget<Text>(find.byKey(const ValueKey('evidence-title'))).data, '来自这些扣费');
+    await tester.tap(find.text('好了'));
+    await settle(tester);
+    await tester.pageBack();
+    await settle(tester);
+    expect(find.text('生成的结果和刚才的修改都会丢掉，要再导得回去重新勾选、生成（不花 token）。'), findsOneWidget);
+    await tester.tap(find.text('接着核对'));
+    await settle(tester);
+    await tapVisible(tester, find.byKey(const ValueKey('perk-import-submit')));
+    final hint = tester.widget<Text>(find.byKey(const ValueKey('perk-import-undo-hint'))).data!;
+    expect(hint, isNot(contains('AI 推断')));
+    expect(hint, startsWith('导错了可以整批撤销'));
+  });
+
+  testWidgets('从流水「AI 整理名称」的草稿：返回时说重新整理要花 token、也能回去直接生成', (tester) async {
+    await openPreview(tester, AssetsBackend(perks: PerksFake(platforms: [platformJson('tb')])), txDraft()..['providerId'] = 'ai-1');
+    await tester.pageBack();
+    await settle(tester);
+    expect(find.text('整理出的结果和刚才的修改都会丢掉，要再导得重新整理（会再花一次 token），或者回去点「直接生成」。'), findsOneWidget);
+  });
+
+  testWidgets('更新已有的卡、原来设过不一样的扣费特征：差异默认不勾，表单写「这次不改」；勾上差异后改说会用新的', (tester) async {
+    final backend = AssetsBackend(perks: PerksFake(platforms: [platformJson('tv-platform', name: '腾讯视频')]));
+    backend.perks.memberships['old-tv'] = membershipJson('old-tv', platformId: 'tv-platform', name: '腾讯视频', feeCents: 2500, feePeriod: 'month', expiresOn: '2026-09-01');
+    final json = txUpdateDraft();
+    final m = (json['memberships'] as List).first as Map<String, dynamic>;
+    final diff = (m['diff'] as List).cast<Map<String, dynamic>>();
+    diff.last
+      ..['old'] = {'keywords': ['腾讯视频VIP'], 'minCents': 2800, 'maxCents': 3200}
+      ..['take'] = false;
+    await openPreview(tester, backend, json, size: const Size(1400, 1400));
+    await tester.tap(tileOf('m1'));
+    await settle(tester);
+    expect(tester.widget<Text>(find.byKey(const ValueKey('node-pay-pattern'))).data, startsWith('这次不改原来的扣费特征'));
+    await tester.scrollUntilVisible(find.byKey(const ValueKey('node-diff-payPattern')), 200, scrollable: find.byType(Scrollable).last);
+    await tester.tap(find.byKey(const ValueKey('node-diff-payPattern')));
+    await settle(tester);
+    expect(tester.widget<Text>(find.byKey(const ValueKey('node-pay-pattern'))).data, startsWith('扣费特征：「腾讯视频」'));
+  });
+
+  for (final size in kWidths) {
+    testWidgets('宽 ${size.width}、字号 1.5 倍：从流水的草稿 —— 列表、点开会员（依据块、扣费特征一行、扣费特征差异）都不溢出', (tester) async {
+      tester.platformDispatcher.textScaleFactorTestValue = 1.5;
+      addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+      final backend = AssetsBackend(perks: PerksFake(platforms: [platformJson('tv-platform', name: '腾讯视频')]));
+      backend.perks.memberships['old-tv'] = membershipJson('old-tv', platformId: 'tv-platform', name: '腾讯视频', feeCents: 2500, feePeriod: 'month', expiresOn: '2026-09-01');
+      await openPreview(tester, backend, txUpdateDraft(), size: size);
+      expect(tester.takeException(), isNull);
+      await tapVisible(tester, tileOf('m1'));
+      expect(find.byKey(const ValueKey('evidence-transactions')), findsOneWidget);
+      final form = find.descendant(of: find.byType(ImportNodeForm), matching: find.byType(Scrollable)).first;
+      await tester.scrollUntilVisible(find.byKey(const ValueKey('node-pay-pattern')), 200, scrollable: form);
+      expect(tester.takeException(), isNull);
+      await tester.scrollUntilVisible(find.byKey(const ValueKey('node-diff-payPattern')), 200, scrollable: form);
+      expect(tester.takeException(), isNull);
+    });
+  }
 
   for (final size in kWidths) {
     testWidgets('宽 ${size.width}：核对、改一项、结果三种状态都不溢出', (tester) async {

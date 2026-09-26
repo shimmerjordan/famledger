@@ -282,4 +282,72 @@ void main() {
     expect([back.diff.single.field, back.diff.single.take, back.diff.single.hasOld], ['expiresOn', false, true]);
     expect(back.txCandidates.single.amountCents, 899900);
   });
+
+  test('网址和从流水的识别：请求体各是 kind=url（正文 + 跳转后的地址）、kind=transactions（分组、月数、useAi；直接生成不带渠道）', () async {
+    final done = sseBody('event: done\ndata: {"importId":"imp-1","draft":{"importId":"imp-1"}}\n\n');
+    final rig = Rig({'POST $api/asset-import/extract': [done]});
+    final repo = repoOf(rig);
+    await repo.extractUrl(text: '88VIP 年费 88 元', sourceUrl: 'https://vip.example/88vip', want: ImportWant.virtual, providerId: 'p1').toList();
+    expect(rig.server.bodyOf('POST', '$api/asset-import/extract'), {
+      'kind': 'url', 'text': '88VIP 年费 88 元', 'sourceUrl': 'https://vip.example/88vip', 'want': 'virtual', 'providerId': 'p1',
+    });
+    await repo.extractTransactions(groups: ['g_a', 'g_b'], providerId: 'p1').toList();
+    expect(rig.server.bodyOf('POST', '$api/asset-import/extract'), {'kind': 'transactions', 'groups': ['g_a', 'g_b'], 'months': 13, 'useAi': false});
+    final events = await repo.extractTransactions(groups: ['g_a'], useAi: true, months: 6, providerId: 'p1').toList();
+    expect(rig.server.bodyOf('POST', '$api/asset-import/extract'), {'kind': 'transactions', 'groups': ['g_a'], 'months': 6, 'useAi': true, 'providerId': 'p1'});
+    expect((events.single as ImportDone).importId, 'imp-1');
+  });
+
+  test('候选分组：GET 带 months，读出默认勾选和已关联；抓网页：POST {url}，降级提示原样带回，被拦的错误原样抛；扣费特征的说法', () async {
+    final rig = Rig({
+      'GET $api/asset-import/candidates': [
+        {
+          'months': 13,
+          'total': 41,
+          'items': [
+            {
+              'key': 'g_tv', 'merchant': '腾讯视频', 'amountCents': 3000, 'minCents': 3000, 'maxCents': 3000, 'count': 7, 'period': 'month',
+              'periodSource': 'observed', 'firstOn': '2026-03-22', 'lastOn': '2026-09-18', 'nextOn': '2026-10-18', 'score': 7, 'checked': true, 'linked': null,
+            },
+            {
+              'key': 'g_jd', 'merchant': '京东PLUS', 'amountCents': 19800, 'minCents': 19800, 'maxCents': 19800, 'count': 2, 'period': 'year',
+              'firstOn': '2025-09-01', 'lastOn': '2026-09-01', 'score': 8, 'checked': false, 'linked': {'membershipId': 'm-jd', 'name': '京东PLUS'},
+            },
+            {
+              'key': 'g_ap', 'merchant': 'Apple Store', 'amountCents': 59900, 'minCents': 59900, 'maxCents': 59900, 'count': 1, 'period': 'year',
+              'firstOn': '2026-09-01', 'lastOn': '2026-09-01', 'score': 5, 'reasons': ['keyword', 'once', 'stale'], 'checked': false,
+              'linked': {'assetId': 'a-case', 'name': '保护壳'},
+            },
+          ],
+        },
+      ],
+      'POST $api/asset-import/fetch': [
+        {'url': 'https://vip.example/88', 'finalUrl': 'https://passport.vip.example/login', 'title': '登录', 'text': '请登录', 'chars': 3, 'truncated': false, 'hint': 'login', 'message': '这个页面要登录才能看到内容'},
+        apiError(400, 'url_blocked', '这个网址指向本机或内网地址，不能抓取', {'fakeIp': false}),
+      ],
+    });
+    final repo = repoOf(rig);
+    final c = await repo.candidates();
+    expect(rig.server.seen.single.url.queryParameters, {'months': '13'});
+    expect([c.months, c.total, c.items.length], [13, 41, 3]);
+    final tv = c.items.first;
+    expect([tv.key, tv.merchant, tv.amountCents, tv.count, tv.period, tv.periodSource, tv.lastOn, tv.nextOn, tv.checked, tv.linked], ['g_tv', '腾讯视频', 3000, 7, 'month', 'observed', '2026-09-18', '2026-10-18', true, false]);
+    final jd = c.items[1];
+    expect([jd.linked, jd.linkedId, jd.linkedName, jd.linkedAsset, jd.checked, jd.periodSource, jd.nextOn, jd.reasons], [true, 'm-jd', '京东PLUS', false, false, 'observed', null, <String>[]]);
+    final ap = c.items.last;
+    expect([ap.linked, ap.linkedId, ap.linkedName, ap.linkedAsset, ap.stale, ap.reasons], [true, 'a-case', '保护壳', true, true, ['keyword', 'once', 'stale']]);
+
+    final page = await repo.fetchPage('vip.example/88');
+    expect(rig.server.bodyOf('POST', '$api/asset-import/fetch'), {'url': 'vip.example/88'});
+    expect([page.finalUrl, page.title, page.text, page.hint, page.message, page.truncated], ['https://passport.vip.example/login', '登录', '请登录', 'login', '这个页面要登录才能看到内容', false]);
+    await expectLater(
+      repo.fetchPage('http://10.0.0.8/'),
+      throwsA(isA<ApiException>().having((e) => e.code, 'code', 'url_blocked').having((e) => e.message, 'message', contains('内网'))),
+    );
+    expect(estimateNamingTokens(2), 660);
+    expect(payPatternLabel(const PerkPayPattern(keywords: ['腾讯视频'], minCents: 2400, maxCents: 3600)), '「腾讯视频」 · ¥24.00–¥36.00');
+    expect(payPatternLabel(const PerkPayPattern(keywords: ['A', 'B'], maxCents: 1000)), '「A」「B」 · ¥10.00 以下');
+    expect(payPatternLabel(const PerkPayPattern(keywords: ['A'], minCents: 500)), '「A」 · ¥5.00 以上');
+    expect(payPatternLabel(const PerkPayPattern(keywords: ['A'])), '「A」');
+  });
 }

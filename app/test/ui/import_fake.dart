@@ -6,6 +6,7 @@ import 'assets_harness.dart';
 import 'perks_fake.dart';
 
 // AI 导入的假服务端（挂在 AssetsBackend 上）：`GET /ai/providers`、`POST /asset-import/extract`（SSE，回测试给的草稿）、
+// `GET /asset-import/candidates`（回 [candidates]）、`POST /asset-import/fetch`（回 [page] 或 [fetchError]）、
 // `POST /asset-import/apply`（照 server/src/lib/perk_import_apply.js 把平台 / 会员 / 权益 / 物品写进 PerksFake 和物品表，
 // 写完 /changes 就能拿到）、`POST /asset-import/:id/undo`（把那次 apply 新建的删掉、留墓碑；撤过的再来原样回上次的结果并标
 // replayed，照服务端）、`GET /asset-import/recent`（回 [recent]）。
@@ -53,6 +54,19 @@ class ImportFake {
   /// `GET /asset-import/recent` 回的 items（服务端的形状）；撤过的自动不再列。
   List<Map<String, dynamic>> recent = [];
 
+  /// `GET /asset-import/candidates` 回它（服务端的形状 {months, from, today, total, items}）；[candidatesError] 非空时回这个错误。
+  Map<String, dynamic> candidates = const {'months': 13, 'total': 0, 'items': <Object>[]};
+  (int, String, String)? candidatesError;
+
+  /// `POST /asset-import/fetch` 回它（{url, finalUrl, title, text, chars, truncated, hint, message}）；[fetchError] 非空时回错误
+  /// （[fetchErrorDetails] 是错误体的 details，比如被当成 fake-ip 拦下时的 {fakeIp: true}）。
+  Map<String, dynamic>? page;
+  (int, String, String)? fetchError;
+  Map<String, dynamic>? fetchErrorDetails;
+
+  /// 收到的抓取请求体。
+  final List<Map<String, dynamic>> fetchBodies = [];
+
   static const Set<String> resources = {'ai', 'asset-import'};
 
   http.Response handle(String method, List<String> seg, Map<String, dynamic> body, AssetsBackend backend) {
@@ -64,6 +78,16 @@ class ImportFake {
             if (!_undoReplies.containsKey(r['importId'])) r,
         ],
       });
+    }
+    if (method == 'GET' && seg.join('/') == 'asset-import/candidates') {
+      final failure = candidatesError;
+      return failure == null ? PerksFake.ok(candidates) : PerksFake.error(failure.$1, failure.$2, failure.$3);
+    }
+    if (method == 'POST' && seg.join('/') == 'asset-import/fetch') {
+      fetchBodies.add(body);
+      final failure = fetchError;
+      if (failure != null) return PerksFake.error(failure.$1, failure.$2, failure.$3, fetchErrorDetails);
+      return PerksFake.ok(page ?? const {'url': '', 'finalUrl': '', 'title': '', 'text': '', 'chars': 0, 'truncated': false});
     }
     if (method == 'POST' && seg.join('/') == 'asset-import/extract') return _extract(body);
     if (method == 'POST' && seg.join('/') == 'asset-import/apply') return _apply(body, backend);

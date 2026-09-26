@@ -69,6 +69,16 @@ services:
       #   · 同时在跑的上游**流**最多几条（月报/对话是 SSE 长连接）。超了 503 ai_busy，
       #     名额在请求结束时归还，客户端半路跑了也照还。
       AI_MAX_STREAMS: "${AI_MAX_STREAMS:-4}"
+      #   · AI 智能导入每人每小时最多几次识别（每次都花 token；「从流水 → 直接生成」不调 AI、不算次数）。
+      AI_IMPORT_PER_HOUR: "${AI_IMPORT_PER_HOUR:-20}"
+      # 网址导入：服务端替你抓网页，所以只抓公网地址（本机、内网、fake-ip 段 198.18.0.0/15 一律拦下）。
+      #   · 每人每分钟最多抓几次。
+      URL_FETCH_PER_MIN: "${URL_FETCH_PER_MIN:-10}"
+      #   · 服务端所在的网络用了 Clash 这类 fake-ip 代理（域名都解析成 198.18.x.x）时设 1，否则抓网页会被当成内网拦下。
+      #     代价：开了之后服务端没法核实真实目标地址（解析到内网的域名也拦不住），只在信得过全家成员时打开；
+      #     开了之后只有管理员能用网址导入，IP 直写、单段主机名、.lan / .local 这类内网后缀照样不抓。
+      #     环境变量只在启动时读，改了要 docker compose up -d 重启才生效。
+      URL_FETCH_ALLOW_FAKEIP: "${URL_FETCH_ALLOW_FAKEIP:-}"
       # 服务以哪个用户运行，数据目录的属主也会改成它。默认是镜像自带的 node（1000:1000）。
       # PUID: "${PUID:-1000}"
       # PGID: "${PGID:-1000}"

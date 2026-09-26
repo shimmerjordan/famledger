@@ -15,8 +15,11 @@ final recentImportsProvider = FutureProvider.autoDispose<List<RecentImport>>(
   (ref) => ref.watch(assetImportRepoProvider).recent(),
 );
 
+/// 导入来源的叫法（服务端 ai_imports.source_kind）；不认识的按粘贴。
+const Map<String, String> _sourceLabels = {'text': '粘贴', 'image': '截图', 'url': '网址', 'transactions': '流水'};
+
 /// 「最近的 AI 导入」（`/assets/import/recent`，会员权益 tab 和物品 tab 的溢出菜单进来）：spec §1「7 天内可以整批撤销」
-/// 的入口 —— 离开导入结果页之后也撤得了。一次导入一段：什么时候、截图还是粘贴、新建和更新了什么、还能撤几天
+/// 的入口 —— 离开导入结果页之后也撤得了。一次导入一段：什么时候、从哪导的（粘贴 / 截图 / 网址 / 流水）、新建和更新了什么、还能撤几天
 /// （管理员看到家里人的，写明是谁导的）；「撤销这次导入」确认后原地换成撤了什么、哪些没动（和结果页同一套，import_undo.dart）。
 class RecentImportsPage extends ConsumerStatefulWidget {
   const RecentImportsPage({super.key});
@@ -122,7 +125,7 @@ class _RecentImportsPageState extends ConsumerState<RecentImportsPage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            '${_when(item.appliedAt)} · ${item.sourceKind == 'image' ? '截图' : '粘贴'}导入',
+            '${_when(item.appliedAt)} · ${_sourceLabels[item.sourceKind] ?? '粘贴'}导入',
             style: theme.textTheme.titleMedium,
           ),
           const SizedBox(height: 4),

@@ -23,6 +23,7 @@
 //         确认过的支出、还没被别的物品关联过；唯一一笔就默认关联，多笔只列不选。
 //   差异的默认勾选：原来为空、新值有 → 勾；到期日（会员 expiresOn、权益 validUntil）不同 → 新的更晚才勾（结果就是取更晚的）；
 //         limits 取并集（并集比原来多才勾）；费用、额度、名称等不同 → 不勾，只展示。新值为空的字段永不拿来清空旧值。
+//         扣费特征（payPattern，只有从流水识别的草稿带）同样：原来没设 → 勾；设过、不一样 → 只展示。
 
 const { normalizeName, addDays, asList } = require('./perks_schema');
 
@@ -177,6 +178,17 @@ function sameBenefit(rows, name, parentId = null) {
   return hits.find((x) => !x.archived) || hits[0] || null;
 }
 
+/** 库里的扣费特征（JSON 文本）→ 对象；没设、坏的回 null。 */
+function payPatternOfRow(raw) {
+  if (!raw) return null;
+  try {
+    const p = JSON.parse(raw);
+    return p && typeof p === 'object' && !Array.isArray(p) ? p : null;
+  } catch {
+    return null;
+  }
+}
+
 /** 库里那张卡现在的值（API 字段名，和差异同一套字段 + 名称）。 */
 function membershipCurrent(r) {
   return { name: r.name, ...Object.fromEntries(MEMBERSHIP_DIFF.map((f) => [f, r[col(f)] ?? null])) };
@@ -192,7 +204,9 @@ function benefitCurrent(r) {
 
 /** 会员和库里那张的逐字段差异；那张归档了就多一项「恢复」。 */
 function membershipDiff(r, fields) {
-  const diff = diffOf(MEMBERSHIP_DIFF.map((f) => [f, r[col(f)], fields[f]]), { expiry: ['expiresOn'] });
+  const pairs = MEMBERSHIP_DIFF.map((f) => [f, r[col(f)], fields[f]]);
+  pairs.push(['payPattern', payPatternOfRow(r.pay_pattern), fields.payPattern]);
+  const diff = diffOf(pairs, { expiry: ['expiresOn'] });
   if (r.archived) diff.push(RESTORE());
   return diff;
 }

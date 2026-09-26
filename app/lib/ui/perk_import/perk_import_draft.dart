@@ -101,6 +101,7 @@ class PerkImportDraft extends ChangeNotifier {
     this.continueFailed = false,
     this.notices = const [],
     this.sourceKind = 'text',
+    this.usedAi = true,
     this.sourceText = '',
     this.imageCount = 0,
     this.images = const [],
@@ -139,6 +140,8 @@ class PerkImportDraft extends ChangeNotifier {
       continueFailed: jsonBool(json['continueFailed']),
       notices: jsonStringList(json['notices']),
       sourceKind: jsonString(source['kind'], 'text'),
+      // 粘贴、截图、网址一定问过模型；从流水看 done 草稿带的渠道：「直接生成」没有渠道（providerId 是 null）。
+      usedAi: jsonString(source['kind'], 'text') != 'transactions' || jsonStringOrNull(json['providerId']) != null,
       sourceText: jsonString(source['text']),
       imageCount: jsonInt(source['count']),
       images: images,
@@ -163,6 +166,7 @@ class PerkImportDraft extends ChangeNotifier {
       continueFailed: jsonBool(json['continueFailed']),
       notices: jsonStringList(json['notices']),
       sourceKind: jsonString(source['kind'], 'text'),
+      usedAi: jsonBool(json['usedAi'], true),
       sourceText: jsonString(source['text']),
       imageCount: jsonInt(source['count']),
       imageLabels: jsonStringList(source['labels']),
@@ -187,9 +191,10 @@ class PerkImportDraft extends ChangeNotifier {
     'continued': continued,
     'continueFailed': continueFailed,
     'notices': notices,
+    'usedAi': usedAi,
     'source': {
       'kind': sourceKind,
-      if (sourceKind == 'text' && withSource) 'text': sourceText,
+      if (hasSourceText && withSource) 'text': sourceText,
       if (sourceKind == 'image') 'count': imageCount,
       if (sourceKind == 'image' && imageLabels.isNotEmpty) 'labels': imageLabels,
     },
@@ -218,10 +223,13 @@ class PerkImportDraft extends ChangeNotifier {
   final bool continueFailed;
   final List<String> notices;
 
-  /// 这批的来源：text（粘贴）| image（截图）。
+  /// 这批的来源：text（粘贴）| image（截图）| url（网址，正文和粘贴一样核对依据）| transactions（从流水识别）。
   final String sourceKind;
 
-  /// 发给模型的原文（打过码、可能挑过段落）：依据的 span 是它的下标。截图来源是空的。
+  /// 这批问过模型（花了 token）。只有「从流水 → 直接生成」是假：界面上别说「重新识别要花 token」「AI 推断」这些。
+  final bool usedAi;
+
+  /// 发给模型的原文（打过码、可能挑过段落）：依据的 span 是它的下标。截图、流水来源是空的。
   final String sourceText;
 
   /// （截图来源）发了几块；[images] 是那几块本身（只在内存里：从本机恢复的草稿没有）。
@@ -232,6 +240,12 @@ class PerkImportDraft extends ChangeNotifier {
   final List<String> imageLabels;
 
   bool get fromImages => sourceKind == 'image';
+
+  /// 从流水识别：依据是「商户 ¥30.00 × 7 次（…）」这句，不是原文里的一段。
+  bool get fromTransactions => sourceKind == 'transactions';
+
+  /// 有原文可以高亮（粘贴、网址）。
+  bool get hasSourceText => sourceKind == 'text' || sourceKind == 'url';
 
   /// 节点 [n] 出自的那块截图（块号从 1 开始）；没有、或者恢复的草稿没带图，回 null。
   Uint8List? imageOf(ImportNode n) {

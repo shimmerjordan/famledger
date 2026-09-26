@@ -12,6 +12,8 @@
 //     items        action create | skip；另带 linkTransactionId（只关联已有流水，不另记账；金额要和价格一样）或
 //                  recordTransaction（同时记一笔支出）
 //     update 只写 take[] 里列的字段（'archived' = 把归档的那行恢复）；limits 取「库里现在的 ∪ 这次的」。
+//     会员的 fields.payPattern（从流水识别的草稿带）按 perks.payPatternOf 规整后写进 pay_pattern；新建的卡另可带
+//     fields.lastChargeTxId（最近一次扣费那笔）：存活、确认过的支出、没挂在别的卡或物品上才写，不对就不挂（只是记号，不挡导入）。
 //     edited 是预览里人工改过的字段：create 被重新比对转成 update 时，这些字段和默认勾选的差异一起写。
 //
 // 服务端重新校验（字段表和规则都用 lib/perks_schema.js，和 CRUD 同一套）、重新比对（lib/perk_import_match.js 同一套口径），
@@ -26,7 +28,7 @@
 // 任意一条出错就整体回滚，400 import_invalid，details.errors = [{key, field, message}] —— 一次把所有错都报回去，
 // App 标到对应节点上。上限（只数不是 skip 的）：平台 50、会员 50、权益 200、物品 50。
 //
-// 新建和更新的行都写 origin {src, importId, ev, unverified}（src = 'ai_' + 这批识别的来源：ai_text / ai_image）；ai_imports 那行改成 applied，undo 里记下
+// 新建和更新的行都写 origin {src, importId, ev, unverified}（src = 'ai_' + 这批识别的来源：ai_text / ai_image / ai_url / ai_transactions）；ai_imports 那行改成 applied，undo 里记下
 // P5 撤销要用的东西：{created:[{table,id}], updated:[{table,id,seq,before}], aliases:[{platformId,alias}], transactions:[id]}。
 
 const crypto = require('node:crypto');
@@ -50,7 +52,7 @@ const RECORD_KEYS = ['accountId', 'fundId', 'categoryId', 'memberId'];
 const MAX_AMOUNT = 1e14;
 /** 错误码里的 API 字段名 → 草稿里的字段名（App 按它标到表单的那一栏）。 */
 const FIELD_BACK = { platformId: 'platform', membershipId: 'membership', parentId: 'parent', claimPlatformId: 'claimPlatform' };
-const MEMBERSHIP_TAKE = ['name', 'tier', 'kind', 'feeCents', 'feePeriod', 'termStartOn', 'expiresOn', 'autoRenew', 'isTrial', 'archived'];
+const MEMBERSHIP_TAKE = ['name', 'tier', 'kind', 'feeCents', 'feePeriod', 'termStartOn', 'expiresOn', 'autoRenew', 'isTrial', 'payPattern', 'archived'];
 const BENEFIT_TAKE = ['name', 'kind', 'claimPlatform', 'claimHow', 'claimUrl', 'flow', 'quota', 'anchor', 'validFrom', 'validUntil', 'faceValueCents', 'limits', 'archived'];
 const PLATFORM_MATCH = ['exact', 'alias', 'maybe', 'none'];
 
@@ -254,7 +256,11 @@ function applyImport({ db, ctx, body, reqCtx, importRow, clientId }) {
     if (!take || take.includes('termStartOn')) cols.term_start_on = termStartOn;
     if (!take || take.includes('expiresOn')) cols.expires_on = expiresOn;
     if (take && take.includes('archived')) cols.archived = 0; // 恢复：材料说明它还在用，不恢复的话本期看不到
+    // 扣费特征：给了就规整后写（更新时只在勾了的时候写）；空的永不拿来清掉原来的。
+    if (given('payPattern') && !v.isMissing(f.payPattern)) cols.pay_pattern = JSON.stringify(perks.payPatternOf(f.payPattern));
     if (!take) {
+      const charge = chargeOf(f.lastChargeTxId);
+      if (charge) cols.last_charge_tx_id = charge;
       cols.origin = JSON.stringify(originFor(item));
       cols.sort_order = nextSort('memberships');
       ids.set(item.key, insert('memberships', cols));
@@ -265,6 +271,18 @@ function applyImport({ db, ctx, body, reqCtx, importRow, clientId }) {
     // 真改了才算「更新了」：同一段材料再导一次时全是没有差异的 update，结果页不该写「更新：会员卡 1 张」。
     if (update('memberships', row, cols)) updated.memberships++;
     ids.set(item.key, row.id);
+  }
+
+  /**
+   * 新建的卡的「上次扣费」：存活、确认过的支出，还没挂在别的存活会员上、也不是哪件存活物品的购买流水（和 P6 charge_hints
+   * 的「已关联」同一个口径）才算；不对回 null（不挂，也不报错）。
+   */
+  function chargeOf(raw) {
+    if (typeof raw !== 'string' || !raw || raw.length > 64) return null;
+    const tx = db.get("SELECT 1 AS ok FROM transactions WHERE id = ? AND deleted_at IS NULL AND type = 'expense' AND status = 'confirmed'", raw);
+    const taken = db.get('SELECT 1 AS ok FROM memberships WHERE last_charge_tx_id = ? AND deleted_at IS NULL', raw) ||
+      db.get('SELECT 1 AS ok FROM assets WHERE transaction_id = ? AND deleted_at IS NULL', raw);
+    return tx && !taken ? raw : null;
   }
 
   /** 更新的行：原来的 origin 保留，src / importId / ev 换成这次的，unverified 并上这次勾的字段里推断的那些。 */

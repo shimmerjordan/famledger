@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:famledger/data/models/models.dart';
 import 'package:famledger/ui/perk_import/perk_import_draft.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -414,5 +416,25 @@ void main() {
     expect(i.link, ItemLink.link, reason: '差 3 天还算');
     o.setField('i1', 'purchasedOn', '2026-09-25');
     expect(i.link, ItemLink.none, reason: '差 4 天对不上了');
+  });
+
+  test('来源：网址的草稿和粘贴一样带原文存本机（恢复后还能高亮）；流水的草稿不带原文，扣费特征、上次扣费照样发给服务端', () {
+    final url = PerkImportDraft.fromJson({...vip88Draft(), 'source': {'kind': 'url', 'text': vip88Source, 'url': 'https://vip.example/88vip'}}, clientId: 'c1');
+    expect([url.hasSourceText, url.fromImages, url.fromTransactions], [true, false, false]);
+    final back = PerkImportDraft.restore(jsonDecode(jsonEncode(url.toJson())) as Map<String, dynamic>);
+    expect([back.sourceKind, back.sourceText, back.hasSourceText], ['url', vip88Source, true]);
+
+    final tx = PerkImportDraft.fromJson(txDraft(), clientId: 'c2');
+    expect([tx.fromTransactions, tx.hasSourceText, tx.sourceText], [true, false, '']);
+    final saved = jsonDecode(jsonEncode(tx.toJson())) as Map<String, dynamic>;
+    expect(saved['source'], {'kind': 'transactions'});
+    final txBack = PerkImportDraft.restore(saved);
+    expect([txBack.fromTransactions, tx.usedAi, txBack.usedAi], [true, false, false], reason: '「直接生成」没有渠道，恢复后也记得没问过模型');
+    expect([url.usedAi, back.usedAi], [true, true]);
+    expect(PerkImportDraft.restore({...saved}..remove('usedAi')).usedAi, isTrue, reason: '老草稿没这个键：按问过模型说（多提醒一句 token 不出错）');
+    final m = itemOf(txBack.toApplyBody(), 'memberships', 'm1');
+    expect([m['action'], (m['fields'] as Map)['payPattern'], (m['fields'] as Map)['lastChargeTxId']], [
+      'create', {'keywords': ['腾讯视频'], 'minCents': 2400, 'maxCents': 3600}, 'tx-g_tv',
+    ]);
   });
 }

@@ -45,6 +45,12 @@ services:
       # 以及同时在跑的上游流条数。超了分别是 429 rate_limited / 503 ai_busy。
       AI_PER_MIN: "${AI_PER_MIN:-30}"
       AI_MAX_STREAMS: "${AI_MAX_STREAMS:-4}"
+      # AI 导入每人每小时次数；网址导入每人每分钟抓几次、是否放开 fake-ip 段（Clash 等 fake-ip 代理下设 1）。
+      # 放开 fake-ip 的代价：开了之后服务端没法核实真实目标地址，只在信得过全家成员时打开，且只有管理员能用网址导入；
+      # 改了要 docker compose up -d 重启才生效（详见 docker-compose.yml 里的说明）。
+      AI_IMPORT_PER_HOUR: "${AI_IMPORT_PER_HOUR:-20}"
+      URL_FETCH_PER_MIN: "${URL_FETCH_PER_MIN:-10}"
+      URL_FETCH_ALLOW_FAKEIP: "${URL_FETCH_ALLOW_FAKEIP:-}"
       LOG_LEVEL: "${LOG_LEVEL:-info}"
       # CORS_ORIGINS: "${CORS_ORIGINS:-}"
 

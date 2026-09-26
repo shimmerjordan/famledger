@@ -281,3 +281,112 @@ Map<String, dynamic> orderImageDraft({String importId = 'imp-shot', String txId 
     ..['unverified'] = ['priceCents', 'purchasedOn'];
   return json;
 }
+
+const String txEvidenceTv = '腾讯视频 ¥30.00 × 7 次（2026-03-22 至 2026-09-18）';
+
+/// 从流水「直接生成」的草稿（服务端 kind=transactions 回的形状）：两个平台、两张卡，卡带扣费特征和上次扣费那笔。
+Map<String, dynamic> txDraft({String importId = 'imp-tx'}) => {
+  'importId': importId,
+  'want': 'virtual',
+  'truncated': false,
+  'continued': false,
+  'continueFailed': false,
+  'salvaged': false,
+  'notices': <String>[],
+  'source': {'kind': 'transactions', 'groups': 2},
+  'platforms': [
+    importNode('p1', 'platform', {'name': '腾讯视频', 'kind': 'other'}, ev: txEvidenceTv, conf: 0.95),
+    importNode('p2', 'platform', {'name': '88VIP', 'kind': 'other'}, ev: '88VIP ¥88.00 × 1 次（2026-08-14）', conf: 0.8),
+  ],
+  'memberships': [
+    importNode('m1', 'membership', {
+      'platform': 'key:p1', 'name': '腾讯视频', 'tier': null, 'kind': 'subscription', 'feeCents': 3000, 'feePeriod': 'month',
+      'termStartOn': '2026-09-18', 'expiresOn': '2026-10-18', 'autoRenew': 'yes', 'isTrial': false,
+      'payPattern': {'keywords': ['腾讯视频'], 'minCents': 2400, 'maxCents': 3600}, 'lastChargeTxId': 'tx-g_tv',
+    }, ev: txEvidenceTv, conf: 0.95),
+    importNode('m2', 'membership', {
+      'platform': 'key:p2', 'name': '88VIP', 'tier': null, 'kind': 'subscription', 'feeCents': 8800, 'feePeriod': 'year',
+      'termStartOn': '2026-08-14', 'expiresOn': '2027-08-14', 'autoRenew': 'unknown', 'isTrial': false,
+      'payPattern': {'keywords': ['88VIP'], 'minCents': 7040, 'maxCents': 10560}, 'lastChargeTxId': 'tx-g_vip',
+    }, ev: '88VIP ¥88.00 × 1 次（2026-08-14）', conf: 0.8),
+  ],
+  'benefits': <Object>[],
+  'items': <Object>[],
+};
+
+/// 库里已经有一张没设扣费特征的「腾讯视频」（old-tv，到期 2026-09-01）：这次转成更新，扣费特征、到期日默认勾，费用不同不勾。
+Map<String, dynamic> txUpdateDraft() {
+  final json = txDraft();
+  final p = (json['platforms'] as List).first as Map<String, dynamic>;
+  p
+    ..['action'] = 'merge'
+    ..['targetId'] = 'tv-platform'
+    ..['match'] = {'kind': 'exact', 'id': 'tv-platform', 'name': '腾讯视频'};
+  final m = (json['memberships'] as List).first as Map<String, dynamic>;
+  final fields = m['fields'] as Map<String, dynamic>;
+  m
+    ..['action'] = 'update'
+    ..['targetId'] = 'old-tv'
+    ..['match'] = {'kind': 'update', 'id': 'old-tv', 'name': '腾讯视频'}
+    ..['current'] = membershipCurrentOf(fields, {'feeCents': 2500, 'expiresOn': '2026-09-01', 'termStartOn': null, 'autoRenew': 'unknown'})
+    ..['diff'] = [
+      {'field': 'feeCents', 'old': 2500, 'new': 3000, 'take': false},
+      {'field': 'termStartOn', 'old': null, 'new': '2026-09-18', 'take': true},
+      {'field': 'expiresOn', 'old': '2026-09-01', 'new': '2026-10-18', 'take': true},
+      {'field': 'autoRenew', 'old': 'unknown', 'new': 'yes', 'take': true},
+      {'field': 'payPattern', 'old': null, 'new': fields['payPattern'], 'take': true},
+    ];
+  return json;
+}
+
+/// 从流水识别的候选（服务端 GET /asset-import/candidates 的形状，照 server/test/asset_import_transactions.test.js 的验收流水）：
+/// 腾讯视频 28–30 × 7（默认勾）、88VIP 88 × 1（默认勾）、爱奇艺停了的（分数低、不勾）、京东PLUS 已经有卡在管（不勾）、
+/// Apple Store 那笔是买东西的（关联着物品、不勾）、WPS 只扣过一次又没写年费（把握不大、不勾）。一共认出 8 组，只列前 6 组。
+Map<String, dynamic> candidatesJson() => {
+  'months': 13,
+  'from': '2025-08-23',
+  'today': '2026-09-23',
+  'total': 8,
+  'items': [
+    _candidate('g_tv', '腾讯视频', 3000, minCents: 2800, count: 7, period: 'month', firstOn: '2026-03-22', lastOn: '2026-09-18', nextOn: '2026-10-18', score: 7, checked: true),
+    _candidate('g_vip', '88VIP', 8800, count: 1, period: 'year', periodSource: 'keyword', firstOn: '2026-08-14', lastOn: '2026-08-14', nextOn: '2027-08-14', score: 5, checked: true),
+    _candidate('g_iq', '爱奇艺', 2500, count: 4, period: 'month', firstOn: '2025-12-02', lastOn: '2026-03-02', nextOn: '2026-04-02', score: 3, checked: false, reasons: ['period', 'count', 'stale']),
+    _candidate('g_jd', '京东PLUS', 19800, count: 2, period: 'year', firstOn: '2025-09-01', lastOn: '2026-09-01', nextOn: '2027-09-01', score: 8, checked: false, linked: {'membershipId': 'm-jd', 'name': '京东PLUS'}),
+    _candidate('g_ap', 'Apple Store', 59900, count: 1, period: 'year', periodSource: 'guess', firstOn: '2026-09-01', lastOn: '2026-09-01', nextOn: '2027-09-01', score: 5, checked: false, reasons: ['keyword', 'round', 'active', 'once'], linked: {'assetId': 'a-case', 'name': 'iPhone 16 Plus 保护壳'}),
+    _candidate('g_wps', 'WPS会员', 9900, count: 1, period: 'year', periodSource: 'guess', firstOn: '2026-07-01', lastOn: '2026-07-01', nextOn: '2027-07-01', score: 5, checked: false, reasons: ['keyword', 'round', 'active', 'once']),
+  ],
+};
+
+Map<String, dynamic> _candidate(
+  String key,
+  String merchant,
+  int cents, {
+  int? minCents,
+  List<String> reasons = const [],
+  required int count,
+  required String period,
+  String periodSource = 'observed',
+  required String firstOn,
+  required String lastOn,
+  required String nextOn,
+  required int score,
+  required bool checked,
+  Map<String, dynamic>? linked,
+}) => {
+  'key': key,
+  'merchant': merchant,
+  'amountCents': cents,
+  'minCents': minCents ?? cents,
+  'maxCents': cents,
+  'count': count,
+  'period': period,
+  'periodSource': periodSource,
+  'firstOn': firstOn,
+  'lastOn': lastOn,
+  'nextOn': nextOn,
+  'score': score,
+  'reasons': reasons,
+  'checked': checked,
+  'linked': linked,
+  'lastTransactionId': 'tx-$key',
+};
