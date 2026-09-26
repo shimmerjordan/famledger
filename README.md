@@ -62,7 +62,7 @@ docker compose -f deploy/docker-compose.yml up -d
 
 ## 手机 App
 
-- **Android**：装 [Release](https://github.com/shimmerjordan/famledger/releases/latest) 里的 APK，服务器地址填 `http://<内网 IP>:48090`（Tailscale 地址也行）。然后到「我的 → 自动记账」开通知使用权；MIUI 还要打开自启动，省电策略设成「无限制」。
+- **Android**：装 [Release](https://github.com/shimmerjordan/famledger/releases/latest) 里的 APK，服务器地址填 `http://<内网 IP>:48090`（Tailscale 地址也行）。然后到「我的 → 自动记账」开通知使用权；MIUI 还要打开自启动，省电策略设成「无限制」，否则手机重启后自动记账和会员提醒都会停，直到打开一次家账。MIUI 可能把会员提醒折进「不重要通知」，在通知设置里把家账设成重要即可。
 - 通知栏里点「修改…」可以直接打字，按空格分段：`宠物 35 给猫买粮` 表示基金改成宠物、金额改成 35、备注写「给猫买粮」。
 - 装了短信转发器、MacroDroid 之类的通知转发 App，它们可能把结果通知吞掉，不过流水照样会记上。把 `com.famledger.app` 加进它们的排除名单就好。
 - **iOS**：系统不让读别的 App 的通知。首次构建的 Xcode 步骤见 [`docs/ios.md`](docs/ios.md)（iOS 原生代码还没编译验证过）。
