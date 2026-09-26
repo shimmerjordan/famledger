@@ -7,6 +7,7 @@ import '../capture/pipeline.dart' show CaptureOutcome;
 import '../platform/capture_providers.dart';
 import '../platform/perk_reminders.dart';
 import '../platform/share_import.dart';
+import '../ui/widgets/widgets.dart';
 import 'router.dart';
 
 /// 外壳挂上时，把两条「没人拉一下就不会活」的平台接线接通：
@@ -71,7 +72,8 @@ class _StartupWiringState extends ConsumerState<StartupWiring> with WidgetsBindi
   void _showOutcome(CaptureOutcome outcome) {
     if (!mounted) return;
     final captureId = outcome.captureId;
-    ScaffoldMessenger.of(context).showSnackBar(
+    showActionSnackBar(
+      ScaffoldMessenger.of(context),
       SnackBar(
         content: Text(outcome.title),
         action: captureId == null

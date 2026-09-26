@@ -1,6 +1,7 @@
 /// 通用组件出口：`import 'package:famledger/ui/widgets/widgets.dart';`
 library;
 
+export 'action_snack_bar.dart';
 export 'async_value_view.dart';
 export 'category_icon.dart';
 export 'constrained_bottom_bar.dart';

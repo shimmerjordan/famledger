@@ -85,8 +85,8 @@ Future<BenefitEvent?> checkInPerk(
 
   final platformId = kind == 'skip' ? null : derivedPlatformFor(data, benefit, parent: parent);
   final what = kind == 'skip' ? '本期跳过：${benefit.name}' : '${perkActionLabel(kind)}：${benefit.name}${count > 1 ? ' ×$count' : ''}';
-  messenger.hideCurrentSnackBar();
-  messenger.showSnackBar(
+  showActionSnackBar(
+    messenger,
     SnackBar(
       content: platformId == null || router == null
           ? Text(what)
@@ -362,8 +362,8 @@ Future<void> renewNow(BuildContext context, WidgetRef ref, Membership m, {Charge
   }
   retry.forget(retryKey);
   // 年付的续一期就跨年了：写全日期。
-  messenger.hideCurrentSnackBar();
-  messenger.showSnackBar(
+  showActionSnackBar(
+    messenger,
     SnackBar(
       content: Text(next.expiresOn == null ? '已续费：${m.title}' : '已续到 ${next.expiresOn}：${m.title}'),
       action: SnackBarAction(
@@ -403,8 +403,8 @@ Future<void> stopMembership(BuildContext context, WidgetRef ref, Membership m) a
     busy.done(busyKey);
   }
   final renewable = renewPeriodMonths.containsKey(m.feePeriod);
-  messenger.hideCurrentSnackBar();
-  messenger.showSnackBar(
+  showActionSnackBar(
+    messenger,
     SnackBar(
       content: Text(renewable ? '已停：「${m.title}」收进已归档' : '已归档：「${m.title}」'),
       action: SnackBarAction(
@@ -432,8 +432,8 @@ Future<void> deleteCheckIn(BuildContext context, WidgetRef ref, BenefitEvent e) 
     _showError(messenger, describeError(error));
     return;
   }
-  messenger.hideCurrentSnackBar();
-  messenger.showSnackBar(
+  showActionSnackBar(
+    messenger,
     SnackBar(
       content: const Text('已删掉这条打卡'),
       action: SnackBarAction(
