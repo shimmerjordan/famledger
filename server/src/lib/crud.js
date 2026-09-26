@@ -79,6 +79,31 @@ function coerce(spec, raw, name) {
   }
 }
 
+/**
+ * Validate `body` against a `fields` map into `{column: value}` — the per-field half of makeCrud's own
+ * validation, exported for code that writes rows outside a CRUD route but must follow the same rules
+ * (the AI import apply, lib/perk_import_apply.js). With `isPatch`, absent fields are skipped; otherwise a
+ * missing field gets its default (or a 400 when required).
+ */
+function coerceFields(fields, body, isPatch = false) {
+  const out = {};
+  for (const [name, spec] of Object.entries(fields)) {
+    const col = spec.column || snake(name);
+    const raw = body[name];
+    if (raw === undefined || raw === null) {
+      if (isPatch && raw === undefined) continue;
+      if (spec.required) v.bad(name, `${name} 不能为空`);
+      // An explicit null clears a nullable column, but a column with a
+      // default (and NOT NULL behind it) falls back to that default.
+      out[col] = defaultFor(spec);
+      continue;
+    }
+    const value = coerce(spec, raw, name);
+    out[col] = value === null && spec.default !== undefined ? defaultFor(spec) : value;
+  }
+  return out;
+}
+
 function makeCrud(opts) {
   const {
     db,
@@ -116,21 +141,7 @@ function makeCrud(opts) {
 
   /** Validate a body into `{column: value}`. Absent fields are skipped on PATCH. */
   function columnsFrom(body, isPatch, row) {
-    const out = {};
-    for (const [name, spec] of Object.entries(fields)) {
-      const col = spec.column || snake(name);
-      const raw = body[name];
-      if (raw === undefined || raw === null) {
-        if (isPatch && raw === undefined) continue;
-        if (spec.required) v.bad(name, `${name} 不能为空`);
-        // An explicit null clears a nullable column, but a column with a
-        // default (and NOT NULL behind it) falls back to that default.
-        out[col] = defaultFor(spec);
-        continue;
-      }
-      const value = coerce(spec, raw, name);
-      out[col] = value === null && spec.default !== undefined ? defaultFor(spec) : value;
-    }
+    const out = coerceFields(fields, body, isPatch);
     if (archived) {
       if (body.archived !== undefined) out.archived = v.bool(body.archived, 'archived') ? 1 : 0;
       else if (!isPatch) out.archived = 0;
@@ -240,4 +251,4 @@ function makeCrud(opts) {
   return { routes, toJson, byId, mustExist };
 }
 
-module.exports = { makeCrud };
+module.exports = { makeCrud, coerceFields };

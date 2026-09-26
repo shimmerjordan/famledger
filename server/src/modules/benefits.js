@@ -12,8 +12,6 @@ const { makeCrud } = require('../lib/crud');
 const v = require('../lib/validate');
 const perks = require('../lib/perks_schema');
 
-const MAX_AMOUNT = 1e14;
-
 module.exports = (ctx) => {
   const { db } = ctx;
 
@@ -51,25 +49,8 @@ module.exports = (ctx) => {
     singular: 'benefit',
     label: '权益',
     idempotency: 'benefit.create',
-    fields: {
-      membershipId: { type: 'id', required: true },
-      parentId: { type: 'id' },
-      name: { type: 'string', required: true, max: 60 },
-      kind: { type: 'enum', values: perks.BENEFIT_KINDS, default: 'other' },
-      claimPlatformId: { type: 'id' },
-      claimHow: { type: 'string', max: 200 },
-      claimUrl: { type: 'string', max: 500 },
-      flow: { type: 'enum', values: perks.FLOWS, default: 'claim' },
-      // quota / limits / origin 的真正校验在 fromBody（lib/perks_schema.js），这里声明成 json 只为 toJson 还原。
-      quota: { type: 'json', default: '[]' },
-      anchor: { type: 'enum', values: perks.ANCHORS, default: 'calendar' },
-      faceValueCents: { type: 'int', min: 0, max: MAX_AMOUNT },
-      myValueCents: { type: 'int', min: 0, max: MAX_AMOUNT },
-      limits: { type: 'json', default: '[]' },
-      remind: { type: 'bool', default: true },
-      origin: { type: 'json', default: '{}' },
-      note: { type: 'string', max: 500 },
-    },
+    // 字段表和 AI 导入共用（lib/perks_schema.js）；quota / limits / origin 的真正校验在下面 fromBody。
+    fields: perks.BENEFIT_FIELDS,
 
     /** 引用、父子规则、日期先后，比的是「旧行 + 本次改动」合并后的样子。 */
     fromBody(body, isPatch, row) {
@@ -99,6 +80,11 @@ module.exports = (ctx) => {
       if (given('quota')) out.quota = JSON.stringify(perks.quotaOf(body.quota ?? []));
       if (given('limits')) out.limits = JSON.stringify(perks.limitsOf(body.limits ?? []));
       if (given('origin')) out.origin = JSON.stringify(v.isMissing(body.origin) ? {} : perks.originOf(body.origin));
+      else if (isPatch) {
+        // 改过的字段算确认过，「AI 推断」小点跟着消失。
+        const pruned = perks.pruneUnverified(body, row);
+        if (pruned) out.origin = pruned;
+      }
 
       // 权益自身的有效窗口，允许未来日期；止不早于起。
       const validFrom = given('validFrom') ? v.optDay(body.validFrom, 'validFrom', { future: true }) : (row ? row.valid_from : null);

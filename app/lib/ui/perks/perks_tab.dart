@@ -9,6 +9,7 @@ import '../../data/models/models.dart';
 import '../../data/repos/ledger_repo.dart';
 import '../assets/asset_providers.dart';
 import '../assets/asset_widgets.dart';
+import '../perk_import/perk_import_providers.dart';
 import '../widgets/widgets.dart';
 import 'membership_detail_page.dart';
 import 'perk_progress.dart';
@@ -95,10 +96,17 @@ class _PerksTabState extends ConsumerState<PerksTab> {
                 const SizedBox(height: 40),
                 EmptyState(
                   title: '还没记会员卡',
-                  message: '88VIP、京东 PLUS、信用卡……记下它有哪些权益、要去哪个平台领。',
+                  message: '88VIP、京东 PLUS、信用卡……把权益说明粘进来，AI 帮你拆成卡和权益、记下要去哪个平台领。',
                   icon: Icons.card_membership_outlined,
-                  actionLabel: '记一张',
-                  onAction: () => context.push('/assets/memberships/new'),
+                  actionLabel: '智能导入',
+                  onAction: () => context.push(perkImportLocation(want: ImportWant.virtual)),
+                ),
+                Center(
+                  child: TextButton(
+                    key: const ValueKey('perks-empty-manual'),
+                    onPressed: () => context.push('/assets/memberships/new'),
+                    child: const Text('手动记一张'),
+                  ),
                 ),
               ],
             );

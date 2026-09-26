@@ -46,10 +46,11 @@ AssetsBackend perksBackend() => AssetsBackend(
 
 void main() {
   group('会员权益 tab', () {
-    testWidgets('?tab=perks 直接打开；一张卡都没有时是空态，点「记一张」去表单', (tester) async {
+    testWidgets('?tab=perks 直接打开；一张卡都没有时是空态，点「手动记一张」去表单（主按钮是智能导入）', (tester) async {
       await pumpAssetsAt(tester, bootAssets(AssetsBackend()), '/assets?tab=perks');
       expect(find.text('还没记会员卡'), findsOneWidget);
-      await tapVisible(tester, find.text('记一张'));
+      expect(find.text('智能导入'), findsOneWidget);
+      await tapVisible(tester, find.byKey(const ValueKey('perks-empty-manual')));
       expect(find.text('记一张会员卡'), findsOneWidget);
     });
 
@@ -93,9 +94,12 @@ void main() {
       expect(find.byType(MembershipDetailPage), findsOneWidget, reason: '点一行打开那张卡');
     });
 
-    testWidgets('AppBar：这个 tab 的「+」是记会员卡，溢出菜单里有「平台管理」', (tester) async {
+    testWidgets('AppBar：这个 tab 的「+」先问智能导入还是手动记一张，溢出菜单里有「平台管理」', (tester) async {
       await pumpAssetsAt(tester, bootAssets(perksBackend(), store: allViewStore()), '/assets?tab=perks');
       await tester.tap(find.byTooltip('记一张会员卡'));
+      await settle(tester);
+      expect(find.byKey(const ValueKey('perks-add-ai')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('perks-add-manual')));
       await settle(tester);
       expect(find.text('记一张会员卡'), findsOneWidget);
       await tester.pageBack();

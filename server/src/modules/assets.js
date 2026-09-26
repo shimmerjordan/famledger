@@ -5,12 +5,15 @@
 // 最多挂着一笔还算数的卖出收入。新建和卖出都收 clientId 做幂等（lib/idempotency.js）：
 // 回应丢了 App 重发，不能多出一件物品、多记一笔支出。
 // 估值字段（方式、年折率、残值、手动锚点、计入净资产三态）这里只校验，估值本身在 lib/valuation.js 现算。
+// origin 是 AI 导入写的来源标记（和会员、权益同一个形状，lib/perks_schema.js originOf）；PATCH 改过的字段从
+// origin.unverified 里拿掉（「AI 推断」小点跟着消失）。
 
 const { HttpError, sendJson } = require('../lib/router');
 const { makeCrud } = require('../lib/crud');
 const idem = require('../lib/idempotency');
 const v = require('../lib/validate');
 const valuation = require('../lib/valuation');
+const perks = require('../lib/perks_schema');
 
 // 类别名单就是估值默认表的键（顺序也是）：加类别在 lib/valuation.js 加一行，
 // App 那边同改 asset.dart、asset_widgets.dart 的图标和 asset_valuation.dart 的默认表。
@@ -86,6 +89,8 @@ module.exports = (ctx) => {
       residualBp: { type: 'int', min: 0, max: 10000 },
       manualValueCents: { type: 'int', min: 0, max: MAX_AMOUNT },
       netWorth: { type: 'enum', values: valuation.NET_WORTH, default: 'auto' },
+      // 真正的校验在 fromBody（originOf），这里声明成 json 只为 toJson 还原成对象。
+      origin: { type: 'json', default: '{}' },
     },
 
     /** 字段已各自校验过；这里只管跨字段的规则，比的是「旧行 + 本次改动」合并后的结果。 */
@@ -142,6 +147,11 @@ module.exports = (ctx) => {
       out.manual_value_on = anchorOn;
 
       if (!blank('memberId') && !memberAlive(String(body.memberId).trim())) v.bad('memberId', '成员不存在');
+      if (given('origin')) out.origin = JSON.stringify(v.isMissing(body.origin) ? {} : perks.originOf(body.origin));
+      else if (isPatch) {
+        const pruned = perks.pruneUnverified(body, row);
+        if (pruned) out.origin = pruned;
+      }
       return out;
     },
 

@@ -27,6 +27,60 @@ const EVENT_KINDS = ['claim', 'use', 'skip'];
 /** 能续费的周期各是几个月；once / none 不在表里 = 不能续（renew 回 409 not_renewable）。 */
 const PERIOD_MONTHS = { month: 1, quarter: 3, year: 12 };
 
+const MAX_AMOUNT = 1e14;
+
+// 三个 makeCrud 模块的字段表（lib/crud.js 的 fields 形状）。CRUD（modules/platforms.js、memberships.js、benefits.js）
+// 和 AI 导入的 apply（lib/perk_import_apply.js）用同一份，字段的类型、长度、取值范围只写在这里。
+// 类型写成 json 的（aliases / quota / limits / origin）真正的校验在各自的 fromBody / apply 里（aliasesOf、quotaOf…），
+// 这里声明成 json 只为 toJson 还原成数组或对象。
+
+const PLATFORM_FIELDS = Object.freeze({
+  name: { type: 'string', required: true, max: 40 },
+  aliases: { type: 'json', default: '[]' },
+  kind: { type: 'enum', values: PLATFORM_KINDS, default: 'other' },
+  icon: { type: 'string', max: 40 },
+  color: { type: 'color' },
+  url: { type: 'string', max: 500 },
+  note: { type: 'string', max: 500 },
+});
+
+const MEMBERSHIP_FIELDS = Object.freeze({
+  platformId: { type: 'id', required: true },
+  sourceBenefitId: { type: 'id' },
+  name: { type: 'string', required: true, max: 60 },
+  tier: { type: 'string', max: 30 },
+  kind: { type: 'enum', values: MEMBERSHIP_KINDS, default: 'membership' },
+  memberId: { type: 'id' },
+  accountId: { type: 'id' },
+  feeCents: { type: 'int', min: 0, max: MAX_AMOUNT },
+  feePeriod: { type: 'enum', values: FEE_PERIODS, default: 'year' },
+  termPaidCents: { type: 'int', min: 0, max: MAX_AMOUNT },
+  autoRenew: { type: 'enum', values: AUTO_RENEW, default: 'unknown' },
+  isTrial: { type: 'bool', default: false },
+  remindDays: { type: 'int', min: 0, max: 365 },
+  origin: { type: 'json', default: '{}' },
+  note: { type: 'string', max: 1000 },
+});
+
+const BENEFIT_FIELDS = Object.freeze({
+  membershipId: { type: 'id', required: true },
+  parentId: { type: 'id' },
+  name: { type: 'string', required: true, max: 60 },
+  kind: { type: 'enum', values: BENEFIT_KINDS, default: 'other' },
+  claimPlatformId: { type: 'id' },
+  claimHow: { type: 'string', max: 200 },
+  claimUrl: { type: 'string', max: 500 },
+  flow: { type: 'enum', values: FLOWS, default: 'claim' },
+  quota: { type: 'json', default: '[]' },
+  anchor: { type: 'enum', values: ANCHORS, default: 'calendar' },
+  faceValueCents: { type: 'int', min: 0, max: MAX_AMOUNT },
+  myValueCents: { type: 'int', min: 0, max: MAX_AMOUNT },
+  limits: { type: 'json', default: '[]' },
+  remind: { type: 'bool', default: true },
+  origin: { type: 'json', default: '{}' },
+  note: { type: 'string', max: 500 },
+});
+
 const MAX_ALIASES = 20;
 const MAX_QUOTA = 3;
 const MAX_LIMITS = 12;
@@ -106,6 +160,43 @@ function originOf(raw, field = 'origin') {
     out.unverified = v.list(raw.unverified, field, { max: 30 }).map((f) => v.str(f, field, { max: 40 }));
   }
   return out;
+}
+
+const snakeOf = (s) => s.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+
+/**
+ * 「AI 推断」小点（spec §5）：PATCH 里改了值的字段算人工确认过，从 origin.unverified 里拿掉。
+ * 比的是「这次给的值」和「行里原来的值」—— 表单编辑时整张表单都会带上，没改的字段不算确认。
+ * 会员、权益、物品三个模块在 PATCH 没带 origin 时调它。
+ *
+ *   body  这次 PATCH 的请求体（camelCase；空串当 null）
+ *   row   改之前的行（snake_case；JSON 列是字符串）
+ *
+ * 返回新的 origin JSON 字符串；没有要拿掉的回 null（调用方就不写这一列）。
+ */
+function pruneUnverified(body, row) {
+  let origin;
+  try {
+    origin = JSON.parse((row && row.origin) || '{}');
+  } catch {
+    return null;
+  }
+  if (!v.isObject(origin) || !Array.isArray(origin.unverified) || origin.unverified.length === 0) return null;
+  const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+  const kept = origin.unverified.filter((field) => {
+    if (typeof field !== 'string' || body[field] === undefined) return true;
+    let old = row[snakeOf(field)];
+    if (typeof old === 'string' && /^[[{]/.test(old)) {
+      try {
+        old = JSON.parse(old);
+      } catch {
+        /* 不是 JSON 就按字符串比 */
+      }
+    }
+    return same(body[field] === '' ? null : body[field], old);
+  });
+  if (kept.length === origin.unverified.length) return null;
+  return JSON.stringify({ ...origin, unverified: kept });
 }
 
 /** 可选链接：只收 http/https，≤500 字；空串 = 清掉。 */
@@ -253,6 +344,9 @@ module.exports = {
   LIMIT_TYPES,
   EVENT_KINDS,
   PERIOD_MONTHS,
+  PLATFORM_FIELDS,
+  MEMBERSHIP_FIELDS,
+  BENEFIT_FIELDS,
   MAX_ALIASES,
   MAX_SOURCE_DEPTH,
   normalizeName,
@@ -260,6 +354,7 @@ module.exports = {
   quotaOf,
   limitsOf,
   originOf,
+  pruneUnverified,
   httpUrl,
   dateOrder,
   addDays,

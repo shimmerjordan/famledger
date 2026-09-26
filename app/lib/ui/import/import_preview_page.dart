@@ -245,33 +245,14 @@ class _ImportPreviewPageState extends ConsumerState<ImportPreviewPage> {
     });
   }
 
-  Future<void> _onPopBlocked() async {
-    if (_stage == _Stage.submitting) return;
+  /// 返回键先交给页面：提交中不让走，多选中先退出多选；都不是才问「不导了？」。
+  bool _onPopBlocked() {
+    if (_stage == _Stage.submitting) return true;
     if (_selecting) {
       _stopSelecting();
-      return;
+      return true;
     }
-    final leave = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('不导了？'),
-        content: const Text('刚才改的类别和勾选都会丢掉。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('接着核对'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('不导了'),
-          ),
-        ],
-      ),
-    );
-    if (leave == true && mounted) {
-      _touched = false;
-      Navigator.of(context).pop();
-    }
+    return false;
   }
 
   @override
@@ -279,15 +260,18 @@ class _ImportPreviewPageState extends ConsumerState<ImportPreviewPage> {
     final ledger = ref.watch(ledgerProvider).valueOrNull ?? const LedgerData();
     return ListenableBuilder(
       listenable: _draft,
-      builder: (context, _) => PopScope(
+      builder: (context, _) => DiscardGuard(
         canPop: switch (_stage) {
           _Stage.submitting => false,
           _Stage.done => true,
           _Stage.review => !_selecting && !_touched,
         },
-        onPopInvokedWithResult: (didPop, _) {
-          if (!didPop) _onPopBlocked();
-        },
+        title: '不导了？',
+        message: '刚才改的类别和勾选都会丢掉。',
+        stayLabel: '接着核对',
+        leaveLabel: '不导了',
+        onBlocked: _onPopBlocked,
+        onDiscard: () => _touched = false,
         child: Scaffold(
           appBar: _appBar(),
           body: switch (_stage) {
@@ -358,11 +342,12 @@ class _ImportPreviewPageState extends ConsumerState<ImportPreviewPage> {
                     if (f == _Filter.all || f == _filter || _countOf(f) > 0)
                       Padding(
                         padding: const EdgeInsets.only(right: 8),
-                        child: ChoiceChip(
+                        child: CountFilterChip(
                           key: ValueKey('import-filter-${f.name}'),
-                          label: Text('${_filterLabel(f)} ${_countOf(f)}'),
+                          label: _filterLabel(f),
+                          count: _countOf(f),
                           selected: _filter == f,
-                          onSelected: (_) => _setFilter(f),
+                          onSelected: () => _setFilter(f),
                         ),
                       ),
                 ],
@@ -446,7 +431,8 @@ class _ImportPreviewPageState extends ConsumerState<ImportPreviewPage> {
       child: Text(n > 0 ? '导入 $n 笔' : '一笔都没勾'),
     );
     final error = _submitError;
-    return _BottomBar(
+    return ConstrainedBottomBar(
+      maxWidth: _maxWidth,
       child: LayoutBuilder(
         builder: (context, c) => Column(
           mainAxisSize: MainAxisSize.min,
@@ -479,7 +465,8 @@ class _ImportPreviewPageState extends ConsumerState<ImportPreviewPage> {
 
   Widget _selectionBar(LedgerData ledger) {
     final any = _selected.isNotEmpty;
-    return _BottomBar(
+    return ConstrainedBottomBar(
+      maxWidth: _maxWidth,
       child: Row(
         children: [
           _BarAction(
@@ -537,43 +524,6 @@ class _Constrained extends StatelessWidget {
       child: child,
     ),
   );
-}
-
-class _BottomBar extends StatelessWidget {
-  const _BottomBar({required this.child});
-
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final pad = importPagePad(MediaQuery.sizeOf(context).width);
-    // 颜色给 Material 而不是 DecoratedBox：底栏按钮的水波纹画在 Material 上，被盖住就看不见了。
-    return Material(
-      color: LedgerColors.of(context).surface2,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          border: Border(
-            top: BorderSide(color: theme.colorScheme.outlineVariant),
-          ),
-        ),
-        child: SafeArea(
-          top: false,
-          child: Align(
-            alignment: Alignment.topCenter,
-            heightFactor: 1,
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: _maxWidth),
-              child: Padding(
-                padding: EdgeInsets.fromLTRB(pad, 8, pad, 12),
-                child: child,
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
 }
 
 class _BarAction extends StatelessWidget {

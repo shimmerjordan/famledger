@@ -25,6 +25,7 @@ class AiRepo {
     required String apiKey,
     required String model,
     bool isDefault = false,
+    Map<String, dynamic>? extra,
   }) async {
     final res = await _api.post('/ai/providers', {
       'name': name,
@@ -33,11 +34,13 @@ class AiRepo {
       'apiKey': apiKey,
       'model': model,
       'isDefault': isDefault,
+      'extra': ?extra,
     });
     return AiProvider.fromJson(jsonMap(res['provider'] ?? res));
   }
 
-  /// [apiKey] 留空 = 不改密钥（服务端同样把空串当作不改）。
+  /// [apiKey] 留空 = 不改密钥（服务端同样把空串当作不改）。[extra] 给了就整个替换（requestExtras / importMaxTokens，
+  /// 以及 P5 的 vision 等别的键 —— 调用方先拿原来的 extra 合并好再传）。
   Future<AiProvider> update(
     String id, {
     String? name,
@@ -47,6 +50,7 @@ class AiRepo {
     String? model,
     bool? isDefault,
     bool? enabled,
+    Map<String, dynamic>? extra,
   }) async {
     final body = <String, dynamic>{};
     putIfNotNull(body, 'name', name);
@@ -55,6 +59,7 @@ class AiRepo {
     putIfNotNull(body, 'model', model);
     putIfNotNull(body, 'isDefault', isDefault);
     putIfNotNull(body, 'enabled', enabled);
+    putIfNotNull(body, 'extra', extra);
     if (apiKey != null && apiKey.isNotEmpty) body['apiKey'] = apiKey;
     final res = await _api.patch('/ai/providers/$id', body);
     return AiProvider.fromJson(jsonMap(res['provider'] ?? res));

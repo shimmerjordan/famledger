@@ -45,14 +45,6 @@ class BenefitFormPage extends ConsumerStatefulWidget {
 }
 
 class _BenefitFormPageState extends ConsumerState<BenefitFormPage> {
-  static const Map<QuotaPreset, String> _presetLabels = {
-    QuotaPreset.monthly: '每月 N 次',
-    QuotaPreset.yearly: '每年 N 次',
-    QuotaPreset.termOnce: '会籍期内 1 次',
-    QuotaPreset.once: '一次性',
-    QuotaPreset.unlimited: '不限次',
-  };
-
   static const Map<String, String> _flowHints = {
     Benefit.flowClaim: '会员年卡、券这类：领到手就算用掉一次。',
     Benefit.flowUse: '贵宾厅、体检这类：真用了才算一次。',
@@ -402,7 +394,7 @@ class _BenefitFormPageState extends ConsumerState<BenefitFormPage> {
                   ],
                 ),
               ),
-              _QuotaFields(editor: _quota, anchor: _anchor, onAnchor: (v) => setState(() => _anchor = v)),
+              QuotaFields(editor: _quota, anchor: _anchor, onAnchor: (v) => setState(() => _anchor = v)),
             ],
             PickerField(
               label: '有效期（选填）',
@@ -533,8 +525,17 @@ class _BenefitFormPageState extends ConsumerState<BenefitFormPage> {
 }
 
 /// 「额度」：五个预设 chip（每月 / 每年要填次数），「高级」里叠加上限、选起算点。
-class _QuotaFields extends StatelessWidget {
-  const _QuotaFields({required this.editor, required this.anchor, required this.onAnchor});
+/// 权益表单和 AI 导入预览里改权益（ui/perk_import/import_node_form.dart）共用。
+class QuotaFields extends StatelessWidget {
+  const QuotaFields({super.key, required this.editor, required this.anchor, required this.onAnchor});
+
+  static const Map<QuotaPreset, String> presetLabels = {
+    QuotaPreset.monthly: '每月 N 次',
+    QuotaPreset.yearly: '每年 N 次',
+    QuotaPreset.termOnce: '会籍期内 1 次',
+    QuotaPreset.once: '一次性',
+    QuotaPreset.unlimited: '不限次',
+  };
 
   final QuotaEditor editor;
   final String anchor;
@@ -560,7 +561,7 @@ class _QuotaFields extends StatelessWidget {
                   spacing: 8,
                   runSpacing: 8,
                   children: [
-                    for (final e in _BenefitFormPageState._presetLabels.entries)
+                    for (final e in presetLabels.entries)
                       ChoiceChip(
                         key: ValueKey('quota-preset-${e.key.name}'),
                         selected: preset == e.key,

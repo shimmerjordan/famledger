@@ -11,6 +11,8 @@ import '../../data/models/models.dart';
 import '../../data/repos/ledger_repo.dart';
 import '../assets/asset_providers.dart';
 import '../assets/asset_widgets.dart';
+import '../perk_import/ai_inferred_dot.dart';
+import '../perk_import/perk_import_providers.dart';
 import '../widgets/widgets.dart';
 import 'perk_actions.dart';
 import 'perk_progress.dart';
@@ -18,8 +20,8 @@ import 'perk_providers.dart';
 import 'perk_widgets.dart';
 
 /// 会员详情（`/assets/memberships/:id`）：头部信息、本期回本（回本条、潜在额度）、权益列表（「去优酷领」、限制条件、
-/// 有效期、面值、领取链接、本期进度）、收起来的「已归档」权益、打卡记录（可删、能撤销）、加权益、续了一期、编辑、归档、删除。
-/// 「AI 补充权益」在 P4。
+/// 有效期、面值、领取链接、本期进度）、收起来的「已归档」权益、「AI 补充权益」（粘贴说明，识别出的都归到这张卡）、
+/// 打卡记录（可删、能撤销）、加权益、续了一期、编辑、归档、删除。字段旁的「AI 推断」小点点一下能确认或去改。
 class MembershipDetailPage extends ConsumerWidget {
   const MembershipDetailPage(this.id, {super.key});
 
@@ -258,6 +260,19 @@ class _MembershipDetailViewState extends ConsumerState<MembershipDetailView> {
                 ),
               ),
           ],
+          if (!m.archived)
+            Padding(
+              padding: const EdgeInsets.only(left: 8),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  key: const ValueKey('membership-ai-import'),
+                  onPressed: () => context.push(perkImportLocation(membershipId: m.id)),
+                  icon: const Icon(Icons.auto_awesome_outlined, size: 18),
+                  label: const Text('AI 补充权益（归到这张卡）'),
+                ),
+              ),
+            ),
           if (archivedTree.isNotEmpty)
             ExpansionTile(
               key: const ValueKey('benefits-archived'),
@@ -417,15 +432,34 @@ class _MembershipDetailViewState extends ConsumerState<MembershipDetailView> {
       0 => '不提醒',
       final d => '提前 $d 天',
     };
+    /// 值后面跟一个「AI 推断」小点（这几个字段里有还没确认的时候）。
+    Widget withDot(Widget value, List<String> fields) {
+      final pending = inferredOf(m.origin, fields);
+      if (pending.isEmpty) return value;
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Flexible(child: value),
+          AiInferredDot(
+            key: ValueKey('ai-dot-${pending.first}'),
+            fields: pending,
+            origin: m.origin,
+            onConfirm: (ref, origin) => ref.read(perksRepoProvider).updateMembership(m.id, {'origin': origin}),
+            onEdit: () => context.push('/assets/memberships/${m.id}/edit'),
+          ),
+        ],
+      );
+    }
+
     return [
       InfoRow('持有人', InfoText(holderLabel(data, m))),
-      InfoRow('到期', InfoText(expiryLabel(m, now))),
-      if (term != null) InfoRow('本期', InfoText(term)),
+      InfoRow('到期', withDot(InfoText(expiryLabel(m, now)), const ['expiresOn'])),
+      if (term != null) InfoRow('本期', withDot(InfoText(term), const ['termStartOn'])),
       if (running) InfoRow('下一期', InfoText(span(m.termStartOn, m.expiresOn)!), key: const ValueKey('membership-next-term')),
-      if (fee != null) InfoRow('续费价', PerkMoneyText(fee)),
+      if (fee != null) InfoRow('续费价', withDot(PerkMoneyText(fee), const ['feeCents', 'feePeriod'])),
       if (m.termPaidCents != null)
         InfoRow('本期实付', PerkMoneyText(m.termPaidCents == 0 ? '免费' : Money.format(m.termPaidCents!))),
-      InfoRow('续费', InfoText(Membership.autoRenewLabels[m.autoRenew] ?? '不确定')),
+      InfoRow('续费', withDot(InfoText(Membership.autoRenewLabels[m.autoRenew] ?? '不确定'), const ['autoRenew'])),
       if (m.isTrial) const InfoRow('试用', InfoText('试用中')),
       InfoRow('到期提醒', InfoText(remind)),
       if (m.kind == 'credit_card' && m.accountId != null)

@@ -292,6 +292,34 @@ void main() {
       expect(bodies[3], {'enabled': false});
     });
 
+    test('extra：新建和编辑都带上（requestExtras / importMaxTokens）；不给就不发', () async {
+      final bodies = <Map<String, dynamic>>[];
+      final repo = AiRepo(
+        ApiClient(
+          baseUrl: 'https://x.dev',
+          inner: MockClient((request) async {
+            bodies.add(jsonDecode(request.body) as Map<String, dynamic>);
+            return jsonResponse({
+              'provider': {'id': 'p1', 'name': '硅基流动'},
+            });
+          }),
+        ),
+      );
+      await repo.create(
+        name: '硅基流动',
+        kind: 'openai',
+        baseUrl: 'https://api.siliconflow.cn/v1',
+        apiKey: 'sk-abc',
+        model: 'Qwen/Qwen3-32B',
+        extra: {'requestExtras': {'enable_thinking': false}},
+      );
+      await repo.update('p1', extra: {'importMaxTokens': 8000});
+      await repo.update('p1', name: '只改名');
+      expect(bodies[0]['extra'], {'requestExtras': {'enable_thinking': false}});
+      expect(bodies[1], {'extra': {'importMaxTokens': 8000}});
+      expect(bodies[2].containsKey('extra'), isFalse);
+    });
+
     test('测试渠道返回延迟与样例', () async {
       late Uri url;
       final repo = AiRepo(

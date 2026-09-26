@@ -34,8 +34,8 @@ void main() {
     final backend = AssetsBackend();
     await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=perks', size: const Size(400, 2400));
 
-    // 1. 空态 → 记一张：就地新建平台「淘宝」，名字 88VIP，续费价 88/年。
-    await tapVisible(tester, find.text('记一张'));
+    // 1. 空态 → 手动记一张（主按钮是 P4 的智能导入）：就地新建平台「淘宝」，名字 88VIP，续费价 88/年。
+    await tapVisible(tester, find.byKey(const ValueKey('perks-empty-manual')));
     await tapVisible(tester, find.byKey(const ValueKey('membership-platform')));
     await tester.enterText(find.byKey(const ValueKey('platform-search')), '淘宝');
     await tester.pump();

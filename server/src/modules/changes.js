@@ -26,7 +26,7 @@ const SYNCED = [
   ['transactions', { json: ['tags'] }],
   ['budgets', {}],
   ['rules', { bools: ['enabled'] }],
-  ['assets', { bools: ['archived'] }],
+  ['assets', { bools: ['archived'], json: ['origin'] }],
   ['holdings', { bools: ['archived'] }],
   ['platforms', { bools: ['archived'], json: ['aliases'] }],
   ['memberships', { bools: ['archived', 'is_trial'], json: ['pay_pattern', 'origin'] }],

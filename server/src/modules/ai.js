@@ -23,6 +23,9 @@
 //     公网 IP 后面，按 IP 限流会互相挤掉。超了 429 rate_limited。
 //   · 同时在跑的上游**流**最多 AI_MAX_STREAMS 条（默认 4），超了 503 ai_busy。
 //     名额在 finally 里还，客户端半路跑了也照还。
+//
+// 这几样挂在 ctx.ai 上给别的模块用（AI 导入，modules/asset_import.js）：
+//   ctx.ai = { pickProvider(id, {needVision}), takeToken(reqCtx), toUse(row), friendly(e, apiKey), withStreamSlot(fn) }
 
 const crypto = require('node:crypto');
 
@@ -100,7 +103,7 @@ module.exports = (ctx) => {
     return { ...json, hasKey, keyTail };
   }
 
-  /** 行 → 适配器要的 provider（apiKey 已解密）。 */
+  /** 行 → 适配器要的 provider（apiKey 已解密；extra 解析成对象，requestExtras / importMaxTokens / vision 都在里面）。 */
   function toUse(row) {
     let apiKey = '';
     if (row.api_key_enc) {
@@ -110,24 +113,41 @@ module.exports = (ctx) => {
         log.warn('ai', `渠道 ${row.id} 的密钥解不开（secret.key 换过？）：${e.message}`);
       }
     }
-    return { id: row.id, kind: row.kind, baseUrl: row.base_url, model: row.model, apiKey };
+    let extra = {};
+    try {
+      const parsed = JSON.parse(row.extra || '{}');
+      if (v.isObject(parsed)) extra = parsed;
+    } catch {
+      /* 坏的 extra 当没有：不能因为它让渠道整个用不了 */
+    }
+    return { id: row.id, kind: row.kind, baseUrl: row.base_url, model: row.model, apiKey, extra };
   }
 
   const byId = (id) => db.get(`SELECT ${COLUMNS} FROM ai_providers WHERE id = ?`, id);
 
-  /** 明确指定 > 默认且启用 > 第一个启用的。一个都没有就是 400，不是 500。 */
-  function pickProvider(providerId) {
+  const extraOf = (row) => toUse(row).extra;
+
+  /**
+   * 明确指定 > 默认且启用 > 第一个启用的。一个都没有就是 400，不是 500。
+   * `needVision`（截图导入，P5）：跳过测出来看不了图的渠道（extra.vision === false）；指定的那个看不了图 → 400。
+   */
+  function pickProvider(providerId, { needVision = false } = {}) {
     if (providerId !== undefined && providerId !== null && providerId !== '') {
       const id = v.str(providerId, 'providerId', { max: 64 });
       const row = byId(id);
       if (!row) throw new HttpError(404, 'not_found', 'AI 渠道不存在');
       if (!row.enabled) throw new HttpError(400, 'provider_disabled', '这个 AI 渠道已停用');
+      if (needVision && !providers.visionOk(extraOf(row))) {
+        throw new HttpError(400, 'provider_no_vision', '这个 AI 渠道看不了图片，换一个支持看图的渠道');
+      }
       return row;
     }
-    const row =
-      db.get(`SELECT ${COLUMNS} FROM ai_providers WHERE is_default = 1 AND enabled = 1 LIMIT 1`) ||
-      db.get(`SELECT ${COLUMNS} FROM ai_providers WHERE enabled = 1 ORDER BY created_at, id LIMIT 1`);
-    if (!row) throw new HttpError(400, 'no_provider', '还没有可用的 AI 渠道，请先在「设置 → AI 渠道」里添加一个');
+    const rows = db.all(`SELECT ${COLUMNS} FROM ai_providers WHERE enabled = 1 ORDER BY is_default DESC, created_at, id`);
+    const row = rows.find((r) => !needVision || providers.visionOk(extraOf(r)));
+    if (!row) {
+      if (needVision && rows.length) throw new HttpError(400, 'provider_no_vision', '现有的 AI 渠道都看不了图片，先加一个支持看图的渠道');
+      throw new HttpError(400, 'no_provider', '还没有可用的 AI 渠道，请先在「设置 → AI 渠道」里添加一个');
+    }
     return row;
   }
 
@@ -135,6 +155,7 @@ module.exports = (ctx) => {
   function friendly(e, apiKey) {
     let msg;
     if (e instanceof providers.UpstreamError) msg = e.message;
+    else if (e && e.name === 'IdleTimeoutError') msg = e.message;
     else if (e && e.name === 'TimeoutError') msg = `上游 ${Math.round(providers.TIMEOUT_MS / 1000)} 秒没有响应`;
     else if (e && e.name === 'AbortError') msg = '请求已取消';
     else msg = (e && e.message ? String(e.message) : '未知错误').slice(0, 300);
@@ -167,6 +188,7 @@ module.exports = (ctx) => {
     else if (!patch) cols.enabled = 1;
     if (b.extra !== undefined) {
       if (!v.isObject(b.extra)) v.bad('extra', 'extra 必须是对象');
+      readExtra(b.extra);
       const s = JSON.stringify(b.extra);
       if (s.length > 4000) v.bad('extra', 'extra 太大了');
       cols.extra = s;
@@ -186,6 +208,24 @@ module.exports = (ctx) => {
       v.bad('apiKey', '这个地址需要 API 密钥；只有本机服务（如 Ollama）可以留空');
     }
     return cols;
+  }
+
+  /**
+   * extra 里认得的几个键先校验：requestExtras 只收白名单里的参数（spec §4），importMaxTokens 是导入单次输出上限的
+   * 渠道覆盖（256–64000）。别的键（P5 的 vision 等）原样存。
+   */
+  function readExtra(extra) {
+    const rx = extra.requestExtras;
+    if (rx !== undefined && rx !== null) {
+      if (!v.isObject(rx)) v.bad('extra', 'requestExtras 必须是对象');
+      const unknown = Object.keys(rx).filter((k) => !providers.REQUEST_EXTRA_KEYS.includes(k));
+      if (unknown.length) {
+        v.bad('extra', `不支持的附加参数：${unknown.join('、')}（可用：${providers.REQUEST_EXTRA_KEYS.join('、')}）`);
+      }
+    }
+    if (extra.importMaxTokens !== undefined && extra.importMaxTokens !== null) {
+      v.int(extra.importMaxTokens, 'extra', { min: 256, max: 64000 });
+    }
   }
 
   /** 同时只能有一个默认渠道。 */
@@ -284,17 +324,28 @@ module.exports = (ctx) => {
   // ------------------------------------------------------------------ 流
 
   /**
-   * 把一次上游流式对话转成自家 SSE。HttpError 必须在进这里之前抛完 —— 头一旦发出去
-   * 就只能用 error 事件报错了。
-   * @param {(out:{text:string, usage:object})=>object|undefined} [onComplete] 落库钩子，返回值并进 done
+   * 占一条上游流的名额跑 [fn]，名额在 finally 里还（正常收尾、上游报错、客户端半路跑了都从这里过）。
+   * 名额要在 openSse 之前抢：抢不到才能回一个干净的 503 JSON。
    */
-  async function runStream(req, res, row, payload, onComplete) {
-    // 名额要在 openSse 之前抢，抢不到才能回一个干净的 503 JSON。
+  async function withStreamSlot(fn) {
     if (liveStreams >= maxStreams) {
       throw new HttpError(503, 'ai_busy', `同时进行的 AI 会话已达上限（${maxStreams} 条），等前一条说完再试`);
     }
     liveStreams++;
     try {
+      return await fn();
+    } finally {
+      liveStreams--;
+    }
+  }
+
+  /**
+   * 把一次上游流式对话转成自家 SSE。HttpError 必须在进这里之前抛完 —— 头一旦发出去
+   * 就只能用 error 事件报错了。
+   * @param {(out:{text:string, usage:object, stopReason:string})=>object|undefined} [onComplete] 落库钩子，返回值并进 done
+   */
+  async function runStream(req, res, row, payload, onComplete) {
+    await withStreamSlot(async () => {
       const use = toUse(row);
       const sse = openSse(res);
       const ctl = new AbortController();
@@ -321,10 +372,7 @@ module.exports = (ctx) => {
         res.off('close', onClose);
         sse.close();
       }
-    } finally {
-      // 正常收尾、上游报错、客户端半路跑了 —— 三条路都从这里过。
-      liveStreams--;
-    }
+    });
   }
 
   /** `[{role:'user'|'assistant', content}]`，最多 40 条、每条 8000 字。 */
@@ -479,6 +527,8 @@ module.exports = (ctx) => {
   }
 
   log.debug('ai', `限流 ${aiPerMin}/min/人，并发流上限 ${maxStreams}`);
+
+  ctx.ai = { pickProvider, takeToken, toUse, friendly, withStreamSlot };
 
   return {
     name: 'ai',

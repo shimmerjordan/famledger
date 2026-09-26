@@ -1,0 +1,8 @@
+{"records":[
+{"t":"platform","name":"京东","kind":"电商","ev":"京东 PLUS 会员","conf":"0.9"},
+{"t":"会员卡","name":"PLUS {年卡}","platform":"京东","tier":null,"kind":"黑卡","fee":"99元","feePeriod":"年付","expiresOn":"2027年3月31日","autoRenew":"不知道","ev":"京东 PLUS 会员 {年卡} 年费 99 元","conf":0.9},
+{"t":"benefit","name":"免运费券这个名字特别特别长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长","membership":"PLUS {年卡}","kind":"运费","flow":"领取","quota":[{"p":"每月","n":"5次"},{"p":"每月","n":2},{"p":"fortnight","n":1}],"anchor":"自然月","validUntil":"领取后 30 天","limits":["仅限自营商品",{"type":"奇怪","text":"其他"}],"ev":"每月 5 张免运费券","conf":0.9},
+{"t":"item","name":"小米手环 9 \"NFC 版\"","category":"手机","preset":"iphone","price":"249元","purchasedOn":"2026年9月1日","ev":"小米手环 9 \"NFC 版\" 实付 249 元","conf":0.9},
+{"t":"item","name":"乐高积木","category":"玩具","preset":"ev","price":499,"purchasedOn":null,"ev":"乐高积木 实付 499 元","conf":0.8},
+{"t":"coupon","name":"不认识的类型"}
+],"done":true}

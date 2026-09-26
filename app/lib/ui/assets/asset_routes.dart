@@ -1,5 +1,8 @@
 import 'package:go_router/go_router.dart';
 
+import '../../data/models/models.dart';
+import '../perk_import/perk_import_page.dart';
+import '../perk_import/perk_import_preview_page.dart';
 import '../perks/benefit_form_page.dart';
 import '../perks/membership_detail_page.dart';
 import '../perks/membership_form_page.dart';
@@ -30,6 +33,16 @@ GoRoute assetsRoute() => GoRoute(
     );
   },
   routes: [
+    // AI 智能导入：?want=items|virtual 预选识别范围，?membership=<id> 是会员详情的「AI 补充权益」。
+    GoRoute(
+      path: 'import',
+      builder: (context, state) => PerkImportPage(
+        want: ImportWant.parse(state.uri.queryParameters['want']),
+        targetMembershipId: state.uri.queryParameters['membership'],
+      ),
+    ),
+    // 预览和输入页是兄弟路由：草稿靠 pendingPerkImportProvider 交接（输入页 push 过来），网页刷新到这一页时给「去粘贴」。
+    GoRoute(path: 'import/preview', builder: (context, state) => const PerkImportPreviewRoute()),
     GoRoute(
       path: 'items/new',
       builder: (context, state) => const AssetFormPage(),

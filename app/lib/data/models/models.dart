@@ -18,6 +18,7 @@ export 'member.dart';
 export 'perk_agenda.dart';
 export 'perk_current.dart';
 export 'perk_groups.dart';
+export 'perk_import.dart';
 export 'perk_math.dart';
 export 'perks.dart';
 export 'rule.dart';

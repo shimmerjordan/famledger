@@ -255,6 +255,8 @@ void main() {
       await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=perks', size: const Size(1400, 2000));
       await tester.tap(find.byTooltip('记一张会员卡'));
       await settle(tester);
+      await tester.tap(find.byKey(const ValueKey('perks-add-manual')));
+      await settle(tester);
       await tapVisible(tester, find.byKey(const ValueKey('membership-platform')));
       await tester.tap(find.byKey(const ValueKey('platform-pick-yk')));
       await settle(tester);

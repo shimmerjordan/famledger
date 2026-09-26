@@ -1,0 +1,8 @@
+{"records":[
+{"t":"platform","name":"山姆","kind":"shopping","ev":"山姆会员卡","conf":0.9},
+{"t":"membership","name":"山姆会员卡","platform":"山姆","tier":"卓越会员","fee":680,"feePeriod":"year","expiresOn":"2026-12-31","ev":"山姆会员卡（卓越会员），年费 680 元","conf":0.9},
+{"t":"benefit","name":"免费洗车","membership":"山姆会员卡","kind":"service","claimPlatform":"途虎养车","flow":"use","quota":[{"p":"year","n":2}],"ev":"每年 2 次免费洗车","conf":0.9},
+{"t":"benefit","name":"50 元代金券","membership":"山姆会员卡","kind":"coupon","flow":"claim","quota":[{"p":"month","n":1}],"faceValue":50,"ev":"每月一张五十元代金券","conf":0.9},
+{"t":"benefit","name":"免费停车","membership":"不存在的卡","kind":"service","ev":"免费停车","conf":0.7},
+{"t":"membership","name":"SVIP","platform":"星河视频","fee":198,"feePeriod":"year","ev":"SVIP 年卡 ¥198/年，自动续费","conf":0.9}
+],"done":true}

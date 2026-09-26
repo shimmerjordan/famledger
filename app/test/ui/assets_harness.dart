@@ -15,6 +15,7 @@ import 'package:go_router/go_router.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
+import 'import_fake.dart';
 import 'perks_fake.dart';
 
 // 资产页 widget 测试共用：一个记得住状态的假服务端（写完再 /changes 能拿到新样子），
@@ -136,8 +137,10 @@ class AssetsBackend {
     List<Map<String, dynamic>> accounts = defaultAccounts,
     this.members = const [],
     PerksFake? perks,
+    ImportFake? imports,
   }) : accounts = [for (final a in accounts) {...a}],
-       perks = perks ?? PerksFake() {
+       perks = perks ?? PerksFake(),
+       imports = imports ?? ImportFake() {
     for (final a in assets) {
       this.assets[a['id'] as String] = {...a};
     }
@@ -155,6 +158,9 @@ class AssetsBackend {
 
   /// 会员权益那几张表和接口（test/ui/perks_fake.dart）。
   final PerksFake perks;
+
+  /// AI 渠道列表和 AI 导入的两个接口（test/ui/import_fake.dart）。
+  final ImportFake imports;
   final List<Map<String, dynamic>> _tombstones = [];
   final List<http.Request> seen = [];
 
@@ -252,6 +258,8 @@ class AssetsBackend {
       res = _holdings(req.method, seg, body);
     } else if (seg.isNotEmpty && PerksFake.resources.contains(seg.first)) {
       res = perks.handle(req.method, seg, body, req.url.queryParameters);
+    } else if (seg.isNotEmpty && ImportFake.resources.contains(seg.first)) {
+      res = imports.handle(req.method, seg, body, this);
     } else {
       res = _error(404, 'not_found', '没有这个接口 $path');
     }

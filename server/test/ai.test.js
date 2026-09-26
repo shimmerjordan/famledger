@@ -651,3 +651,31 @@ test('POST /ai/chat：财务上下文带一行实物估值，计入额跟着全�
   assert.ok(off.includes('【实物估值】¥9,199.00（计入 ¥0.00）'), off);
   assert.ok(off.includes('【净资产】¥0.00'), off);
 });
+
+test('extra.requestExtras：只收白名单参数，存下后对话请求体里带上；importMaxTokens 有范围', async (t) => {
+  const up = await startFakeOpenai({ key: OAI_KEY });
+  t.after(() => up.stop());
+  const h = await household(t);
+  const p = await addProvider(h, oaiProvider(up));
+
+  const bad = await h.a.patch(`/ai/providers/${p.id}`, { extra: { requestExtras: { temperature: 0.2, model: 'hack' } } }, h.auth);
+  assert.equal(bad.status, 400, bad.text);
+  assert.equal(bad.json.error.code, 'invalid_extra');
+  assert.match(bad.json.error.message, /model/);
+  const tooBig = await h.a.patch(`/ai/providers/${p.id}`, { extra: { importMaxTokens: 100 } }, h.auth);
+  assert.equal(tooBig.json.error.code, 'invalid_extra');
+
+  const saved = ok(
+    await h.a.patch(`/ai/providers/${p.id}`, { extra: { requestExtras: { temperature: 0.2, enable_thinking: false }, importMaxTokens: 8000, vision: true } }, h.auth),
+    'PATCH extra',
+  ).provider;
+  assert.deepEqual(saved.extra, { requestExtras: { temperature: 0.2, enable_thinking: false }, importMaxTokens: 8000, vision: true });
+
+  const r = await sse(h.srv.base, '/ai/chat', { token: h.token, body: { messages: [{ role: 'user', content: '在吗' }] } });
+  assert.equal(r.status, 200, r.text);
+  const body = up.lastBody();
+  assert.equal(body.temperature, 0.2);
+  assert.equal(body.enable_thinking, false);
+  assert.equal(body.max_tokens, 2048, '对话的输出上限不受导入覆盖影响');
+  assert.equal(body.importMaxTokens, undefined, 'extra 里别的键不进请求体');
+});

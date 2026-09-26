@@ -137,6 +137,15 @@ test('ratelimit: N per minute, then refusal', () => {
   assert.equal(rl.allow('5.6.7.8'), true, 'buckets are per key');
 });
 
+test('ratelimit: allow(key, cost) takes several tokens at once; a refused call takes nothing', () => {
+  const rl = new RateLimiter(20 / 60, 20); // AI_IMPORT_PER_HOUR=20: 20 an hour, burst 20
+  assert.equal(rl.allow('m1', 15), true);
+  assert.equal(rl.allow('m1', 6), false, 'only 5 left');
+  assert.equal(rl.allow('m1', 5), true, 'the refused call did not eat the remaining 5');
+  assert.equal(rl.allow('m1'), false);
+  assert.equal(rl.allow('m2', 20), true, 'buckets are per key');
+});
+
 test('clientip: proxy headers only count when TRUST_PROXY is on', () => {
   const req = {
     headers: { 'cf-connecting-ip': '9.9.9.9', 'x-forwarded-for': '1.1.1.1, 2.2.2.2' },

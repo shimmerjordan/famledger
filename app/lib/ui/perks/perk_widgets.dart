@@ -8,6 +8,7 @@ import '../../core/money.dart';
 import '../../data/models/models.dart';
 import '../../data/repos/ledger_repo.dart';
 import '../assets/asset_widgets.dart';
+import '../perk_import/ai_inferred_dot.dart';
 import 'perk_providers.dart';
 
 // 会员权益各页共用的小零件：平台头像、金额文字、「去优酷领」徽章、领取链接按钮、可以留空的日期按钮、权益行。
@@ -203,6 +204,14 @@ class BenefitTile extends StatelessWidget {
             children: [
               Text(b.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodyLarge),
               if (elsewhere != null) ClaimBadge(elsewhere, key: ValueKey('claim-badge-${b.id}')),
+              if (detailed && originUnverified(b.origin).isNotEmpty)
+                AiInferredDot(
+                  key: ValueKey('ai-dot-benefit-${b.id}'),
+                  fields: originUnverified(b.origin),
+                  origin: b.origin,
+                  onConfirm: (ref, origin) => ref.read(perksRepoProvider).updateBenefit(b.id, {'origin': origin}),
+                  onEdit: () => context.push('/assets/benefits/${b.id}/edit'),
+                ),
             ],
           ),
           subtitle: Text(lines.join('\n'), style: theme.textTheme.bodySmall),

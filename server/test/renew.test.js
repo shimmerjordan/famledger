@@ -59,6 +59,21 @@ test('续一期：到期日 + 一个周期、本期开始 = 原到期日次日�
   assert.equal(reused.json.error.code, 'client_id_reused');
 });
 
+test('续了一期：到期日、本期开始、试用这几项从「AI 推断」里拿掉（用户刚确认过），别的推断字段留着', async (t) => {
+  const { card, renew } = await withShop(t);
+  const vip = await card({
+    feeCents: 8800, expiresOn: '2026-12-31', isTrial: true,
+    origin: { src: 'ai_text', importId: 'imp-1', ev: '到期日 12-31', unverified: ['expiresOn', 'termStartOn', 'feeCents'] },
+  });
+  const r = await renew(vip.id, { clientId: 'renew-origin' });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual(r.json.membership.origin, { src: 'ai_text', importId: 'imp-1', ev: '到期日 12-31', unverified: ['feeCents'] });
+
+  const plain = await card({ feeCents: 100, expiresOn: '2026-12-31' });
+  const r2 = await renew(plain.id, { clientId: 'renew-plain' });
+  assert.deepEqual(r2.json.membership.origin, {}, '手记的卡 origin 原样');
+});
+
 test('月末截断；没有到期日的按昨天算（续出来的一期从今天开始）；给定到期日时本期开始取「往前一期」的次日', async (t) => {
   const { card, renew } = await withShop(t);
   const monthly = await card({ feeCents: 2500, feePeriod: 'month', expiresOn: '2026-01-31' });

@@ -29,16 +29,8 @@ module.exports = (ctx) => {
     resource: 'platforms',
     singular: 'platform',
     label: '平台',
-    fields: {
-      name: { type: 'string', required: true, max: 40 },
-      // 类型只为让 toJson 把它还原成数组；真正的校验和去重在下面 fromBody。
-      aliases: { type: 'json', default: '[]' },
-      kind: { type: 'enum', values: perks.PLATFORM_KINDS, default: 'other' },
-      icon: { type: 'string', max: 40 },
-      color: { type: 'color' },
-      url: { type: 'string', max: 500 },
-      note: { type: 'string', max: 500 },
-    },
+    // 字段表和 AI 导入共用（lib/perks_schema.js）；aliases 的校验和去重在下面 fromBody。
+    fields: perks.PLATFORM_FIELDS,
 
     /** 名字唯一、别名规整（和名字同名的别名丢掉）、链接只收 http/https。比的是合并后的样子。 */
     fromBody(body, isPatch, row) {

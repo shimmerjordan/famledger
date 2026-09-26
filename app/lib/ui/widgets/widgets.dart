@@ -3,6 +3,9 @@ library;
 
 export 'async_value_view.dart';
 export 'category_icon.dart';
+export 'constrained_bottom_bar.dart';
+export 'count_filter_chip.dart';
+export 'discard_guard.dart';
 export 'empty_state.dart';
 export 'fund_dot.dart';
 export 'money_text.dart';

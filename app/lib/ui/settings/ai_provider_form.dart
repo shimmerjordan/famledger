@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -13,7 +15,8 @@ Future<void> showAiProviderForm(BuildContext context, {AiProvider? provider}) =>
       (context) => AiProviderFormSheet(provider: provider),
     );
 
-/// 预设选完自动填地址与模型，密钥只写不读。
+/// 预设选完自动填地址与模型，密钥只写不读。「高级」里是渠道的 extra：附加请求参数（requestExtras，服务端只收白名单里的键，
+/// 比如给 Qwen3 关掉思考 `{"enable_thinking": false}`）和 AI 导入单次最多输出多少 token（importMaxTokens，空 = 默认 12000）。
 class AiProviderFormSheet extends ConsumerStatefulWidget {
   const AiProviderFormSheet({super.key, this.provider});
 
@@ -41,6 +44,12 @@ class _AiProviderFormSheetState extends ConsumerState<AiProviderFormSheet> {
     text: widget.provider?.model ?? '',
   );
   final TextEditingController _apiKey = TextEditingController();
+  late final TextEditingController _extras = TextEditingController(
+    text: (widget.provider?.requestExtras ?? const {}).isEmpty ? '' : jsonEncode(widget.provider!.requestExtras),
+  );
+  late final TextEditingController _importMax = TextEditingController(
+    text: widget.provider?.importMaxTokens?.toString() ?? '',
+  );
 
   late String _kind = widget.provider?.kind ?? 'openai';
   late bool _isDefault = widget.provider?.isDefault ?? false;
@@ -57,6 +66,8 @@ class _AiProviderFormSheetState extends ConsumerState<AiProviderFormSheet> {
     _baseUrl.dispose();
     _model.dispose();
     _apiKey.dispose();
+    _extras.dispose();
+    _importMax.dispose();
     super.dispose();
   }
 
@@ -73,6 +84,39 @@ class _AiProviderFormSheetState extends ConsumerState<AiProviderFormSheet> {
     });
   }
 
+  /// 「高级」两栏 → 新的 extra（原来 extra 里别的键原样留着，比如以后的 vision）；填错回 null 并把原因写进 [_error]。
+  Map<String, dynamic>? _readExtra() {
+    final extra = Map<String, dynamic>.of(widget.provider?.extra ?? const {});
+    final raw = _extras.text.trim();
+    if (raw.isEmpty) {
+      extra.remove('requestExtras');
+    } else {
+      Object? parsed;
+      try {
+        parsed = jsonDecode(raw);
+      } catch (_) {
+        parsed = null;
+      }
+      if (parsed is! Map) {
+        setState(() => _error = '附加请求参数要写成 JSON 对象，比如 {"enable_thinking": false}');
+        return null;
+      }
+      extra['requestExtras'] = Map<String, dynamic>.from(parsed);
+    }
+    final maxText = _importMax.text.trim();
+    if (maxText.isEmpty) {
+      extra.remove('importMaxTokens');
+    } else {
+      final n = int.tryParse(maxText);
+      if (n == null || n < 256 || n > 64000) {
+        setState(() => _error = '导入最多输出填 256 到 64000 之间的整数，留空用默认 12000');
+        return null;
+      }
+      extra['importMaxTokens'] = n;
+    }
+    return extra;
+  }
+
   Future<void> _submit() async {
     final name = _name.text.trim();
     final baseUrl = _baseUrl.text.trim();
@@ -81,6 +125,8 @@ class _AiProviderFormSheetState extends ConsumerState<AiProviderFormSheet> {
       setState(() => _error = '名称、地址、模型都要填。');
       return;
     }
+    final extra = _readExtra();
+    if (extra == null) return;
     setState(() {
       _busy = true;
       _error = null;
@@ -97,6 +143,7 @@ class _AiProviderFormSheetState extends ConsumerState<AiProviderFormSheet> {
           apiKey: _apiKey.text.trim(),
           model: model,
           isDefault: _isDefault,
+          extra: extra.isEmpty ? null : extra,
         );
       } else {
         await repo.update(
@@ -107,6 +154,7 @@ class _AiProviderFormSheetState extends ConsumerState<AiProviderFormSheet> {
           apiKey: _apiKey.text.trim(),
           model: model,
           isDefault: _isDefault,
+          extra: extra,
         );
       }
       ref.invalidate(aiProvidersProvider);
@@ -226,6 +274,40 @@ class _AiProviderFormSheetState extends ConsumerState<AiProviderFormSheet> {
           title: const Text('设为默认渠道'),
           subtitle: const Text('问 AI 和月报默认用它'),
           onChanged: (value) => setState(() => _isDefault = value),
+        ),
+        ExpansionTile(
+          key: const ValueKey('ai-provider-advanced'),
+          tilePadding: EdgeInsets.zero,
+          shape: const Border(),
+          collapsedShape: const Border(),
+          initiallyExpanded: _extras.text.isNotEmpty || _importMax.text.isNotEmpty,
+          title: const Text('高级'),
+          subtitle: const Text('附加请求参数、导入的输出上限'),
+          children: [
+            ManageField(
+              label: '附加请求参数（JSON）',
+              child: TextField(
+                key: const ValueKey('ai-provider-extras'),
+                controller: _extras,
+                autocorrect: false,
+                maxLines: 3,
+                minLines: 1,
+                decoration: const InputDecoration(
+                  hintText: '{"enable_thinking": false}',
+                  helperText: '只收 temperature、top_p、enable_thinking、thinking 等常用参数',
+                ),
+              ),
+            ),
+            ManageField(
+              label: '导入最多输出（token）',
+              child: TextField(
+                key: const ValueKey('ai-provider-import-max'),
+                controller: _importMax,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(hintText: '12000', helperText: '模型说「超过上限」时调小；留空用默认'),
+              ),
+            ),
+          ],
         ),
       ],
     );

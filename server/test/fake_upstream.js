@@ -9,7 +9,11 @@
 //   up.state.status = 500         → 下一次请求回 500
 //   up.state.parts / completion   → 流式分片 / 非流式文本
 //   up.state.hang = true          → 发完第一片就挂住（测客户端断线 → 中止上游）
-//   up.lastBody() / up.lastHeaders() / up.requests
+//   up.state.stopReason           → 结束原因的原话（anthropic 'end_turn' / openai 'stop'）；'' = 不发（cc-trans 这类反代）
+//   up.state.completions          → 队列：每次请求取一条（字符串或 {text, stopReason}），取空了再用 parts / completion
+//   up.state.maxTokensCap = 8192  → 请求的 max_tokens 超过它就 400，报文照各家原话写明合法范围
+//   up.state.stallMs = 500        → 流式发完第一片后停这么久再接着发（测空闲超时）
+//   up.lastBody() / up.lastHeaders() / up.requests   （每个请求的 body 都记着）
 //   up.text()                     → parts.join('')，断言拼接结果用
 
 const http = require('node:http');
@@ -52,6 +56,22 @@ function json(res, status, obj) {
   res.end(body);
 }
 
+/** 队列里的下一条回答：`{text, parts, stopReason}`；队列空了回 null（用 state.parts / completion）。 */
+function nextAnswer(state) {
+  if (!state.completions.length) return null;
+  const item = state.completions.shift();
+  const entry = typeof item === 'string' ? { text: item } : { ...item };
+  // 切成三段喂出去：拼接、跨片解析都要被测到。
+  const n = Math.max(1, Math.ceil(entry.text.length / 3));
+  entry.parts = [];
+  for (let i = 0; i < entry.text.length; i += n) entry.parts.push(entry.text.slice(i, i + n));
+  if (!entry.parts.length) entry.parts.push('');
+  return entry;
+}
+
+/** 本次请求要的输出上限（两种字段名都认）。 */
+const askedMax = (body) => Number(body.max_tokens ?? body.max_completion_tokens) || 0;
+
 /** 共用的壳：起服务、记请求、记「客户端半路跑了」。 */
 async function start(name, route, handle, opts) {
   const state = {
@@ -62,6 +82,10 @@ async function start(name, route, handle, opts) {
     streamError: false,
     rejectJsonMode: false,
     rejectMaxTokens: false,
+    stopReason: null,
+    completions: [],
+    maxTokensCap: 0,
+    stallMs: 0,
     aborted: 0,
     inputTokens: 123,
     outputTokens: 45,
@@ -119,13 +143,28 @@ async function startFakeAnthropic(opts = {}) {
     'anthropic',
     '/v1/messages',
     async (req, res, body, state) => {
-      const text = state.completion ?? state.parts.join('');
+      if (state.maxTokensCap && askedMax(body) > state.maxTokensCap) {
+        // Anthropic 的原话
+        return json(res, 400, {
+          type: 'error',
+          error: {
+            type: 'invalid_request_error',
+            message: `max_tokens: ${askedMax(body)} > ${state.maxTokensCap}, which is the maximum allowed number of output tokens for ${body.model}`,
+          },
+        });
+      }
+      const answer = nextAnswer(state);
+      const text = answer ? answer.text : (state.completion ?? state.parts.join(''));
+      const parts = answer ? answer.parts : state.parts;
+      const reason = answer && answer.stopReason !== undefined ? answer.stopReason : state.stopReason;
+      const stopReason = reason === null ? 'end_turn' : reason;
       if (!body.stream) {
         return json(res, 200, {
           id: 'msg_fake',
           type: 'message',
           role: 'assistant',
           content: [{ type: 'text', text }],
+          ...(stopReason ? { stop_reason: stopReason } : {}),
           usage: { input_tokens: state.inputTokens, output_tokens: state.outputTokens },
         });
       }
@@ -138,7 +177,7 @@ async function startFakeAnthropic(opts = {}) {
           message: { id: 'msg_fake', role: 'assistant', usage: { input_tokens: state.inputTokens, output_tokens: 0 } },
         }) + frame('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
       );
-      for (const part of state.parts) {
+      for (const [i, part] of parts.entries()) {
         await writeChunked(res, frame('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: part } }));
         if (state.streamError) {
           // 头已经 200 了，错误只能从流里出去 —— Anthropic 过载时就是这样
@@ -147,14 +186,19 @@ async function startFakeAnthropic(opts = {}) {
         }
         if (state.hang) {
           // 永远不结束：等客户端自己断
-          for (let i = 0; i < 600 && !res.writableEnded && !res.destroyed; i++) await sleep(10);
+          for (let k = 0; k < 600 && !res.writableEnded && !res.destroyed; k++) await sleep(10);
           return;
         }
+        if (i === 0 && state.stallMs) await sleep(state.stallMs);
       }
       await writeChunked(
         res,
         frame('content_block_stop', { type: 'content_block_stop', index: 0 }) +
-          frame('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: state.outputTokens } }) +
+          frame('message_delta', {
+            type: 'message_delta',
+            delta: stopReason ? { stop_reason: stopReason } : {},
+            usage: { output_tokens: state.outputTokens },
+          }) +
           frame('message_stop', { type: 'message_stop' }),
       );
       res.end();
@@ -177,7 +221,6 @@ async function startFakeOpenai(opts = {}) {
     'openai',
     '/v1/chat/completions',
     async (req, res, body, state) => {
-      const text = state.completion ?? state.parts.join('');
       if (state.rejectMaxTokens && body.max_tokens !== undefined) {
         // gpt-5 / o 系列的原话
         return json(res, 400, {
@@ -188,28 +231,43 @@ async function startFakeOpenai(opts = {}) {
           },
         });
       }
+      if (state.maxTokensCap && askedMax(body) > state.maxTokensCap) {
+        // DeepSeek 等兼容端的原话
+        return json(res, 400, {
+          error: {
+            type: 'invalid_request_error',
+            message: `Invalid max_tokens value, the valid range of max_tokens is [1, ${state.maxTokensCap}]`,
+          },
+        });
+      }
       if (body.response_format && state.rejectJsonMode) {
         return json(res, 400, { error: { message: 'response_format is not supported by this model' } });
       }
+      const answer = nextAnswer(state);
+      const text = answer ? answer.text : (state.completion ?? state.parts.join(''));
+      const parts = answer ? answer.parts : state.parts;
+      const reason = answer && answer.stopReason !== undefined ? answer.stopReason : state.stopReason;
+      const finish = reason === null ? 'stop' : reason;
       if (!body.stream) {
         return json(res, 200, {
           id: 'chatcmpl-fake',
-          choices: [{ index: 0, message: { role: 'assistant', content: text }, finish_reason: 'stop' }],
+          choices: [{ index: 0, message: { role: 'assistant', content: text }, ...(finish ? { finish_reason: finish } : {}) }],
           usage: { prompt_tokens: state.inputTokens, completion_tokens: state.outputTokens },
         });
       }
       sseHead(res);
       const frame = (data) => `data: ${JSON.stringify(data)}\n\n`;
-      for (const part of state.parts) {
+      for (const [i, part] of parts.entries()) {
         await writeChunked(res, frame({ id: 'chatcmpl-fake', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { content: part } }] }));
         if (state.hang) {
-          for (let i = 0; i < 600 && !res.writableEnded && !res.destroyed; i++) await sleep(10);
+          for (let k = 0; k < 600 && !res.writableEnded && !res.destroyed; k++) await sleep(10);
           return;
         }
+        if (i === 0 && state.stallMs) await sleep(state.stallMs);
       }
       await writeChunked(
         res,
-        frame({ id: 'chatcmpl-fake', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }) +
+        frame({ id: 'chatcmpl-fake', choices: [{ index: 0, delta: {}, ...(finish ? { finish_reason: finish } : {}) }] }) +
           frame({ id: 'chatcmpl-fake', choices: [], usage: { prompt_tokens: state.inputTokens, completion_tokens: state.outputTokens } }) +
           'data: [DONE]\n\n',
       );

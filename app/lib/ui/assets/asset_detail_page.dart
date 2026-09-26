@@ -7,6 +7,7 @@ import '../../app/theme.dart';
 import '../../core/dates.dart';
 import '../../core/money.dart';
 import '../../data/models/models.dart';
+import '../perk_import/ai_inferred_dot.dart';
 import '../widgets/widgets.dart';
 import 'asset_providers.dart';
 import 'asset_widgets.dart';
@@ -319,14 +320,32 @@ class _AssetDetailPageState extends ConsumerState<AssetDetailPage> {
     ];
   }
 
+  /// 值后面跟一个「AI 推断」小点（这个字段是导入时推断、还没确认的）。
+  Widget _withDot(Asset asset, Widget value, String field) {
+    if (inferredOf(asset.origin, [field]).isEmpty) return value;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Flexible(child: value),
+        AiInferredDot(
+          key: ValueKey('ai-dot-$field'),
+          fields: [field],
+          origin: asset.origin,
+          onConfirm: (ref, origin) => ref.read(assetsRepoProvider).update(asset.id, {'origin': origin}),
+          onEdit: () => context.push('/assets/items/${asset.id}/edit'),
+        ),
+      ],
+    );
+  }
+
   List<Widget> _details(BuildContext context, Asset asset, AssetUsage usage) {
     final purchased = localDate(asset.purchasedOn);
     final ended = localDate(asset.endedOn);
     return [
       const SectionHeader('明细'),
       InfoRow(asset.isEnded ? '用了' : '已用', InfoText('${usage.days} 天')),
-      InfoRow('买价', MoneyText(asset.priceCents)),
-      if (purchased != null) InfoRow('买入', InfoText(Dates.dayLabel(purchased))),
+      InfoRow('买价', _withDot(asset, MoneyText(asset.priceCents), 'priceCents')),
+      if (purchased != null) InfoRow('买入', _withDot(asset, InfoText(Dates.dayLabel(purchased)), 'purchasedOn')),
       if (asset.expectedDays != null)
         InfoRow('打算用', InfoText('${asset.expectedDays} 天')),
       if (ended != null)

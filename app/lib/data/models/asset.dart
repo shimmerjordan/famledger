@@ -27,6 +27,7 @@ class Asset {
     this.manualValueCents,
     this.manualValueOn,
     this.netWorth = netWorthAuto,
+    this.origin = const {},
   });
 
   /// 顺序同服务端 `lib/valuation.js` 的 CATEGORY_DEFAULTS，也是表单里类别 chip 的顺序。
@@ -129,6 +130,9 @@ class Asset {
   /// auto | include | exclude
   final String netWorth;
 
+  /// `{src, importId, ev, unverified}`（AI 导入写；手工记的是空）。
+  final Map<String, dynamic> origin;
+
   bool get isEnded => status == statusRetired || status == statusSold;
 
   /// 在用或闲置：还在家里，每天都在「花钱」。
@@ -160,6 +164,8 @@ class Asset {
     manualValueCents: jsonIntOrNull(json['manualValueCents']),
     manualValueOn: jsonStringOrNull(json['manualValueOn']),
     netWorth: _oneOf(json['netWorth'], netWorthModes, netWorthAuto),
+    // 007 之前写下的行、老缓存没有这个键（ALTER 不动 seq，不会重拉）：按空兜底。
+    origin: jsonMap(json['origin']),
   );
 
   Map<String, dynamic> toJson() {
@@ -187,6 +193,7 @@ class Asset {
     putIfNotNull(json, 'manualValueCents', manualValueCents);
     putIfNotNull(json, 'manualValueOn', manualValueOn);
     json['netWorth'] = netWorth;
+    if (origin.isNotEmpty) json['origin'] = origin;
     return json;
   }
 

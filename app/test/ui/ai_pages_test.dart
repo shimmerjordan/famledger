@@ -351,6 +351,70 @@ void main() {
 
       expect(find.text('已保存 …3f9a，留空表示不修改'), findsOneWidget);
     });
+
+    testWidgets('「高级」：附加请求参数和导入输出上限写进 extra，原来别的键留着；不是 JSON 对象就行内说、不发请求', (tester) async {
+      final seen = <http.Request>[];
+      final repo = AiRepo(
+        ApiClient(
+          baseUrl: 'https://x.dev',
+          inner: MockClient((req) async {
+            seen.add(req);
+            final body = req.url.path.endsWith('/ai/presets')
+                ? {'items': <Object>[]}
+                : {
+                    'provider': {'id': 'p1', 'name': '硅基流动'},
+                  };
+            return http.Response(jsonEncode(body), 200, headers: {'content-type': 'application/json; charset=utf-8'});
+          }),
+        ),
+      );
+      tester.view.physicalSize = const Size(800, 2000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        wrap(
+          const Scaffold(
+            body: AiProviderFormSheet(
+              provider: AiProvider(
+                id: 'p1',
+                name: '硅基流动',
+                baseUrl: 'https://api.siliconflow.cn/v1',
+                model: 'Qwen/Qwen3-32B',
+                hasKey: true,
+                keyTail: '3f9a',
+                extra: {
+                  'vision': true,
+                  'requestExtras': {'temperature': 0.3},
+                },
+              ),
+            ),
+          ),
+          overrides: [aiRepoProvider.overrideWithValue(repo)],
+        ),
+      );
+      await tester.pumpAndSettle();
+      final extras = find.byKey(const ValueKey('ai-provider-extras'));
+      expect(extras, findsOneWidget, reason: '有值时「高级」默认展开');
+      expect(tester.widget<TextField>(extras).controller!.text, '{"temperature":0.3}');
+
+      await tester.enterText(extras, 'enable_thinking=false');
+      await tester.tap(find.text('保存'));
+      await tester.pumpAndSettle();
+      expect(find.text('附加请求参数要写成 JSON 对象，比如 {"enable_thinking": false}'), findsOneWidget);
+      expect(seen.where((r) => r.method == 'PATCH'), isEmpty);
+
+      await tester.enterText(extras, '{"enable_thinking": false}');
+      await tester.enterText(find.byKey(const ValueKey('ai-provider-import-max')), '8000');
+      await tester.tap(find.text('保存'));
+      await tester.pumpAndSettle();
+      final patch = seen.lastWhere((r) => r.method == 'PATCH');
+      expect(patch.url.path, '/api/v1/ai/providers/p1');
+      expect((jsonDecode(patch.body) as Map)['extra'], {
+        'vision': true,
+        'requestExtras': {'enable_thinking': false},
+        'importMaxTokens': 8000,
+      });
+    });
   });
 
   group('渠道列表', () {

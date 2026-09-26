@@ -31,6 +31,12 @@ class AiProvider {
 
   bool get isReady => enabled && hasKey && model.isNotEmpty;
 
+  /// `extra.requestExtras`：注入请求体的附加参数（服务端只收白名单里的键）。
+  Map<String, dynamic> get requestExtras => jsonMap(extra['requestExtras']);
+
+  /// `extra.importMaxTokens`：AI 导入单次输出上限的渠道覆盖；null = 用默认 12000。
+  int? get importMaxTokens => jsonIntOrNull(extra['importMaxTokens']);
+
   AiProvider copyWith({bool? enabled, bool? isDefault}) => AiProvider(
     id: id,
     name: name,

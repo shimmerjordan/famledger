@@ -1,0 +1,14 @@
+好的，下面是按要求整理的结果：
+```json
+{"records":[
+{"t":"platform","name":"淘宝","kind":"shopping","ev":"88VIP 会员说明","conf":0.8},
+{"t":"membership","name":"88VIP","platform":"淘宝","tier":null,"kind":"membership","fee":88,"feePeriod":"year","termStartOn":null,"expiresOn":"2026-12-31","autoRenew":"yes","isTrial":false,"ev":"年费 88 元（淘气值 1000 分以上），到期日 2026-12-31","conf":0.9},
+{"t":"benefit","name":"优酷视频年卡","membership":"88VIP","kind":"subscription","claimPlatform":"优酷视频","claimHow":"优酷 App「我的-会员中心」","claimUrl":null,"flow":"claim","quota":[{"p":"term","n":1}],"anchor":"term","faceValue":null,"validFrom":null,"validUntil":null,"validRule":null,"limits":[],"ev":"优酷视频年卡，开通后去优酷 App「我的-会员中心」领取","conf":0.9},
+{"t":"benefit","name":"饿了么超级会员年卡","membership":"88VIP","kind":"subscription","claimPlatform":"饿了么","claimHow":null,"claimUrl":null,"flow":"claim","quota":[{"p":"year","n":1}],"anchor":"calendar","faceValue":null,"validFrom":null,"validUntil":null,"validRule":null,"limits":[],"ev":"饿了么超级会员年卡，每年 1 次","conf":0.9},
+{"t":"benefit","name":"88 折购物券","membership":"88VIP","kind":"coupon","claimPlatform":null,"claimHow":null,"claimUrl":null,"flow":"claim_use","quota":[{"p":"month","n":4}],"anchor":"calendar","faceValue":null,"validFrom":null,"validUntil":null,"validRule":null,"limits":[{"type":"min_spend","text":"单笔满 200 元可用"},{"type":"stacking","text":"不与其他优惠同享"}],"ev":"每月 4 张 88 折购物券","conf":0.85},
+{"t":"benefit","name":"网易云音乐黑胶年卡","membership":"88VIP","kind":"subscription","claimPlatform":"网易云音乐","choice":{"group":"三选一","pick":1},"flow":"claim","quota":[{"p":"term","n":1}],"anchor":"term","ev":"三选一：网易云音乐黑胶年卡","conf":0.8},
+{"t":"benefit","name":"QQ 音乐豪华绿钻年卡","membership":"88VIP","kind":"subscription","claimPlatform":"QQ音乐","choice":{"group":"三选一","pick":1},"flow":"claim","quota":[{"p":"term","n":1}],"anchor":"term","ev":"QQ 音乐豪华绿钻年卡","conf":0.8},
+{"t":"benefit","name":"芒果 TV 年卡","membership":"88VIP","kind":"subscription","claimPlatform":"芒果TV","choice":{"group":"三选一","pick":1},"flow":"claim","quota":[{"p":"term","n":1}],"anchor":"term","ev":"芒果 TV 年卡","conf":0.8}
+],"done":true}
+```
+如需调整请告诉我。

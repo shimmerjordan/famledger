@@ -17,8 +17,11 @@ class RateLimiter {
     this._lastPrune = Date.now();
   }
 
-  /** Take one token for `key`; returns true when allowed. */
-  allow(key) {
+  /**
+   * Take `cost` tokens (default 1) for `key`; returns true when allowed. A refused call takes nothing,
+   * so an expensive request that does not fit leaves the bucket for cheaper ones.
+   */
+  allow(key, cost = 1) {
     const now = Date.now();
     let b = this.buckets.get(key);
     if (!b) {
@@ -27,8 +30,8 @@ class RateLimiter {
     }
     b.tokens = Math.min(this.burst, b.tokens + (now - b.at) * this.rate);
     b.at = now;
-    if (b.tokens < 1) return false;
-    b.tokens -= 1;
+    if (b.tokens < cost) return false;
+    b.tokens -= cost;
     this._maybePrune(now);
     return true;
   }

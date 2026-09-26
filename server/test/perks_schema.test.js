@@ -224,3 +224,16 @@ test('取值表：spec §2 列出的枚举一个不少', () => {
   assert.deepEqual(perks.EVENT_KINDS, ['claim', 'use', 'skip']);
   assert.deepEqual(perks.PERIOD_MONTHS, { month: 1, quarter: 3, year: 12 });
 });
+
+test('字段表：CRUD 和 AI 导入共用一份；coerceFields 照它校验、缺省给默认值，PATCH 只管给了的', () => {
+  const { coerceFields } = require('../src/lib/crud');
+  const cols = coerceFields(perks.MEMBERSHIP_FIELDS, { platformId: 'p1', name: ' 88VIP ', feeCents: 8800 });
+  assert.deepEqual(
+    [cols.platform_id, cols.name, cols.fee_cents, cols.fee_period, cols.auto_renew, cols.is_trial, cols.origin, cols.member_id],
+    ['p1', '88VIP', 8800, 'year', 'unknown', 0, '{}', null],
+  );
+  assert.throws(() => coerceFields(perks.MEMBERSHIP_FIELDS, { platformId: 'p1' }), (e) => e.code === 'invalid_name');
+  assert.throws(() => coerceFields(perks.PLATFORM_FIELDS, { name: '淘宝', kind: 'mall' }), (e) => e.code === 'invalid_kind');
+  assert.deepEqual(coerceFields(perks.BENEFIT_FIELDS, { flow: 'use' }, true), { flow: 'use' });
+  assert.equal(coerceFields(perks.BENEFIT_FIELDS, { membershipId: 'm1', name: '券' }).remind, 1);
+});

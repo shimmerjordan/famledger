@@ -3,7 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app/providers.dart';
+import '../../data/models/models.dart';
 import '../../data/repos/holdings_repo.dart';
+import '../perk_import/perk_import_providers.dart';
 import 'asset_providers.dart';
 import '../perks/perk_providers.dart';
 import '../perks/perks_tab.dart';
@@ -34,6 +36,38 @@ class AssetsPage extends ConsumerStatefulWidget {
   ConsumerState<AssetsPage> createState() => _AssetsPageState();
 }
 
+/// 会员权益 tab 的「+」（spec §6）：先给智能导入（粘贴权益说明，AI 拆成卡和权益），再给手动记一张。
+Future<void> showPerkAddSheet(BuildContext context) => showModalBottomSheet<void>(
+  context: context,
+  showDragHandle: true,
+  useSafeArea: true,
+  builder: (sheet) => Column(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      ListTile(
+        key: const ValueKey('perks-add-ai'),
+        leading: const Icon(Icons.auto_awesome_outlined),
+        title: const Text('智能导入'),
+        subtitle: const Text('粘贴 88VIP、PLUS 这类权益说明，AI 帮你拆成卡和权益，导入前能逐条改'),
+        onTap: () {
+          Navigator.of(sheet).pop();
+          context.push(perkImportLocation(want: ImportWant.virtual));
+        },
+      ),
+      ListTile(
+        key: const ValueKey('perks-add-manual'),
+        leading: const Icon(Icons.edit_outlined),
+        title: const Text('手动记一张'),
+        onTap: () {
+          Navigator.of(sheet).pop();
+          context.push('/assets/memberships/new');
+        },
+      ),
+      const SizedBox(height: 16),
+    ],
+  ),
+);
+
 class _AssetsPageState extends ConsumerState<AssetsPage>
     with SingleTickerProviderStateMixin {
   late final TabController _tabs = TabController(
@@ -56,6 +90,18 @@ class _AssetsPageState extends ConsumerState<AssetsPage>
     _tabs.addListener(_onTab);
     if (_index == AssetsPage.investTab) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _maybeAutoRefresh());
+    }
+  }
+
+  /// 页面还在栈里时又被 `go('/assets?tab=perks&view=current')` 带着新参数打开（导入结果页的「去看看」）：
+  /// go_router 复用这一页，这里切到新的 tab、换上新的会员权益视图。
+  @override
+  void didUpdateWidget(AssetsPage old) {
+    super.didUpdateWidget(old);
+    if (widget.initialTab != old.initialTab) _tabs.animateTo(widget.initialTab.clamp(0, 2));
+    if (widget.perksView != old.perksView || widget.perksScope != old.perksScope) {
+      _perksView = widget.perksView;
+      _perksScope = widget.perksScope;
     }
   }
 
@@ -107,12 +153,20 @@ class _AssetsPageState extends ConsumerState<AssetsPage>
       appBar: AppBar(
         title: const Text('资产'),
         actions: [
+          // 物品 tab 的「✨ 智能导入」：粘贴订单文字，识别范围预选「只要实物」。
+          if (!invest && !perks)
+            IconButton(
+              key: const ValueKey('items-ai-import'),
+              tooltip: '智能导入',
+              icon: const Icon(Icons.auto_awesome_outlined),
+              onPressed: () => context.push(perkImportLocation(want: ImportWant.items)),
+            ),
           IconButton(
             tooltip: invest ? '添加持仓' : (perks ? '记一张会员卡' : '记一件物品'),
             icon: const Icon(Icons.add),
-            onPressed: () => context.push(
-              invest ? '/assets/holdings/new' : (perks ? '/assets/memberships/new' : '/assets/items/new'),
-            ),
+            onPressed: () => perks
+                ? showPerkAddSheet(context)
+                : context.push(invest ? '/assets/holdings/new' : '/assets/items/new'),
           ),
           if (perks)
             PopupMenuButton<String>(

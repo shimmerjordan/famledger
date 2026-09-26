@@ -47,23 +47,8 @@ module.exports = (ctx) => {
     // pay_pattern（扣费特征，P6/P7 写）不是可写字段，但回应要和 /changes 一个形状（modules/changes.js 的 SYNCED）：
     // 否则 App 落本地时把字符串当成「没有」，缓存里的 payPattern 要等下一次同步才回来。
     toJson: (row) => rowToJson(row, { bools: ['archived', 'is_trial'], json: ['pay_pattern', 'origin'] }),
-    fields: {
-      platformId: { type: 'id', required: true },
-      sourceBenefitId: { type: 'id' },
-      name: { type: 'string', required: true, max: 60 },
-      tier: { type: 'string', max: 30 },
-      kind: { type: 'enum', values: perks.MEMBERSHIP_KINDS, default: 'membership' },
-      memberId: { type: 'id' },
-      accountId: { type: 'id' },
-      feeCents: { type: 'int', min: 0, max: MAX_AMOUNT },
-      feePeriod: { type: 'enum', values: perks.FEE_PERIODS, default: 'year' },
-      termPaidCents: { type: 'int', min: 0, max: MAX_AMOUNT },
-      autoRenew: { type: 'enum', values: perks.AUTO_RENEW, default: 'unknown' },
-      isTrial: { type: 'bool', default: false },
-      remindDays: { type: 'int', min: 0, max: 365 },
-      origin: { type: 'json', default: '{}' },
-      note: { type: 'string', max: 1000 },
-    },
+    // 字段表和 AI 导入共用（lib/perks_schema.js）；origin 的真正校验在下面 fromBody（originOf）。
+    fields: perks.MEMBERSHIP_FIELDS,
 
     /** 跨字段、跨表的规则，比的是「旧行 + 本次改动」合并后的样子。 */
     fromBody(body, isPatch, row) {
@@ -105,6 +90,11 @@ module.exports = (ctx) => {
       out.expires_on = expiresOn;
 
       if (given('origin')) out.origin = JSON.stringify(v.isMissing(body.origin) ? {} : perks.originOf(body.origin));
+      else if (isPatch) {
+        // 改过的字段算确认过，「AI 推断」小点跟着消失。
+        const pruned = perks.pruneUnverified(body, row);
+        if (pruned) out.origin = pruned;
+      }
       return out;
     },
 
@@ -204,13 +194,29 @@ module.exports = (ctx) => {
       }
       db.run(
         'UPDATE memberships SET expires_on = ?, term_start_on = ?, term_paid_cents = ?, is_trial = 0, last_charge_tx_id = ?,' +
-          ' updated_at = ?, seq = ? WHERE id = ?',
-        expiresOn, termStartOn, paid, txId, db.now(), db.nextSeq(), row.id,
+          ' origin = ?, updated_at = ?, seq = ? WHERE id = ?',
+        expiresOn, termStartOn, paid, txId, renewedOrigin(row.origin), db.now(), db.nextSeq(), row.id,
       );
       idem.remember(db, 'membership.renew', clientId, row.id);
       return db.get('SELECT * FROM memberships WHERE id = ?', row.id);
     });
     sendJson(res, 200, { membership: crud.toJson(next) });
+  }
+
+  /**
+   * 续了一期：到期日、本期开始、是否试用都是用户刚确认的，从 origin.unverified 里拿掉（不然新日期旁边还挂着「AI 推断」，
+   * 点开看到的是导入时的旧依据）。origin 不是 JSON 或者没有要拿掉的，原样写回。
+   */
+  function renewedOrigin(raw) {
+    let origin;
+    try {
+      origin = JSON.parse(raw || '{}');
+    } catch {
+      return raw;
+    }
+    if (!v.isObject(origin) || !Array.isArray(origin.unverified)) return raw;
+    const kept = origin.unverified.filter((f) => !['expiresOn', 'termStartOn', 'isTrial'].includes(f));
+    return kept.length === origin.unverified.length ? raw : JSON.stringify({ ...origin, unverified: kept });
   }
 
   return {
