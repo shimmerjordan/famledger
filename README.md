@@ -8,8 +8,8 @@
 
 <p align="center">
   <img src="docs/screenshots/phone-home.jpg" width="24%" alt="首页">
-  <img src="docs/screenshots/phone-assets.jpg" width="24%" alt="物品日均成本">
-  <img src="docs/screenshots/phone-invest.jpg" width="24%" alt="投资持仓">
+  <img src="docs/screenshots/phone-assets.jpg" width="24%" alt="物品估值与净资产">
+  <img src="docs/screenshots/phone-perks.jpg" width="24%" alt="会员权益">
   <img src="docs/screenshots/phone-import.jpg" width="24%" alt="导入预览">
 </p>
 
@@ -29,7 +29,7 @@
 
 <p align="center">
   <img src="docs/screenshots/web-home.jpg" width="49%" alt="网页版首页">
-  <img src="docs/screenshots/web-assets.jpg" width="49%" alt="网页版资产">
+  <img src="docs/screenshots/web-assets.jpg" width="49%" alt="网页版会员权益">
 </p>
 
 ## 部署
