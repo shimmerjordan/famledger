@@ -4,27 +4,44 @@ name: 构建与发布
 # 本仓库只有两条流水线：test.yml 回答「代码是好的吗」（push / PR 自动跑），
 # 这一条回答「现在要把它发出去吗」——只能手动触发。
 #
-#   version ── 从 CHANGELOG.md 取版本号
-#   test（调用 test.yml）── 门禁，下面每个 job 都 needs 它
-#     ├─ image    GHCR 单镜像，双架构（linux/amd64 + linux/arm64）
-#     └─ android  APK
+#   version ── 从 CHANGELOG.md 取版本号，顺带把输入组合查一遍
+#   └─ test（调用 test.yml）── 门禁，下面每个 job 都 needs 它
+#        ├─ image    GHCR 单镜像，双架构（linux/amd64 + linux/arm64）
+#        └─ android  APK
 #   release ── 把 APK 挂到 GitHub Release，说明里带上本次镜像 tag
+#   latest ── 勾了 latest 且上面全成功：镜像加挂 :latest，Release 标为 Latest
 #   docs ── 不管这次是不是真的发布，都把「怎么部署/怎么装/怎么用」写进
 #           **这次 Actions 运行自己的 Summary 页面**：验证性构建（publish
 #           取消勾选）也能当场看到产物长什么样，不用等 Release 页面或翻 README
 #
 # ── 为什么发布只能手动触发 ──────────────────────────────────────────────
 # 这条流水线的每个 job 都有对外副作用，而且不便宜：image 要交叉编译两个
-# 架构再推 GHCR（成功即顶掉 NAS 上 compose 默认拉的 :latest），release 要在
-# 仓库里建一个公开可见的 Release 并挂上 APK。这些该由人按下按钮的那一刻
-# 决定，而不是「我刚推了一行代码」自动决定。所以门禁自动化、发布手动化：
-# push 只回答「代码是好的吗」，这条流水线回答「现在要发出去吗」。
+# 架构再推 GHCR，release 要在仓库里建一个公开可见的 Release 并挂上 APK，
+# 勾了 latest 最后还会顶掉 NAS 上 compose 默认拉的 :latest。这些该由人按下
+# 按钮的那一刻决定，而不是「我刚推了一行代码」自动决定。所以门禁自动化、
+# 发布手动化：push 只回答「代码是好的吗」，这条流水线回答「现在要发出去吗」。
 #
 # ── 为什么版本号来自 CHANGELOG.md 而不是 git tag ────────────────────────
 # tag 是发布的**结果**，拿它当来源就要求「先打 tag 再构建」，tag 打错了
 # 还得删、还可能和已推的镜像对不上。CHANGELOG 是写变更时顺手就改的地方
 # （见 scripts/version.sh），让它当唯一来源，版本号与变更说明天然同步。
 # 想临时发一个别的号（比如验证一个 hotfix）用 version 输入覆盖它。
+#
+# ── latest 为什么是一个勾选，又为什么查得这么严 ─────────────────────────
+# 「最新版」有两个指针，各有人在读：GHCR 的 :latest 标签（deploy/docker-compose.yml
+# 和 NAS 上的 compose 默认拉它），GitHub 的 /releases/latest（README 里「装 Release
+# 里的 APK」的链接指向它）。勾上 latest，两个一起指到这次；不勾，两个都不动。
+# 两个都等镜像和 Release 全成功后才在 latest job 里挪，不会出现「NAS 已经拉到
+# 新镜像、Release 却没发出来」的半截状态。
+#
+# 挪错的代价是全家的 NAS 下次 pull 就升到不该升的版本，所以勾着 latest 时，
+# 版本号这一步几秒内就拒掉三种情况，发布用的产物一个都不编：
+#   - 同时勾了 prerelease（GitHub 本来也不许预发布当 Latest）
+#   - 版本号带 -，像 1.2.0-rc.1
+#   - 版本号比已经发过的最高版本还低：latest 只往前挪。CHANGELOG 里的号比
+#     已发的还低时，默认跑一次就会撞上这条
+# 版本号等于已发过的最高版本算重发同一版：放行，只给警告（镜像和 APK 会被这次
+# 的代码覆盖，git tag 不动）。
 #
 # ── 为什么 CI 必须真的编译 Flutter，而不是只跑 analyze ───────────────────
 # `flutter analyze` 只做静态检查，抓不出依赖与 SDK 之间的不兼容——本项目
@@ -34,29 +51,34 @@ name: 构建与发布
 # 再编一次给发布用的产物，同样是「编出来」而不是「看起来没问题」。
 #
 # ── 怎么用 ──────────────────────────────────────────────────────────────
-# Actions 页 → 构建与发布 → Run workflow。第一个 job 是测试（调用
-# test.yml，与 push 上跑的是同一份定义），红了后面全不动。
+# Actions 页 → 构建与发布 → Run workflow。先查版本号和输入，再跑测试（调用
+# test.yml，与 push 上跑的是同一份定义），任何一步红了后面全不动。
 #
-#   正常发布      两个输入用默认，直接跑
-#   只验证不发布  publish 取消勾选（镜像、APK 照编，但不推 GHCR、不建 Release）
-#   发个别的号    version 填 0.1.1-rc.1
+#   正常发布      先把 CHANGELOG.md 的版本号改成新号，输入全用默认：正式版，
+#                 :latest 和 Release 的 Latest 都指到这次
+#   只验证不发布  publish 取消勾选（镜像、APK 照编，但不推 GHCR、不建 Release，latest 不动）
+#   发 rc         version 填 1.2.0-rc.1，勾 prerelease，取消 latest
 # ════════════════════════════════════════════════════════════════════════
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: '版本号。留空 = 用 CHANGELOG.md 里的（推荐）。填了则覆盖，例如 0.1.1-rc.1'
+        description: '版本号。留空 = 用 CHANGELOG.md 里的（推荐）。填了则覆盖，例如 1.2.0-rc.1'
         required: false
         default: ''
       publish:
         description: '真的发布？取消勾选 = 镜像与 APK 照编照验，但不推 GHCR、不建 Release'
         type: boolean
         default: true
-      prerelease:
-        description: 'GitHub Release 标记为预发布？'
+      latest:
+        description: 'latest 指到这次？勾上 = 全部成功后镜像加挂 :latest、GitHub Release 标为 Latest；取消 = 两个都不动（发 rc，或暂时不想让拉 latest 的机器升级时用）'
         type: boolean
         default: true
+      prerelease:
+        description: 'GitHub Release 标记为预发布？预发布不能当 Latest，勾这个就要取消上面的 latest'
+        type: boolean
+        default: false
 
 # 一次发布不该被后来的触发顶掉，所以不取消进行中的运行——第二次触发排队
 # 等着。这与 test.yml 相反：那边每次 push 都只想看最后一次结论，这边发布
@@ -70,36 +92,88 @@ permissions:
 
 jobs:
   # ───────────────────────── 版本号 ─────────────────────────
-  # 单独一个 job 只为「算一次，image / android / release 三边共用」。
+  # 单独一个 job 只为「算一次，image / android / release 三边共用」。输入不对
+  # 也在这里拦下：它几秒就跑完，后面所有 job（连 test）都等它，报错时整条运行
+  # 立刻结束，改好输入马上能重跑，不用排在白跑的测试后面。
   version:
     name: 版本号
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       version: ${{ steps.v.outputs.version }}
+      source: ${{ steps.v.outputs.source }}
+      exists: ${{ steps.v.outputs.exists }}
     steps:
       - uses: actions/checkout@v4
 
       - id: v
         env:
           OVERRIDE: ${{ inputs.version }}
+          PUBLISH: ${{ inputs.publish }}
+          LATEST: ${{ inputs.latest }}
+          PRERELEASE: ${{ inputs.prerelease }}
         run: |
           set -euo pipefail
+          fail() { echo "::error::$*"; exit 1; }
           FROM_CHANGELOG=$(./scripts/version.sh)
           if [ -n "${OVERRIDE:-}" ]; then
             V="$OVERRIDE"
-            echo "::notice::版本由手动输入指定：$V（CHANGELOG.md 里是 $FROM_CHANGELOG）"
+            # Release 名和 git tag 会再加一个 v，填成 v1.2 就成了 vv1.2
+            if [[ "$V" =~ ^v[0-9] ]]; then V="${V#v}"; fi
+            SOURCE=手动输入
           else
             V="$FROM_CHANGELOG"
-            echo "::notice::版本取自 CHANGELOG.md：$V"
+            SOURCE=CHANGELOG.md
           fi
-          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+          # 版本号会原样拼进镜像 tag 和 git tag v$V：不合规则的话，要等两个架构
+          # 编完、推送或建 tag 时才报错。叫 latest 则不勾 latest 也会把 :latest 顶掉。
+          if ! [[ "$V" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || [ "$V" = latest ] \
+            || ! git check-ref-format "refs/tags/v$V"; then
+            fail "版本号「$V」不能用：只能有字母、数字、. _ -，不能以 . - 开头或以 . 结尾，不能有连续的 ..，也不能叫 latest。"
+          fi
+          if [ "$SOURCE" = CHANGELOG.md ]; then
+            echo "::notice::版本取自 CHANGELOG.md：$V"
+          else
+            echo "::notice::版本由手动输入指定：$V（CHANGELOG.md 里是 $FROM_CHANGELOG）"
+          fi
+
+          EXISTS=false
+          if [ "$PUBLISH" = true ]; then
+            TAGS=$(git ls-remote --tags --refs origin 'v*')
+            if [ "$LATEST" = true ]; then
+              if [ "$PRERELEASE" = true ]; then
+                fail "latest 和 prerelease 不能同时勾：GitHub 不许预发布当 Latest。发 rc 就取消 latest；要让 latest 指到这次就取消 prerelease。"
+              fi
+              if [[ "$V" == *-* ]]; then
+                fail "版本号「$V」带 -，像是 rc，latest 不能指过去：发 rc 就取消 latest、勾上 prerelease。"
+              fi
+              # 已发过的最高正式版本（带 - 的 rc 不算）。版本号等于它是重发同一版，放行
+              MAX=$(printf '%s\n' "$TAGS" | sed -n 's#.*refs/tags/v##p' | { grep -v -- - || true; } | sort -V | tail -1)
+              if [ -n "$MAX" ] && [ "$(printf '%s\n' "$MAX" "$V" | sort -V | tail -1)" != "$V" ]; then
+                fail "版本号 $V 比已经发过的 v$MAX 还低，latest 不能往回指。发新版：把 CHANGELOG.md 的版本号改到 $MAX 以上，或在 version 里填新号；不想挪 latest 就取消它。"
+              fi
+            fi
+            if printf '%s\n' "$TAGS" | awk '{print $2}' | grep -Fqx "refs/tags/v$V"; then
+              EXISTS=true
+              echo "::warning::v$V 已经发过：这次会用当前代码覆盖镜像 :$V 和 Release 里的 APK，git tag 仍停在原来的提交。"
+            fi
+          elif [ "$LATEST" = true ] && [ "$PRERELEASE" = true ]; then
+            echo "::warning::latest 和 prerelease 同时勾着：这次是验证性构建不碍事，真发布时会被拒。"
+          fi
+
+          {
+            echo "version=$V"
+            echo "source=$SOURCE"
+            echo "exists=$EXISTS"
+          } >> "$GITHUB_OUTPUT"
 
   # ───────────────────────── 门禁 ─────────────────────────
   # 定义只在 test.yml 里写一处，这里通过 workflow_call 复用。下面每个 job
   # 都 needs 它，所以「测试红了就不发布」是真的依赖关系，手动发布也绕不过。
   test:
     name: 测试
+    needs: [version]
     uses: ./.github/workflows/test.yml
 
   # ───────────────────── GHCR 镜像（双架构）─────────────────────
@@ -157,6 +231,7 @@ jobs:
       # 先单架构 load 到本地 daemon 才能真正跑起来，交给 test.yml 里的
       # docker job 去做完整冒烟；这里是双架构发布构建，不重复冒烟一遍
       # （改动同一份 Dockerfile，冒烟只需要跑一次）。
+      # 这里不打 :latest：要等 Release 也成了，由最后的 latest job 挂上。
       - name: 构建并（可选）推送
         uses: docker/build-push-action@v6
         with:
@@ -165,7 +240,6 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: ${{ inputs.publish }}
           tags: |
-            ghcr.io/${{ steps.meta.outputs.owner }}/famledger:latest
             ghcr.io/${{ steps.meta.outputs.owner }}/famledger:${{ needs.version.outputs.version }}
             ghcr.io/${{ steps.meta.outputs.owner }}/famledger:sha-${{ steps.meta.outputs.short_sha }}
           cache-from: type=gha,scope=famledger-image
@@ -238,22 +312,31 @@ jobs:
       - name: 生成 Release 说明
         env:
           VERSION: ${{ needs.version.outputs.version }}
+          SOURCE: ${{ needs.version.outputs.source }}
           OWNER: ${{ needs.image.outputs.owner }}
           SHA: ${{ github.sha }}
+          LATEST: ${{ inputs.latest }}
         run: |
           set -euo pipefail
           SHORT="${SHA:0:7}"
           {
             echo "# famledger v${VERSION}"
             echo
-            echo "版本号取自 \`CHANGELOG.md\`，镜像与 APK 同号。"
+            if [ "$SOURCE" = CHANGELOG.md ]; then
+              echo "版本号取自 \`CHANGELOG.md\`，镜像与 APK 同号。"
+            else
+              echo "版本号是发布时手动指定的，镜像与 APK 同号。"
+            fi
             echo
             echo "## 镜像"
             echo '```'
-            echo "ghcr.io/${OWNER}/famledger:latest"
             echo "ghcr.io/${OWNER}/famledger:${VERSION}"
             echo "ghcr.io/${OWNER}/famledger:sha-${SHORT}"
             echo '```'
+            if [ "$LATEST" = true ]; then
+              echo
+              echo "发布时勾了 latest：全部成功后 \`:latest\` 也指向这一版，结果见这次运行的摘要。"
+            fi
             echo
             echo "## Android APK"
             echo
@@ -263,14 +346,103 @@ jobs:
           } > /tmp/notes.md
           cat /tmp/notes.md
 
+      # 这一步从不把 Release 标成 Latest，那归最后的 latest job。make_latest
+      # 只在「新建正式版」时传 false：不传的话 GitHub 会把新建的正式版一律设成
+      # Latest，不勾 latest 也会把 /releases/latest 拽过去。其余情况传空串（等于
+      # 不传）：预发布本来当不了 Latest；已有的 tag 重跑走更新，不传就不碰它现在
+      # 是不是 Latest。
+      #
+      # 不写 target_commitish：新 tag 由 GitHub 打在默认分支的最新提交上，与以前
+      # 一样。写成 github.sha 的话，只要这次的提交和默认分支的 .github/workflows/
+      # 有一点不同，GITHUB_TOKEN 建 Release 就会 404（GitHub 文档写明的限制）。
+      # 同一个 tag 重跑时这个 action 走更新：APK 覆盖、prerelease 照这次的输入改，
+      # tag 不动。
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.version.outputs.version }}
           name: v${{ needs.version.outputs.version }}
           body_path: /tmp/notes.md
           prerelease: ${{ inputs.prerelease }}
+          make_latest: ${{ (!inputs.prerelease && needs.version.outputs.exists != 'true') && 'false' || '' }}
           fail_on_unmatched_files: true
           files: artifacts/*.apk
+
+  # ───────────────────── 把 latest 指到这次 ─────────────────────
+  # 镜像和 Release 都成功后才挪两个 latest（if 里不写 always() 之类，就隐含
+  # needs 全部成功）。镜像这边用 imagetools 把 :VERSION 的双架构清单原样再挂
+  # 一个 :latest，只写清单、不重编，几秒钟；Release 这边用 gh 标成 Latest。
+  # 两边都回读核对，摘要里写「指到了」就是真的指到了。
+  latest:
+    name: latest 指到这次
+    needs: [version, image, release]
+    if: inputs.publish && inputs.latest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # 改 Release 的 Latest
+      packages: write # 给镜像加 :latest
+    steps:
+      # version job 查过一次版本高低，但「Re-run failed jobs」只重跑这里、不重跑
+      # version：旧运行的 latest 失败后再点重跑，这时可能已经发了更新的版本。
+      - name: 确认没有更新的版本
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          REFS=$(gh api --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v" --jq '.[].ref')
+          MAX=$(printf '%s\n' "$REFS" | sed -n 's#^refs/tags/v##p' | { grep -v -- - || true; } | sort -V | tail -1)
+          if [ -n "$MAX" ] && [ "$(printf '%s\n' "$MAX" "$VERSION" | sort -V | tail -1)" != "$VERSION" ]; then
+            echo "::error::已经发了更新的 v$MAX，latest 不往回挪到 v$VERSION。"
+            exit 1
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 镜像 :latest 指到这次
+        env:
+          IMAGE: ghcr.io/${{ needs.image.outputs.owner }}/famledger
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # awk 读完整份输出再打印：中途 exit 的话 buildx 还在写，会吃 SIGPIPE，
+          # 在 pipefail 下让这一步偶发失败
+          digest() { docker buildx imagetools inspect "$1" | awk '$1 == "Digest:" && !d { d = $2 } END { print d }'; }
+          docker buildx imagetools create --tag "${IMAGE}:latest" "${IMAGE}:${VERSION}"
+          WANT=$(digest "${IMAGE}:${VERSION}")
+          GOT=$(digest "${IMAGE}:latest")
+          if [ -z "$WANT" ] || [ "$WANT" != "$GOT" ]; then
+            echo "::error::镜像 :latest 是 ${GOT:-空}，:${VERSION} 是 ${WANT:-空}，没对上。"
+            exit 1
+          fi
+          echo "::notice::${IMAGE}:latest → ${VERSION}（${GOT}）"
+
+      - name: Release 的 Latest 指到这次
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --latest
+          # 刚改完读 /releases/latest 偶尔还是旧值（以前一个 Latest 都没有时是
+          # 404，gh 会非零退出），给它几秒
+          for _ in 1 2 3 4 5; do
+            GOT=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null) || GOT=''
+            if [ "$GOT" = "$TAG" ]; then
+              echo "::notice::/releases/latest → $TAG"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::/releases/latest 还是 ${GOT:-空（404）}，不是 ${TAG}。"
+          exit 1
 
   # ───────────────────── Actions 摘要：部署与使用说明 ─────────────────────
   # release job 只在 `publish=true` 时跑（它有对外副作用：真的建 Release）。
@@ -281,9 +453,10 @@ jobs:
   # `if: always()` 是必须的：即便 image/android 其中一个失败或被跳过，也要
   # 如实生成一份「这次到底发生了什么」的摘要，而不是让 docs 也一起消失。
   # 只挡 `needs.version.result != 'success'`——版本号都算不出来，没什么可写的。
+  # 也等 release 和 latest：Release 建没建、latest 挪没挪，都要写进表里。
   docs:
     name: Actions 摘要 · 部署与使用说明
-    needs: [version, image, android]
+    needs: [version, image, android, release, latest]
     if: always() && needs.version.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -292,8 +465,12 @@ jobs:
         env:
           VERSION: ${{ needs.version.outputs.version }}
           PUBLISH: ${{ inputs.publish }}
+          LATEST: ${{ inputs.latest }}
+          PRERELEASE: ${{ inputs.prerelease }}
           IMAGE_RESULT: ${{ needs.image.result }}
           ANDROID_RESULT: ${{ needs.android.result }}
+          RELEASE_RESULT: ${{ needs.release.result }}
+          LATEST_RESULT: ${{ needs.latest.result }}
           SHA: ${{ github.sha }}
           RUN_NUMBER: ${{ github.run_number }}
           ACTOR: ${{ github.actor }}
@@ -319,17 +496,38 @@ jobs:
             echo "# 🚀 famledger v${VERSION} — 部署与使用说明"
             echo
             if [ "$PUBLISH" = "true" ]; then
-              echo "本次是**正式发布**：镜像已推送 GHCR，APK 已挂到 GitHub Release。"
+              echo "本次是**正式发布**：镜像推送 GHCR，APK 挂到 GitHub Release，各自结果见下表。"
             else
               echo "本次是**验证性构建**（\`publish\` 未勾选）：镜像与 APK 都编出来了，"
               echo "但**没有**推送到 GHCR、**没有**创建 GitHub Release——下面涉及下载/拉取的"
               echo "步骤请改成从本次运行的 **Artifacts** 里取。"
             fi
             echo
+            if [ "$PUBLISH" != "true" ]; then
+              RELEASE_KIND='不建'
+            elif [ "$PRERELEASE" = "true" ]; then
+              RELEASE_KIND='预发布'
+            else
+              RELEASE_KIND='正式版'
+            fi
+            if [ "$PUBLISH" != "true" ]; then
+              LATEST_WHAT='没动：验证性构建什么都不推'
+            elif [ "$LATEST" != "true" ]; then
+              LATEST_WHAT='没动：这次没勾 latest，还指着之前那一版'
+            elif [ "$LATEST_RESULT" = "success" ]; then
+              LATEST_WHAT="镜像 \`:latest\` 与 [Release 的 Latest](https://github.com/${REPO}/releases/latest) 都指到 v${VERSION}"
+            elif [ "$LATEST_RESULT" = "skipped" ]; then
+              LATEST_WHAT='没动：镜像或 Release 没成功，latest 就不挪'
+            else
+              LATEST_WHAT='没挪完：看「latest 指到这次」的日志，可能只挪了镜像那边'
+            fi
+            LATEST_MARK=$(mark "$LATEST_RESULT")
             echo "| 产物 | 标识 | 状态 |"
             echo "|---|---|---|"
             echo "| Docker 镜像 | \`ghcr.io/${OWNER}/famledger:${VERSION}\` | $(mark "$IMAGE_RESULT") |"
             echo "| Android APK | \`famledger-${VERSION}.apk\` | $(mark "$ANDROID_RESULT") |"
+            echo "| GitHub Release | \`v${VERSION}\`（${RELEASE_KIND}） | $(mark "$RELEASE_RESULT") |"
+            echo "| latest | ${LATEST_WHAT} | ${LATEST_MARK} |"
             echo
             echo "---"
             echo
@@ -360,6 +558,9 @@ jobs:
               echo '```'
               echo
               echo "升级：把 \`image\` 的版本号改掉（或者一直用 \`latest\`），再 \`docker compose pull && docker compose up -d\`。"
+              if [ "$LATEST_RESULT" != "success" ]; then
+                echo "这次 \`latest\` 没指过来：一直用 \`latest\` 的机器不会升到 v${VERSION}，要用它就照上面写明版本号。"
+              fi
             else
               echo "这次没有推镜像到 GHCR，要验证就在仓库根目录本地构建："
               echo

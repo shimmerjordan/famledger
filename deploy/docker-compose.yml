@@ -20,6 +20,7 @@ name: famledger
 
 services:
   famledger:
+    # :latest 是最近一次勾了 latest 的发布；想钉住版本就写成 :1.1 这样的版本号。
     image: ghcr.io/shimmerjordan/famledger:latest
     container_name: famledger
     restart: unless-stopped

@@ -91,7 +91,7 @@ cd app && flutter analyze && flutter test && flutter build web --release
 ./scripts/e2e-android.sh                       # Android 真机端到端测试
 ```
 
-- **CI**：push 自动跑 `test.yml`。发布用 `build.yml`，要在 Actions 里手动触发：推 GHCR 镜像、打 APK、建 Release。版本号取自 [`CHANGELOG.md`](CHANGELOG.md)。
+- **CI**：push 自动跑 `test.yml`。发布用 `build.yml`，要在 Actions 里手动触发：推 GHCR 镜像、打 APK、建 Release。版本号取自 [`CHANGELOG.md`](CHANGELOG.md)，发布前先把它改成新号。默认勾着 `latest`：全部成功后，镜像的 `:latest` 和 Release 的 Latest 都指到这次；发 rc 时取消它。
 - **已知限制**：iOS 原生代码没编译验证过；APK 用 debug 密钥签名，只能侧载；一次部署只服务一个家庭，也不做多币种换算。
 
 产品定位与视觉规则见 [`PRODUCT.md`](PRODUCT.md)、[`DESIGN.md`](DESIGN.md)。
