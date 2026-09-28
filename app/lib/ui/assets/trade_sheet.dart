@@ -19,6 +19,7 @@ Future<bool?> showTradeSheet(
   Holding holding, {
   required bool buy,
 }) => showModalBottomSheet<bool>(
+  useRootNavigator: true,
   context: context,
   isScrollControlled: true,
   builder: (context) => TradeSheet(holding: holding, buy: buy),

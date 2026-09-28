@@ -13,6 +13,7 @@ Future<TxFilter?> showTxFilterSheet(
   required TxFilter initial,
   required LedgerData ledger,
 }) => showModalBottomSheet<TxFilter>(
+  useRootNavigator: true,
   context: context,
   isScrollControlled: true,
   builder: (context) => _TxFilterSheet(initial: initial, ledger: ledger),

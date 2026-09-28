@@ -89,7 +89,9 @@ class _StartupWiringState extends ConsumerState<StartupWiring> with WidgetsBindi
     try {
       final store = await ref.read(captureStoreProvider.future);
       final txId = (await store.loadCapture(captureId))?.transactionId;
-      ref.read(routerProvider).push(txId == null ? '/home' : '/transactions/$txId');
+      final router = ref.read(routerProvider);
+      // 首页是底部 tab 要 go；push 从整屏页上推外壳地址会再叠一个外壳（go_router 直接断言）。
+      txId == null ? router.go('/home') : router.push('/transactions/$txId');
     } catch (_) {
       // 本地记录读不到就算了：SnackBar 只是个提示，别为它抛错。
     }

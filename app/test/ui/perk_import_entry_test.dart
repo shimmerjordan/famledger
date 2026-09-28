@@ -10,13 +10,13 @@ import 'perks_fake.dart';
 
 void main() {
   testWidgets('物品 tab 的 AppBar 有「智能导入」，预选只要实物；投资、会员权益 tab 没有', (tester) async {
-    await pumpAssetsAt(tester, bootAssets(importBackend()), '/assets');
+    await pumpAssetsAt(tester, bootAssets(importBackend()), '/assets?tab=items');
     await tester.tap(find.byTooltip('智能导入'));
     await settle(tester);
     expect(tester.widget<ChoiceChip>(find.byKey(const ValueKey('import-want-items'))).selected, isTrue);
     await tester.pageBack();
     await settle(tester);
-    await tester.tap(find.text('投资'));
+    await tester.tap(find.text('理财'));
     await settle(tester);
     expect(find.byTooltip('智能导入'), findsNothing);
     await tester.tap(find.text('会员权益'));
@@ -26,7 +26,7 @@ void main() {
 
   testWidgets('从物品 tab 进来导的是会员（Review ㉚）：「去看看」切到会员权益的本期，看得到刚导的卡', (tester) async {
     final backend = importBackend();
-    await pumpAssetsAt(tester, bootAssets(backend), '/assets');
+    await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=items');
     await tester.tap(find.byTooltip('智能导入'));
     await settle(tester);
     await tester.enterText(find.byKey(const ValueKey('import-text')), '88VIP 会员说明');

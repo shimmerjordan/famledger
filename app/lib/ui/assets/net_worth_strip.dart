@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../app/providers.dart';
 import '../../app/theme.dart';
@@ -234,6 +235,10 @@ class _NetWorthStripState extends ConsumerState<NetWorthStrip> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         InfoRow('账户', MoneyText(o.accountsNetCents)),
+        const Padding(
+          padding: EdgeInsets.symmetric(horizontal: LedgerLayout.pagePadding - 12),
+          child: _ManageAccounts(),
+        ),
         InfoRow('投资（账户外）', MoneyText(o.investNetCents)),
         if (market != null && costInAccounts > 0)
           Padding(
@@ -302,6 +307,8 @@ class _StripError extends StatelessWidget {
                 Text('净资产', style: theme.textTheme.bodySmall),
                 const SizedBox(height: 2),
                 Text('暂时算不出来：$reason', style: theme.textTheme.bodyMedium),
+                // 总览取不到时明细展不开，账户入口也得在这里（「我的」里已经没有了）。
+                const _ManageAccounts(),
               ],
             ),
           ),
@@ -327,6 +334,23 @@ class _StripSkeleton extends StatelessWidget {
         SizedBox(height: 8),
         Skeleton(width: 220, height: 12),
       ],
+    ),
+  );
+}
+
+/// 账户（银行卡、现金、支付宝……）的入口从「我的」挪到了净资产这里：余额本来就是净资产的第一项。
+/// 展开的明细里有一个；总览取不到、明细展不开时，出错那一行里也有一个。
+class _ManageAccounts extends StatelessWidget {
+  const _ManageAccounts();
+
+  @override
+  Widget build(BuildContext context) => Align(
+    alignment: Alignment.centerLeft,
+    child: TextButton.icon(
+      key: const ValueKey('net-worth-accounts'),
+      onPressed: () => context.push('/settings/accounts'),
+      icon: const Icon(Icons.account_balance_wallet_outlined, size: 18),
+      label: const Text('管理账户'),
     ),
   );
 }

@@ -7,12 +7,12 @@ import '../ui/ai/ai_chat_page.dart';
 import '../ui/ai/ai_report_page.dart';
 import '../ui/analysis/analysis_page.dart';
 import '../ui/assets/asset_routes.dart';
+import '../ui/assets/assets_page.dart';
 import '../ui/auth/connect_page.dart';
 import '../ui/auth/login_page.dart';
 import '../ui/auth/setup_page.dart';
 import '../ui/funds/fund_detail_page.dart';
 import '../ui/funds/fund_form_page.dart';
-import '../ui/funds/funds_page.dart';
 import '../ui/home/home_page.dart';
 import '../ui/import/import_page.dart';
 import '../ui/import/import_preview_page.dart';
@@ -43,7 +43,12 @@ final routerProvider = Provider<GoRouter>((ref) {
   final refresh = _SessionRefresh(ref);
   ref.onDispose(refresh.dispose);
 
+  // 根 navigator：资产 tab 的子页挂在这上面，整屏盖住外壳（见 assetsTabRoute）。每个 router 一把，
+  // 测试里一个接一个建 router 时不会撞上同一个 GlobalKey。
+  final rootKey = GlobalKey<NavigatorState>(debugLabel: 'root');
+
   return GoRouter(
+    navigatorKey: rootKey,
     initialLocation: '/home',
     refreshListenable: refresh,
     redirect: (context, state) {
@@ -84,11 +89,7 @@ final routerProvider = Provider<GoRouter>((ref) {
               ),
             ],
           ),
-          StatefulShellBranch(
-            routes: [
-              GoRoute(path: '/funds', builder: (context, state) => const FundsPage()),
-            ],
-          ),
+          StatefulShellBranch(routes: [assetsTabRoute(pagesOn: rootKey)]),
           StatefulShellBranch(
             routes: [
               GoRoute(
@@ -117,6 +118,8 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/transactions/:id',
         builder: (context, state) => TxDetailPage(state.pathParameters['id']!),
       ),
+      // 基金并进了资产 tab 的第一段：老地址（书签、旧版通知）转过去。
+      GoRoute(path: '/funds', redirect: (context, state) => assetsLocation(AssetsPage.fundsTab)),
       GoRoute(
         path: '/funds/new',
         builder: (context, state) => const FundFormPage(),
@@ -146,7 +149,6 @@ final routerProvider = Provider<GoRouter>((ref) {
           ),
         ],
       ),
-      assetsRoute(),
       GoRoute(path: '/ai/chat', builder: (context, state) => const AiChatPage()),
       GoRoute(path: '/ai/report', builder: (context, state) => const AiReportPage()),
       GoRoute(

@@ -89,7 +89,7 @@ class FundDetailPage extends ConsumerWidget {
               SectionHeader(
                 '最近流水',
                 actionLabel: '全部',
-                onAction: () => context.push('/transactions'),
+                onAction: () => context.go('/transactions'), // 账单是底部 tab：切过去，push 会再叠一个外壳
               ),
               _Recent(stats: stats, ledger: ledger),
             ],

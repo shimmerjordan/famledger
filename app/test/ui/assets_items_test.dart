@@ -39,7 +39,7 @@ double topOf(WidgetTester tester, String text) =>
 void main() {
   group('物品列表', () {
     testWidgets('卡片：名称、已用天数、每天多少钱、状态；汇总只算在用和闲置', (tester) async {
-      await pumpAssetsAt(tester, bootAssets(itemsBackend()), '/assets');
+      await pumpAssetsAt(tester, bootAssets(itemsBackend()), '/assets?tab=items');
 
       expect(find.text('iPhone 16'), findsOneWidget);
       expect(find.text('已用 23 / 1095 天'), findsOneWidget);
@@ -84,7 +84,7 @@ void main() {
           ),
         ],
       );
-      await pumpAssetsAt(tester, bootAssets(backend), '/assets');
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=items');
       expect(find.text('估值 ¥350.00 · −95%'), findsOneWidget);
 
       await tester.tap(find.text('按价格'));
@@ -110,13 +110,13 @@ void main() {
           ),
         ],
       );
-      await pumpAssetsAt(tester, bootAssets(backend), '/assets');
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=items');
       expect(find.text('估值 ¥12,000.00 · +20% 未实现'), findsOneWidget);
       expect(find.text('估值 ¥12,000.00 · 比原价高 ¥2,000.00'), findsOneWidget);
     });
 
     testWidgets('排序：默认按日均，切到按天数/按价格', (tester) async {
-      await pumpAssetsAt(tester, bootAssets(itemsBackend()), '/assets');
+      await pumpAssetsAt(tester, bootAssets(itemsBackend()), '/assets?tab=items');
 
       expect(topOf(tester, 'iPhone 16'), lessThan(topOf(tester, '洗衣机')));
 
@@ -130,7 +130,7 @@ void main() {
     });
 
     testWidgets('一件都没有：说一句并给「记一件」', (tester) async {
-      await pumpAssetsAt(tester, bootAssets(AssetsBackend()), '/assets');
+      await pumpAssetsAt(tester, bootAssets(AssetsBackend()), '/assets?tab=items');
 
       expect(find.text('还没记物品'), findsOneWidget);
       expect(find.widgetWithText(FilledButton, '记一件'), findsOneWidget);
@@ -142,7 +142,7 @@ void main() {
       tester,
     ) async {
       final backend = AssetsBackend();
-      await pumpAssetsAt(tester, bootAssets(backend), '/assets');
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=items');
 
       await tester.tap(find.byTooltip('记一件物品'));
       await settle(tester);
@@ -425,7 +425,7 @@ void main() {
 
     testWidgets('删除：二次确认，删完回列表且不见了', (tester) async {
       final backend = itemsBackend();
-      await pumpAssetsAt(tester, bootAssets(backend), '/assets');
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=items');
       await tapVisible(tester, find.text('洗衣机'));
       expect(find.text('家电 · 闲置'), findsOneWidget);
 
@@ -443,7 +443,7 @@ void main() {
 
     testWidgets('删除后退场那几帧还是原来的详情，不闪「已经不在了」', (tester) async {
       final backend = itemsBackend();
-      await pumpAssetsAt(tester, bootAssets(backend), '/assets');
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=items');
       await tapVisible(tester, find.text('iPhone 16'));
 
       await tester.tap(find.byTooltip('删除'));
@@ -468,13 +468,13 @@ void main() {
       final w = size.width.toInt();
 
       testWidgets('列表 @$w', (tester) async {
-        await pumpAssetsAt(tester, bootAssets(itemsBackend()), '/assets', size: size);
+        await pumpAssetsAt(tester, bootAssets(itemsBackend()), '/assets?tab=items', size: size);
         expect(find.text('iPhone 16'), findsOneWidget);
         expect(tester.takeException(), isNull);
       });
 
       testWidgets('空列表 @$w', (tester) async {
-        await pumpAssetsAt(tester, bootAssets(AssetsBackend()), '/assets', size: size);
+        await pumpAssetsAt(tester, bootAssets(AssetsBackend()), '/assets?tab=items', size: size);
         expect(find.text('还没记物品'), findsOneWidget);
         expect(tester.takeException(), isNull);
       });

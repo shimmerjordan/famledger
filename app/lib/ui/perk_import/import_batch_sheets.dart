@@ -12,6 +12,7 @@ import 'perk_import_draft.dart';
 // 都只改草稿，不往库里写。
 
 Future<T?> _sheet<T>(BuildContext context, String title, List<Widget> children) => showModalBottomSheet<T>(
+  useRootNavigator: true,
   context: context,
   isScrollControlled: true,
   showDragHandle: true,
@@ -54,6 +55,7 @@ Future<void> showBatchClaimSheet(BuildContext context, {required PerkImportDraft
 /// 设周期：五个预设 chip 和叠加上限，和权益表单同一套（QuotaFields）。
 Future<void> showBatchQuotaSheet(BuildContext context, {required PerkImportDraft draft, required List<String> keys}) async {
   final quota = await showModalBottomSheet<List<PerkQuota>>(
+    useRootNavigator: true,
     context: context,
     isScrollControlled: true,
     showDragHandle: true,
@@ -67,6 +69,7 @@ Future<void> showBatchQuotaSheet(BuildContext context, {required PerkImportDraft
 Future<void> showBatchValueSheet(BuildContext context, {required PerkImportDraft draft, required List<String> keys}) async {
   // 弹层回 (cents,)：记录里的 null 是「清掉面值」，整个结果 null 是划掉没选。
   final picked = await showModalBottomSheet<(int?,)>(
+    useRootNavigator: true,
     context: context,
     isScrollControlled: true,
     showDragHandle: true,

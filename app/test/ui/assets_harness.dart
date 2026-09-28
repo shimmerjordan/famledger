@@ -539,7 +539,7 @@ Future<void> pumpAssetsAt(
   final router = GoRouter(
     initialLocation: location,
     routes: [
-      assetsRoute(),
+      assetsTabRoute(),
       GoRoute(
         path: '/transactions/:id',
         builder: (context, state) =>

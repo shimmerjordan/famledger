@@ -91,6 +91,7 @@ class AiInferredDot extends ConsumerWidget {
   );
 
   Future<void> _open(BuildContext context, WidgetRef ref) => showModalBottomSheet<void>(
+    useRootNavigator: true,
     context: context,
     showDragHandle: true,
     useSafeArea: true,

@@ -106,7 +106,7 @@ class _HomePageState extends ConsumerState<HomePage> {
                     '基金余额',
                     padding: const EdgeInsets.only(bottom: 8),
                     actionLabel: '全部',
-                    onAction: () => context.go('/funds'),
+                    onAction: () => context.go('/assets?tab=funds'),
                   ),
                   if (data == null)
                     const SkeletonList(rows: 4, padding: EdgeInsets.zero)
@@ -153,7 +153,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     SectionHeader(
       '基金',
       actionLabel: '全部',
-      onAction: () => context.go('/funds'),
+      onAction: () => context.go('/assets?tab=funds'),
     ),
     if (data == null)
       const Padding(
@@ -222,7 +222,7 @@ class _HomePageState extends ConsumerState<HomePage> {
         padding: padding == null ? null : const EdgeInsets.only(bottom: 8),
         actionLabel: '全部 ${alerts.length} 项',
         // 过去先打开「本期」、按「我」看：和这里同一张单子，说几项就看得到几项。
-        onAction: () => context.push(perkAgendaLocation),
+        onAction: () => context.go(perkAgendaLocation),
       ),
       for (final alert in alerts.take(3))
         PerkAlertTile(alert: alert, data: data, padding: padding),

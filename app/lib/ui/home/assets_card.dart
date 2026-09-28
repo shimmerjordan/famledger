@@ -35,12 +35,12 @@ class AssetsHomeCard extends ConsumerWidget {
         padding: const EdgeInsets.only(bottom: LedgerLayout.groupGap),
         child: ListTile(
           key: const ValueKey('assets-entry'),
-          onTap: () => context.push('/assets'),
+          onTap: () => context.go('/assets?tab=items'),
           contentPadding: padding ??
               const EdgeInsets.symmetric(horizontal: LedgerLayout.pagePadding),
           leading: const Icon(Icons.inventory_2_outlined),
           title: const Text('记录资产'),
-          subtitle: const Text('东西每天花多少、投资赚了多少'),
+          subtitle: const Text('东西每天花多少、理财赚了多少'),
           trailing: const Icon(Icons.chevron_right, size: 20),
         ),
       );
@@ -56,7 +56,7 @@ class AssetsHomeCard extends ConsumerWidget {
           '资产',
           padding: padding == null ? null : const EdgeInsets.only(bottom: 8),
           actionLabel: '全部',
-          onAction: () => context.push('/assets'),
+          onAction: () => context.go('/assets?tab=items'),
         ),
         Padding(
           key: const ValueKey('assets-card'),
@@ -66,7 +66,7 @@ class AssetsHomeCard extends ConsumerWidget {
             children: [
               Expanded(
                 child: _Half(
-                  onTap: () => context.push('/assets'),
+                  onTap: () => context.go('/assets?tab=items'),
                   label: '物品每天',
                   value: recorded
                       ? DailyMoney(items.dailyCents)
@@ -110,12 +110,12 @@ class AssetsHomeCard extends ConsumerWidget {
         ),
       ],
     );
-    void open() => context.push('/assets?tab=invest');
+    void open() => context.go('/assets?tab=invest');
 
     if (invest.isEmpty) {
       return _Half(
         onTap: open,
-        label: '投资市值',
+        label: '理财市值',
         value: Text('还没记', style: theme.textTheme.bodyLarge),
         note: '点这里添加',
       );
@@ -123,7 +123,7 @@ class AssetsHomeCard extends ConsumerWidget {
     if (invest.heldCount == 0) {
       return _Half(
         onTap: open,
-        label: '投资市值',
+        label: '理财市值',
         value: MoneyText(invest.marketCents),
         note: '都清仓了',
       );
@@ -131,14 +131,14 @@ class AssetsHomeCard extends ConsumerWidget {
     if (priced == 0) {
       return _Half(
         onTap: open,
-        label: '投资市值',
+        label: '理财市值',
         value: Text('还没有价格', style: theme.textTheme.bodyLarge),
         noteWidget: unpricedNote,
       );
     }
     return _Half(
       onTap: open,
-      label: '投资市值',
+      label: '理财市值',
       value: MoneyText(invest.marketCents),
       noteWidget: invest.unpricedCount == 0
           ? today

@@ -37,7 +37,7 @@ AssetsBackend recentBackend(List<Map<String, dynamic>> recent) {
 }
 
 Future<void> openFromMenu(WidgetTester tester, AssetsBackend backend, {String role = 'admin', String tab = 'perks', Size size = const Size(400, 1600)}) async {
-  await pumpAssetsAt(tester, bootAssets(backend, session: await sessionAs(role)), tab == 'perks' ? '/assets?tab=perks' : '/assets', size: size);
+  await pumpAssetsAt(tester, bootAssets(backend, session: await sessionAs(role)), tab == 'perks' ? '/assets?tab=perks' : '/assets?tab=items', size: size);
   await tester.tap(find.byKey(ValueKey(tab == 'perks' ? 'perks-menu' : 'items-menu')));
   await settle(tester);
   await tester.tap(find.byKey(const ValueKey('menu-recent-imports')));

@@ -43,7 +43,7 @@ void main() {
   testWidgets('验收 ②：订单文字 → 物品默认关联唯一那笔流水 → 导入后带估值、没另记账', (tester) async {
     final backend = AssetsBackend();
     backend.imports.draft = orderDraft();
-    await pumpAssetsAt(tester, bootAssets(backend), '/assets', size: const Size(400, 2000));
+    await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=items', size: const Size(400, 2000));
 
     await tester.tap(find.byTooltip('智能导入'));
     await settle(tester);

@@ -11,6 +11,7 @@ Future<List<String>?> showAllowedAppsSheet(
   required List<String> selected,
   required List<InstalledApp> installed,
 }) => showModalBottomSheet<List<String>>(
+  useRootNavigator: true,
   context: context,
   isScrollControlled: true,
   showDragHandle: true,

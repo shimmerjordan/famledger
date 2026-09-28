@@ -157,6 +157,7 @@ Future<void> showCheckInSheet(
   required String kind,
 }) async {
   final choice = await showModalBottomSheet<CheckInChoice>(
+    useRootNavigator: true,
     context: context,
     isScrollControlled: true,
     builder: (context) => CheckInSheet(

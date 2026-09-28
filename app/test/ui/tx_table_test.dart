@@ -848,8 +848,8 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('记一笔页'), findsNothing);
 
-      // 第一次进基金页会把焦点拿走；切回账单要自己拿回来。
-      await go('基金');
+      // 第一次进资产页会把焦点拿走；切回账单要自己拿回来。
+      await go('资产');
       await go('账单');
       await tester.sendKeyEvent(LogicalKeyboardKey.keyN);
       await tester.pumpAndSettle();

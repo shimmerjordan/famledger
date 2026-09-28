@@ -34,7 +34,9 @@ Future<bool> openCaptureRoute(Ref ref, String captureId) async {
     final store = await ref.read(captureStoreProvider.future);
     final record = await store.loadCapture(captureId);
     final txId = record?.transactionId;
-    ref.read(routerProvider).push(txId == null ? '/home' : '/transactions/$txId');
+    final router = ref.read(routerProvider);
+    // 首页是底部 tab 要 go（同 app/startup.dart）。
+    txId == null ? router.go('/home') : router.push('/transactions/$txId');
     return true;
   } catch (_) {
     return false;

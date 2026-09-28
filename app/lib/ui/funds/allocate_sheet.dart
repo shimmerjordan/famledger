@@ -20,6 +20,7 @@ Future<bool?> showAllocateSheet(
   required Fund from,
   required List<Fund> funds,
 }) => showModalBottomSheet<bool>(
+  useRootNavigator: true,
   context: context,
   isScrollControlled: true,
   builder: (context) => _AllocateSheet(from: from, funds: funds),

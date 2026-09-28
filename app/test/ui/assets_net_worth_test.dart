@@ -30,7 +30,7 @@ String breakdownText(WidgetTester tester) => tester.widget<Text>(_breakdown).dat
 void main() {
   group('资产页的净资产总览', () {
     testWidgets('折叠：净资产 + 一行分项（标签说清口径）；点开是账户、投资、实物明细和开关', (tester) async {
-      await pumpAssetsAt(tester, bootAssets(worthBackend()), '/assets');
+      await pumpAssetsAt(tester, bootAssets(worthBackend()), '/assets?tab=items');
 
       expect(find.text('净资产'), findsOneWidget);
       expect(find.text('¥16,215.88'), findsOneWidget);
@@ -58,7 +58,7 @@ void main() {
     testWidgets('持仓挂了账户：分项只算账户外的浮盈，明细写出市值和已在账户里的成本', (tester) async {
       // 市值 15120、成本 14600 早以转账进了证券户（账户余额里），净资产只补浮盈 520。
       final backend = worthBackend()..investMarketCents = 1512000;
-      await pumpAssetsAt(tester, bootAssets(backend), '/assets');
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=items');
 
       expect(breakdownText(tester), contains('投资（账户外）¥520.00'));
       expect(find.text('¥16,215.88'), findsOneWidget);
@@ -71,7 +71,7 @@ void main() {
 
     testWidgets('管理员关掉「实物计入净资产」：开关先翻、等总览回来才放开；净资产和分项跟着变', (tester) async {
       final backend = worthBackend();
-      await pumpAssetsAt(tester, bootAssets(backend, session: await sessionAs('admin')), '/assets');
+      await pumpAssetsAt(tester, bootAssets(backend, session: await sessionAs('admin')), '/assets?tab=items');
       await expand(tester);
 
       backend.delayNext['GET /stats/overview'] = const Duration(seconds: 2);
@@ -101,7 +101,7 @@ void main() {
 
     testWidgets('成员：开关是灰的，写明只有管理员能改，不发请求', (tester) async {
       final backend = worthBackend();
-      await pumpAssetsAt(tester, bootAssets(backend, session: await sessionAs('member')), '/assets');
+      await pumpAssetsAt(tester, bootAssets(backend, session: await sessionAs('member')), '/assets?tab=items');
       await expand(tester);
 
       expect(switchTile(tester).onChanged, isNull);
@@ -114,7 +114,7 @@ void main() {
     testWidgets('改开关失败：说出原因，开关和数字都不动', (tester) async {
       final backend = worthBackend()
         ..failNext['PATCH /settings'] = (500, 'boom', '服务器开小差了');
-      await pumpAssetsAt(tester, bootAssets(backend, session: await sessionAs('admin')), '/assets');
+      await pumpAssetsAt(tester, bootAssets(backend, session: await sessionAs('admin')), '/assets?tab=items');
       await expand(tester);
 
       await tapVisible(tester, find.byKey(const ValueKey('net-worth-switch')));
@@ -126,7 +126,7 @@ void main() {
 
     testWidgets('老服务端没给 physical：分项不写实物，也没有开关', (tester) async {
       final backend = worthBackend()..physical = null;
-      await pumpAssetsAt(tester, bootAssets(backend), '/assets');
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=items');
 
       expect(find.text('¥10,320.00'), findsOneWidget);
       expect(breakdownText(tester), '账户 ¥9,800.00 · 投资（账户外）¥520.00');
@@ -137,7 +137,7 @@ void main() {
     testWidgets('ledger seq 变了（同步拉到新数据）就重取', (tester) async {
       final backend = worthBackend();
       final container = bootAssets(backend);
-      await pumpAssetsAt(tester, container, '/assets');
+      await pumpAssetsAt(tester, container, '/assets?tab=items');
       expect(find.text('¥16,215.88'), findsOneWidget);
 
       backend.physical = {'valueCents': 900000, 'includedCents': 600000, 'count': 2};
@@ -152,7 +152,7 @@ void main() {
 
     testWidgets('下拉刷新：没拉到新数据也重取；别的设备关了总开关，总览和详情页都跟上', (tester) async {
       final backend = worthBackend(assets: [assetJson('a1')]);
-      await pumpAssetsAt(tester, bootAssets(backend), '/assets');
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=items');
       await tapVisible(tester, find.byKey(const ValueKey('asset-a1')));
       expect(find.text('计入（跟随类别）'), findsOneWidget);
       await tester.pageBack();
@@ -175,7 +175,7 @@ void main() {
     testWidgets('总览取不到（服务器出错）：一行说清是净资产没算出来 + 行内重试；下面的物品照常', (tester) async {
       final backend = worthBackend(assets: [assetJson('a1')])
         ..failAlways['GET /stats/overview'] = (500, 'boom', '服务器开小差了');
-      await pumpAssetsAt(tester, bootAssets(backend), '/assets');
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=items');
 
       expect(find.byKey(const ValueKey('net-worth-error')), findsOneWidget);
       expect(find.text('净资产'), findsOneWidget);
@@ -192,7 +192,7 @@ void main() {
 
     testWidgets('离线：写「连不上服务器」，不把异常原文糊上来；联网后重试就好', (tester) async {
       final backend = worthBackend(assets: [assetJson('a1')])..offline.add('GET /stats/overview');
-      await pumpAssetsAt(tester, bootAssets(backend), '/assets');
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=items');
 
       expect(find.text('暂时算不出来：连不上服务器'), findsOneWidget);
       expect(find.textContaining('Exception'), findsNothing);
@@ -205,7 +205,7 @@ void main() {
 
     testWidgets('取到过、再刷新失败：留着旧数字，旁边说没刷新上，重试好了提示就收起', (tester) async {
       final backend = worthBackend(assets: [assetJson('a1')]);
-      await pumpAssetsAt(tester, bootAssets(backend), '/assets');
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=items');
       expect(find.text('¥16,215.88'), findsOneWidget);
 
       backend.failAlways['GET /stats/overview'] = (500, 'boom', '服务器开小差了');
@@ -225,7 +225,7 @@ void main() {
     group('展开后三种宽度都不溢出', () {
       for (final size in kWidths) {
         testWidgets('@${size.width.toInt()}', (tester) async {
-          await pumpAssetsAt(tester, bootAssets(worthBackend()..investMarketCents = 1512000), '/assets', size: size);
+          await pumpAssetsAt(tester, bootAssets(worthBackend()..investMarketCents = 1512000), '/assets?tab=items', size: size);
           await expand(tester);
           expect(find.byKey(const ValueKey('net-worth-details')), findsOneWidget);
           expect(tester.takeException(), isNull);
@@ -237,7 +237,7 @@ void main() {
       await pumpAssetsAt(
         tester,
         bootAssets(worthBackend(assets: [assetJson('a1')]), session: await sessionAs('admin')),
-        '/assets',
+        '/assets?tab=items',
         size: const Size(800, 420),
       );
       // 从第一帧（总览和物品页都是骨架）起就不许有溢出。
@@ -254,7 +254,7 @@ void main() {
       tester.platformDispatcher.accessibilityFeaturesTestValue =
           const FakeAccessibilityFeatures(disableAnimations: true);
       addTearDown(tester.platformDispatcher.clearAccessibilityFeaturesTestValue);
-      await pumpAssetsAt(tester, bootAssets(worthBackend()), '/assets');
+      await pumpAssetsAt(tester, bootAssets(worthBackend()), '/assets?tab=items');
 
       await tester.tap(find.byKey(const ValueKey('net-worth-strip')));
       await tester.pump();
@@ -268,7 +268,7 @@ void main() {
     });
 
     testWidgets('动画开着：第一帧还在展开（和上一条对照）', (tester) async {
-      await pumpAssetsAt(tester, bootAssets(worthBackend()), '/assets');
+      await pumpAssetsAt(tester, bootAssets(worthBackend()), '/assets?tab=items');
 
       await tester.tap(find.byKey(const ValueKey('net-worth-strip')));
       await tester.pump();

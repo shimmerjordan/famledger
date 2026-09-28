@@ -344,7 +344,7 @@ class _HoldingFormPageState extends ConsumerState<HoldingFormPage> {
               onChanged: _canAuto ? (v) => setState(() => _auto = v) : null,
               title: const Text('自动行情'),
               subtitle: Text(
-                _canAuto ? '进投资页时自动拉最新价（基金是上一交易日净值）' : '填了代码、选了基金或沪深北市场才能自动拉价',
+                _canAuto ? '进理财页时自动拉最新价（基金是上一交易日净值）' : '填了代码、选了基金或沪深北市场才能自动拉价',
               ),
             ),
             if (!_editing) ...[

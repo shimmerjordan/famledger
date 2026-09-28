@@ -11,6 +11,7 @@ import 'perk_import_draft.dart';
 /// 但不预选。顶上「全部确认」一键让所有「领取平台待确认」「可能重复」消失。
 Future<void> showClaimMappingSheet(BuildContext context, {required PerkImportDraft draft, required LedgerData ledger}) =>
     showModalBottomSheet<void>(
+      useRootNavigator: true,
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
@@ -29,6 +30,7 @@ Future<void> showClaimMappingSheet(BuildContext context, {required PerkImportDra
 /// 挑一个库里已有的平台（「并入…」用）：只列没归档的，不在这里新建 —— 预览阶段不往库里写任何东西。
 Future<String?> pickExistingPlatform(BuildContext context, LedgerData ledger, {String title = '并入哪个平台'}) =>
     showModalBottomSheet<String>(
+      useRootNavigator: true,
       context: context,
       showDragHandle: true,
       useSafeArea: true,

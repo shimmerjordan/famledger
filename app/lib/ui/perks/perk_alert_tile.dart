@@ -91,7 +91,7 @@ class PerkAlertTile extends ConsumerWidget {
           ? null
           : () {
               if (id == null) {
-                context.push(perkAgendaLocation);
+                context.go(perkAgendaLocation); // 资产是底部 tab：切过去，不叠一层
               } else if (onOpen != null) {
                 onOpen!(id);
               } else {
@@ -142,6 +142,7 @@ Future<void> pickOptionAndCheckIn(
   final kind = perkActionKind(parent, status);
   final options = node.options;
   final picked = await showModalBottomSheet<Benefit>(
+    useRootNavigator: true,
     context: context,
     builder: (context) => SafeArea(
       child: ListView(

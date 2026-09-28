@@ -57,6 +57,7 @@ class PlatformPickerField extends ConsumerWidget {
 /// 新建撞上已有的同名平台（服务端 409 name_taken）时直接改用那一个。
 Future<PlatformPick?> showPlatformPicker(BuildContext context, {String? noneLabel}) =>
     showModalBottomSheet<PlatformPick>(
+      useRootNavigator: true,
       context: context,
       isScrollControlled: true,
       showDragHandle: true,

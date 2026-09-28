@@ -31,9 +31,10 @@ const List<ShellDestination> kShellDestinations = [
     icon: Icons.receipt_long_outlined,
     selectedIcon: Icons.receipt_long,
   ),
+  // 基金（资金模块）、物品、理财、会员权益都在这一个 tab 里（ui/assets/assets_page.dart）。
   ShellDestination(
-    path: '/funds',
-    label: '基金',
+    path: '/assets',
+    label: '资产',
     icon: Icons.savings_outlined,
     selectedIcon: Icons.savings,
   ),
@@ -50,6 +51,13 @@ const List<ShellDestination> kShellDestinations = [
     selectedIcon: Icons.person,
   ),
 ];
+
+/// 这个地址（可以带查询参数）落在某个底部 tab 上。去这种地址要用 go 切过去：从整屏页上 push 会
+/// 再叠一个外壳（go_router 直接断言）；在外壳里 push 不会叠，但底栏高亮的还是原来那个 tab。
+bool isShellLocation(String location) {
+  final path = Uri.parse(location).path;
+  return kShellDestinations.any((d) => d.path == path);
+}
 
 /// 屏宽档位：结构随宽度变，字号不变（DESIGN.md）。
 enum WidthClass { compact, medium, expanded }

@@ -16,6 +16,7 @@ import 'asset_widgets.dart';
 /// 卖出一件物品：卖出价、日期，默认同时记一笔收入。成功返回 true。
 Future<bool?> showSellSheet(BuildContext context, Asset asset) =>
     showModalBottomSheet<bool>(
+      useRootNavigator: true,
       context: context,
       isScrollControlled: true,
       builder: (context) => SellSheet(asset: asset),

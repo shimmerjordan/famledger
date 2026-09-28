@@ -694,7 +694,7 @@ class _ResultViewState extends ConsumerState<_ResultView> {
   /// 「去看看」去哪：只导了物品 → 物品 tab；补充到某张卡 → 那张卡的详情；其余 → 会员权益的本期。
   String get _destination {
     final perks = result.createdOf('memberships') + result.createdOf('benefits') + result.updatedOf('memberships') + result.updatedOf('benefits');
-    if (perks == 0 && result.createdOf('items') > 0) return '/assets';
+    if (perks == 0 && result.createdOf('items') > 0) return '/assets?tab=items';
     final target = draft.targetMembershipId;
     if (target != null) return '/assets/memberships/$target';
     return '/assets?tab=perks&view=current';
@@ -755,7 +755,7 @@ class _ResultViewState extends ConsumerState<_ResultView> {
       Text(
         // 从流水来的卡不标「AI 推断」（价格、日期都是流水里看到的），不提那个小点。
         '${draft.fromTransactions ? '' : '标着「AI 推断」的字段，点一下能确认或修改。'}导错了可以整批撤销：现在点下面的「撤销本次导入」，'
-        '或者 7 天内到资产页右上角的「最近的 AI 导入」里撤。',
+        '或者 7 天内到资产 › 会员权益（或物品）右上角「更多 › 最近的 AI 导入」里撤。',
         key: const ValueKey('perk-import-undo-hint'),
         style: theme.textTheme.bodySmall,
       ),

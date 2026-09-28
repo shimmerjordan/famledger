@@ -11,6 +11,7 @@ import '../widgets/widgets.dart';
 /// 打开一个编辑表单。编辑一律用底部弹层，对话框只留给破坏性确认（DESIGN.md）。
 Future<T?> showManageSheet<T>(BuildContext context, WidgetBuilder builder) =>
     showModalBottomSheet<T>(
+      useRootNavigator: true,
       context: context,
       isScrollControlled: true,
       showDragHandle: true,

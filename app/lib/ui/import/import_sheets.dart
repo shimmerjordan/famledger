@@ -32,6 +32,7 @@ Future<void> showRowEditSheet(
   required int index,
   required LedgerData ledger,
 }) => showModalBottomSheet<void>(
+  useRootNavigator: true,
   context: context,
   isScrollControlled: true,
   builder: (context) => _SheetFrame(
@@ -148,6 +149,7 @@ Future<void> showBatchCategorySheet(
   final expense = indices.where((i) => draft.rows[i].type == 'expense').length;
   final income = indices.length - expense;
   return showModalBottomSheet<void>(
+    useRootNavigator: true,
     context: context,
     isScrollControlled: true,
     builder: (context) => _SheetFrame(
@@ -273,6 +275,7 @@ Future<void> showBatchFundSheet(
   required List<int> indices,
   required LedgerData ledger,
 }) => showModalBottomSheet<void>(
+  useRootNavigator: true,
   context: context,
   isScrollControlled: true,
   builder: (context) {

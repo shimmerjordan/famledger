@@ -83,7 +83,7 @@ Future<void> pumpHome(
     initialLocation: '/home',
     routes: [
       GoRoute(path: '/home', builder: (context, state) => const HomePage()),
-      assetsRoute(),
+      assetsTabRoute(),
     ],
   );
   addTearDown(router.dispose);
@@ -111,7 +111,7 @@ Future<void> pumpHome(
 }
 
 void main() {
-  testWidgets('物品每天花多少 + 投资市值与今日涨跌', (tester) async {
+  testWidgets('物品每天花多少 + 理财市值与今日涨跌', (tester) async {
     await pumpHome(
       tester,
       LedgerData(assets: someAssets, holdings: someHoldings),
@@ -122,7 +122,7 @@ void main() {
     expect(find.text('¥272.86/天', findRichText: true), findsOneWidget);
     // 副标题是估值合计：iPhone ¥5,895.88 + 洗衣机（数码，闲置也算）¥2,596.82。
     expect(find.text('估值 ¥8,492.70'), findsOneWidget);
-    expect(find.text('投资市值'), findsOneWidget);
+    expect(find.text('理财市值'), findsOneWidget);
     expect(find.text('¥151,200.00'), findsOneWidget);
     expect(find.text('+¥1,100.00'), findsOneWidget);
     expect(find.byKey(const ValueKey('assets-entry')), findsNothing);

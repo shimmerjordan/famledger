@@ -164,7 +164,7 @@ class _FundFormPageState extends ConsumerState<FundFormPage> {
       if (context.canPop()) {
         context.pop();
       } else {
-        context.go('/funds');
+        context.go('/assets?tab=funds');
       }
     } catch (error) {
       if (!mounted) return;

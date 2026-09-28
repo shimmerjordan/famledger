@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app/providers.dart';
 import '../app/router.dart';
+import '../app/shell.dart';
 import '../data/local/local_store.dart';
 import '../data/models/models.dart';
 import '../data/repos/ledger_repo.dart';
@@ -351,7 +352,11 @@ final perkReminderControllerProvider = Provider<PerkReminderController>((ref) {
     clock: ref.watch(assetClockProvider),
     store: ref.watch(localStoreProvider),
     active: () => ref.read(sessionProvider) != null,
-    onOpen: (location) => ref.read(routerProvider).push(location),
+    // 提醒点开去的是资产 tab 的会员权益：tab 要 go 过去，push 会在外壳上再叠一个外壳。
+    onOpen: (location) {
+      final router = ref.read(routerProvider);
+      isShellLocation(location) ? router.go(location) : router.push(location);
+    },
     inputs: () {
       // 没登录不排：退出登录的那一下 ledger 还拿着上一家的数据、「我」已经是空的（会按全家排）。
       if (ref.read(sessionProvider) == null) return null;

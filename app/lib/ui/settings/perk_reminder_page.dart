@@ -13,7 +13,7 @@ import '../assets/asset_widgets.dart';
 import '../perks/perk_providers.dart';
 import 'capture_widgets.dart';
 
-/// 「我的 › 会员提醒」（spec §5「Android 通知」）：本机的每日摘要开关和时间、通知权限（复用自动记账那套申请与状态）、
+/// 会员提醒（资产 › 会员权益右上角「更多」里进；spec §5「Android 通知」）：本机的每日摘要开关和时间、通知权限（复用自动记账那套申请与状态）、
 /// MIUI 自启动引导（手机重启后要靠它把提醒排回去）、接下来几条的预览。不能推送时照实说一句为什么：网页版、iOS 版
 /// 本期不推送，Android 上通知组件没起来是另一回事（perkPushBlockOf）。
 class PerkReminderPage extends ConsumerStatefulWidget {

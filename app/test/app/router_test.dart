@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:famledger/app/providers.dart';
 import 'package:famledger/app/router.dart';
+import 'package:famledger/app/shell.dart';
 import 'package:famledger/app/theme.dart';
 import 'package:famledger/data/local/local_store.dart';
 import 'package:famledger/data/local/secure_store.dart';
@@ -82,8 +83,8 @@ void main() {
     );
     expect(find.text('首页'), findsWidgets);
     expect(find.byType(NavigationBar), findsOneWidget);
-    for (final label in ['账单', '基金', '分析', '我的']) {
-      expect(find.text(label), findsWidgets);
+    for (final label in ['账单', '资产', '分析', '我的']) {
+      expect(find.descendant(of: find.byType(NavigationBar), matching: find.text(label)), findsOneWidget);
     }
     expect(find.byTooltip('记一笔'), findsOneWidget);
   });
@@ -108,32 +109,140 @@ void main() {
     expect(find.byType(NavigationBar), findsNothing);
   });
 
-  testWidgets('切到「我的」显示设置分组', (tester) async {
+  testWidgets('切到「我的」：资产、账户、会员提醒、导入账单都挪走了', (tester) async {
     await pumpApp(
       tester,
       await boot(baseUrl: 'https://ledger.example.com', loggedIn: true),
     );
     await tester.tap(find.text('我的').last);
     await tester.pumpAndSettle();
+    Finder entry(String label) => find.descendant(of: find.byType(ListView).last, matching: find.text(label));
     expect(find.text('妈妈'), findsOneWidget);
-    expect(find.text('资产'), findsOneWidget);
-    expect(find.text('会员提醒'), findsOneWidget);
+    expect(entry('成员'), findsOneWidget);
+    expect(entry('类别'), findsOneWidget);
     // 设置页是懒加载列表，靠后的分组要滚到了才会建出来。
     await tester.dragUntilVisible(find.text('关于'), find.byType(ListView).last, const Offset(0, -200));
-    expect(find.text('导入账单'), findsOneWidget);
-    expect(find.text('服务器与账号'), findsOneWidget);
-    expect(find.text('关于'), findsOneWidget);
+    expect(entry('服务器与账号'), findsOneWidget);
+    expect(entry('关于'), findsOneWidget);
+    for (final gone in ['资产', '账户', '会员提醒', '导入账单']) {
+      expect(entry(gone), findsNothing, reason: '「$gone」不该再在「我的」里');
+    }
   });
 
-  testWidgets('「我的 › 会员提醒」进得去', (tester) async {
+  testWidgets('底部「资产」：基金、物品、理财、会员权益四段，默认在基金，还在外壳里', (tester) async {
     await pumpApp(
       tester,
       await boot(baseUrl: 'https://ledger.example.com', loggedIn: true),
     );
-    await tester.tap(find.text('我的').last);
+    await tester.tap(find.descendant(of: find.byType(NavigationBar), matching: find.text('资产')));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('会员提醒'));
+    for (final label in ['基金', '物品', '理财', '会员权益']) {
+      expect(find.widgetWithText(Tab, label), findsOneWidget);
+    }
+    expect(tester.widget<TabBar>(find.byType(TabBar)).controller!.index, 0);
+    expect(find.byType(NavigationBar), findsOneWidget);
+  });
+
+  testWidgets('老地址 /funds 转到资产 › 基金', (tester) async {
+    final container = await boot(baseUrl: 'https://ledger.example.com', loggedIn: true);
+    await pumpApp(tester, container);
+    container.read(routerProvider).go('/funds');
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(Tab, '基金'), findsOneWidget);
+    expect(tester.widget<TabBar>(find.byType(TabBar)).controller!.index, 0);
+    expect(find.byType(NavigationBar), findsOneWidget);
+  });
+
+  testWidgets('资产的子页整屏盖住外壳（底部导航不露），返回回到资产 tab', (tester) async {
+    final container = await boot(baseUrl: 'https://ledger.example.com', loggedIn: true);
+    await pumpApp(tester, container);
+    container.read(routerProvider).go('/assets/platforms');
+    await tester.pumpAndSettle();
+    expect(find.text('平台管理'), findsWidgets);
+    expect(find.byType(NavigationBar), findsNothing);
+    await tester.tap(find.byType(BackButton));
+    await tester.pumpAndSettle();
+    expect(find.byType(NavigationBar), findsOneWidget);
+    expect(find.widgetWithText(Tab, '会员权益'), findsOneWidget);
+  });
+
+  testWidgets('「资产 › 会员权益 › 更多 › 会员提醒」进得去', (tester) async {
+    final container = await boot(baseUrl: 'https://ledger.example.com', loggedIn: true);
+    await pumpApp(tester, container);
+    container.read(routerProvider).go('/assets?tab=perks');
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('perks-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('menu-perk-reminders')));
     await tester.pumpAndSettle();
     expect(find.byType(PerkReminderPage), findsOneWidget);
+  });
+
+  int tabIndex(WidgetTester tester) => tester.widget<TabBar>(find.byType(TabBar)).controller!.index;
+
+  testWidgets('go 到另一段的子页（导入后「去看看」某张卡）：子页照常打开，返回落在那一段、地址也跟上', (tester) async {
+    final container = await boot(baseUrl: 'https://ledger.example.com', loggedIn: true);
+    await pumpApp(tester, container);
+    final router = container.read(routerProvider);
+    router.go('/assets?tab=items');
+    await tester.pumpAndSettle();
+    router.go('/home');
+    await tester.pumpAndSettle();
+
+    router.go('/assets/memberships/m1');
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(router.state.uri.path, '/assets/memberships/m1', reason: '切段的地址同步不能把刚打开的子页换掉');
+    expect(find.byType(NavigationBar), findsNothing);
+
+    await tester.tap(find.byType(BackButton));
+    await tester.pumpAndSettle();
+    expect(tabIndex(tester), 3);
+    expect(router.state.uri.toString(), '/assets?tab=perks');
+  });
+
+  testWidgets('停在基金段时 go 到理财的表单：表单不被弹掉', (tester) async {
+    final container = await boot(baseUrl: 'https://ledger.example.com', loggedIn: true);
+    await pumpApp(tester, container);
+    final router = container.read(routerProvider);
+    router.go('/assets');
+    await tester.pumpAndSettle();
+    router.go('/assets/holdings/new');
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(router.state.uri.path, '/assets/holdings/new');
+    expect(find.byType(NavigationBar), findsNothing);
+  });
+
+  testWidgets('已经在资产 tab 时再点一次底部「资产」：段不变，地址补回当前段（刷新不会落到基金）', (tester) async {
+    final container = await boot(baseUrl: 'https://ledger.example.com', loggedIn: true);
+    await pumpApp(tester, container);
+    final router = container.read(routerProvider);
+    final bottomAssets = find.descendant(of: find.byType(NavigationBar), matching: find.text('资产'));
+    await tester.tap(bottomAssets);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(Tab, '理财'));
+    await tester.pumpAndSettle();
+    expect(router.state.uri.toString(), '/assets?tab=invest');
+
+    await tester.tap(bottomAssets);
+    await tester.pumpAndSettle();
+    expect(tabIndex(tester), 2);
+    expect(router.state.uri.toString(), '/assets?tab=invest');
+  });
+
+  testWidgets('资产 tab 里的底部弹层盖在外壳上面（不被「记一笔」挡住、底栏点不到）', (tester) async {
+    final container = await boot(baseUrl: 'https://ledger.example.com', loggedIn: true);
+    await pumpApp(tester, container);
+    container.read(routerProvider).go('/assets?tab=perks');
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('记一张会员卡'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('perks-add-manual')), findsOneWidget);
+    expect(
+      find.ancestor(of: find.byType(BottomSheet), matching: find.byType(AdaptiveShell)),
+      findsNothing,
+      reason: '弹层挂在根 navigator 上',
+    );
   });
 }

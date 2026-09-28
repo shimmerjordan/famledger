@@ -49,7 +49,7 @@ void main() {
       return d;
     });
     expect(backend.assets, hasLength(1));
-    expect(find.textContaining('7 天内到资产页右上角的「最近的 AI 导入」里撤'), findsOneWidget, reason: '说清楚离开这一页之后去哪撤');
+    expect(find.textContaining('7 天内到资产 › 会员权益（或物品）右上角「更多 › 最近的 AI 导入」里撤'), findsOneWidget, reason: '说清楚离开这一页之后去哪撤');
 
     await tapVisible(tester, find.byKey(const ValueKey('perk-import-undo')));
     await tester.tap(find.text('不撤了'));

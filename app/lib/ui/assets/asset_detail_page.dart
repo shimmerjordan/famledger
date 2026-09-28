@@ -106,7 +106,7 @@ class _AssetDetailPageState extends ConsumerState<AssetDetailPage> {
       if (context.canPop()) {
         context.pop();
       } else {
-        context.go('/assets');
+        context.go('/assets?tab=items');
       }
     } catch (error) {
       if (!mounted) return;

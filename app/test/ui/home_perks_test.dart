@@ -56,7 +56,7 @@ Future<GoRouter> pumpHomeAt(
     initialLocation: '/home',
     routes: [
       GoRoute(path: '/home', builder: (context, state) => const HomePage()),
-      assetsRoute(),
+      assetsTabRoute(),
     ],
   );
   addTearDown(router.dispose);

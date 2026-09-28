@@ -51,7 +51,7 @@ double topOf(WidgetTester tester, String text) =>
     tester.getTopLeft(find.text(text)).dy;
 
 Future<void> openInvestTab(WidgetTester tester) async {
-  await tester.tap(find.text('投资'));
+  await tester.tap(find.text('理财'));
   await settle(tester);
 }
 
@@ -113,7 +113,7 @@ void main() {
   group('进投资页自动刷新行情', () {
     testWidgets('切到投资标签刷一次；一小时内再进来不刷', (tester) async {
       final backend = AssetsBackend(holdings: portfolio());
-      await pumpAssetsAt(tester, bootAssets(backend), '/assets');
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=items');
       expect(backend.requests('POST', '/holdings/refresh'), isEmpty);
 
       await openInvestTab(tester);

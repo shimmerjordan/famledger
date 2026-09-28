@@ -22,6 +22,7 @@ import 'perk_import_draft.dart';
 /// 弹层给软键盘让位（名称、价格、领取路径这些输入框在下半截，不让位会被键盘盖住）。
 Future<void> showImportNodeSheet(BuildContext context, {required PerkImportDraft draft, required String nodeKey, required LedgerData ledger}) =>
     showModalBottomSheet<void>(
+      useRootNavigator: true,
       context: context,
       isScrollControlled: true,
       showDragHandle: true,

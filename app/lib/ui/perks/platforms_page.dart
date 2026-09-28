@@ -219,6 +219,7 @@ class _PlatformFormPageState extends ConsumerState<PlatformFormPage> {
     ];
     if (targets.isEmpty) return setState(() => _error = '没有别的平台可以并入');
     final target = await showModalBottomSheet<PerkPlatform>(
+      useRootNavigator: true,
       context: context,
       showDragHandle: true,
       useSafeArea: true,

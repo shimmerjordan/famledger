@@ -19,7 +19,7 @@ import 'package:flutter_test/flutter_test.dart';
 import '../platform/perk_fake_scheduler.dart';
 import 'assets_harness.dart' show sessionAs, kWidths;
 
-// 「我的 › 会员提醒」（spec §5）：本机开关和时间（存本机、不同步）、通知权限复用自动记账那套、MIUI 自启动、
+// 会员提醒页（资产 › 会员权益 › 更多；spec §5）：本机开关和时间（存本机、不同步）、通知权限复用自动记账那套、MIUI 自启动、
 // 接下来几条的预览；不能推送时照实说为什么（网页版、iOS 版、这台手机上通知组件用不了）。三种宽度、1.5 倍字号不溢出。
 // 「现在」= 本地 2026-09-23 上午十点。
 

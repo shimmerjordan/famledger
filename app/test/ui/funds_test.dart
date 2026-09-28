@@ -9,7 +9,7 @@ import 'package:famledger/data/repos/session_repo.dart';
 import 'package:famledger/ui/funds/fund_detail_page.dart';
 import 'package:famledger/ui/funds/fund_progress.dart';
 import 'package:famledger/ui/funds/fund_providers.dart';
-import 'package:famledger/ui/funds/funds_page.dart';
+import 'package:famledger/ui/funds/funds_tab.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'dart:async';
 
@@ -99,7 +99,7 @@ Future<void> pumpFunds(
       ],
       child: MaterialApp(
         theme: buildTheme(Brightness.light),
-        home: const FundsPage(),
+        home: const Scaffold(body: FundsTab()),
       ),
     ),
   );

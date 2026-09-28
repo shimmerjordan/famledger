@@ -31,11 +31,10 @@ class SettingsPage extends ConsumerWidget {
             emoji: me?.avatarEmoji,
             color: hexColor(me?.color) ?? theme.colorScheme.primary,
           ),
+          // 账户、会员提醒挪进了资产 tab（净资产明细里的「管理账户」、会员权益的「更多」菜单），
+          // 导入账单只留账单页右上角那一个入口。
           const _Group('家庭', [
             _Entry(Icons.people_outline, '成员', '/settings/members'),
-            _Entry(Icons.account_balance_wallet_outlined, '账户', '/settings/accounts'),
-            _Entry(Icons.inventory_2_outlined, '资产', '/assets'),
-            _Entry(Icons.notifications_active_outlined, '会员提醒', '/settings/perk-reminders'),
             _Entry(Icons.local_offer_outlined, '类别', '/settings/categories'),
             _Entry(Icons.pie_chart_outline, '预算', '/settings/budgets'),
           ]),
@@ -45,7 +44,6 @@ class SettingsPage extends ConsumerWidget {
           ]),
           const _Group('智能与数据', [
             _Entry(Icons.smart_toy_outlined, 'AI 渠道', '/settings/ai'),
-            _Entry(Icons.upload_file_outlined, '导入账单', '/import'),
             _Entry(Icons.backup_outlined, '备份与恢复', '/settings/backup'),
           ]),
           const _Group('其他', [

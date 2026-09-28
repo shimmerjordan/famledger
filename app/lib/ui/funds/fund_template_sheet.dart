@@ -12,6 +12,7 @@ import 'fund_providers.dart';
 /// 返回选中的模板；「从空白开始」返回一个只有名字为空的 [Fund]。
 Future<Fund?> showFundTemplateSheet(BuildContext context) =>
     showModalBottomSheet<Fund>(
+      useRootNavigator: true,
       context: context,
       isScrollControlled: true,
       builder: (context) => const _FundTemplateSheet(),
