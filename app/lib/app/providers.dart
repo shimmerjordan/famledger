@@ -79,6 +79,9 @@ class SessionController extends Notifier<Session?> {
 
   Future<void> connect(String baseUrl) => _repo.connect(baseUrl);
 
+  /// 见 [SessionRepo.probeSetup]。
+  Future<bool?> probeSetup() => _repo.probeSetup();
+
   Future<void> setup({
     required String householdName,
     required String username,

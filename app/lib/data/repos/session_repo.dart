@@ -120,6 +120,23 @@ class SessionRepo {
     await _secure.write(baseUrlKey, url);
   }
 
+  /// 只问一句记住的那台服务器初始化了没有（登录页用）：不落盘、不改地址。问的途中地址换了
+  /// （用户点了「换个服务器」连上别的），这次的结果作废，返回 null；没记住地址也是 null。连不上照样抛。
+  Future<bool?> probeSetup() async {
+    final url = storedBaseUrl;
+    if (url == null || url.isEmpty) return null;
+    final api = ApiClient(baseUrl: url, inner: _httpClient);
+    try {
+      final status = await api.get('/setup/status');
+      if (storedBaseUrl != url) return null;
+      _needsSetup = jsonBool(status['needsSetup']);
+      _householdName = jsonStringOrNull(status['householdName']);
+      return _needsSetup;
+    } finally {
+      if (_httpClient == null) api.close();
+    }
+  }
+
   /// 首次初始化家庭（服务端没有任何用户时才开放）。
   Future<Session> setup({
     required String householdName,

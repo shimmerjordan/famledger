@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -18,6 +20,31 @@ class _LoginPageState extends ConsumerState<LoginPage> {
   final _password = TextEditingController();
   bool _busy = false;
   String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_checkSetup());
+  }
+
+  /// 连过的服务器会直接落到这页，不再经过「连接」那一步，而初始化状态只在那一步查：
+  /// 服务器换了个还没初始化的库（重新部署、清了数据目录）时，就会停在一个谁都登不进去的
+  /// 登录页。所以这里再问一次，没初始化就转去首启向导；连不上就照旧留在这页，报错等点「登录」时再给。
+  /// 只探测不落盘：问的途中用户换了服务器，晚回来的结果不能把地址写回去。
+  Future<void> _checkSetup() async {
+    final bool? needsSetup;
+    try {
+      needsSetup = await ref.read(sessionProvider.notifier).probeSetup();
+    } catch (_) {
+      return;
+    }
+    if (!mounted || needsSetup == null) return;
+    if (needsSetup) {
+      context.go('/setup');
+    } else {
+      setState(() {}); // 标题换成「登录「家庭名」」
+    }
+  }
 
   @override
   void dispose() {
