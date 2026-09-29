@@ -23,10 +23,10 @@ cd "$APP"
 flutter pub get
 
 # 保持 Flutter 默认的 PWA 策略（offline-first）：会生成 flutter_service_worker.js。
-# 这不会把用户钉死在旧版本上 —— 服务端（server/src/modules/static.js）对
-# index.html / flutter_bootstrap.js / flutter_service_worker.js / version.json
-# 一律 no-cache, must-revalidate，只有带 hash 的内容寻址资源才长缓存，所以
-# 升级镜像后浏览器下一次打开就能拿到新的 service worker。
+# 这不会把用户钉死在旧版本上 —— 服务端（server/src/modules/static.js）对网页文件
+# 一律 no-cache, must-revalidate（Flutter 的产物没有带 hash 的文件名，main.dart.js
+# 每版都叫这个名字），并在 index.html / flutter_bootstrap.js 里给脚本地址带上构建号
+# （?v=…），所以升级镜像后浏览器下一次打开就能拿到新的 service worker 和新脚本。
 # 想彻底不要 SW 就加 --pwa-strategy=none，但那样离线打不开看板，不划算。
 flutter build web --release
 

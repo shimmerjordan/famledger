@@ -4,18 +4,33 @@
 // routes, it exports a `fallback` the server calls after every real route has
 // missed and the path is not under /api — i.e. it is the last thing tried.
 //
-// Cache policy: the three files whose names never change (index.html,
-// flutter_service_worker.js, version.json) plus flutter_bootstrap.js — which
-// index.html loads by bare name — must revalidate, or an upgrade would never
-// reach a browser that already has them. Everything else in a Flutter build is
-// content-addressed, so it gets a year.
+// Cache policy: nothing in a Flutter web build is content-addressed —
+// main.dart.js, assets/*, canvaskit/* keep the same names from one release to
+// the next. Marking them immutable (as this file once did) meant an upgraded
+// container kept serving the old app: browsers never asked again, and a CDN in
+// front (Cloudflare) kept its copy. So every file revalidates (ETag → 304,
+// which is cheap).
+//
+// On top of that each build gets its own URLs: index.html is served with
+// `flutter_bootstrap.js?v=<build>` and flutter_bootstrap.js with
+// `"mainJsPath":"main.dart.js?v=<build>"`, the build id following
+// main.dart.js. A browser or CDN still holding an old copy under the bare name
+// (from the immutable days, or because Cloudflare turns `no-cache` on .js into
+// a 4-hour browser TTL) never gets asked for it again. `main.dart.js?v=<current
+// build>` names exactly one content, so that one URL may be cached for a year.
+// Flutter's service worker already strips `?v=` when it looks up its cache.
 
 const fs = require('node:fs');
 const path = require('node:path');
 
 const NO_CACHE = 'no-cache, must-revalidate';
 const IMMUTABLE = 'public, max-age=31536000, immutable';
-const ALWAYS_REVALIDATE = new Set(['index.html', 'flutter_service_worker.js', 'version.json', 'flutter_bootstrap.js']);
+
+/** Files served with their references pinned to the current build (see above). */
+const PIN = {
+  'index.html': [/(src=["'])flutter_bootstrap\.js(["'])/g, 'flutter_bootstrap.js'],
+  'flutter_bootstrap.js': [/("mainJsPath"\s*:\s*")main\.dart\.js(")/g, 'main.dart.js'],
+};
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -114,6 +129,43 @@ module.exports = (ctx) => {
     stream.pipe(res);
   }
 
+  /** Changes whenever main.dart.js does. Read per request: `scripts/dev.sh` rebuilds the web
+   * without restarting the server. null = no build (nothing to pin). */
+  function buildId() {
+    const st = statFile(path.join(root, 'main.dart.js'));
+    return st ? st.size.toString(36) + Math.floor(st.mtimeMs).toString(36) : null;
+  }
+
+  /** index.html / flutter_bootstrap.js with their references pinned to [id]. The ETag carries the
+   * build id: after an upgrade a browser's old ETag must not earn a 304. */
+  function sendPinned(req, res, file, st, id) {
+    const [pattern, ref] = PIN[path.basename(file)];
+    let text;
+    try {
+      text = fs.readFileSync(file, 'utf8');
+    } catch (e) {
+      log.error('static', `${file}: ${e.message}`);
+      res.writeHead(500);
+      return res.end();
+    }
+    const body = Buffer.from(text.replace(pattern, `$1${ref}?v=${id}$2`), 'utf8');
+    const etag = `W/"${st.size.toString(16)}-${st.mtimeMs.toString(16)}-${id}"`;
+    const headers = {
+      'content-type': TYPES[path.extname(file).toLowerCase()],
+      'cache-control': NO_CACHE,
+      'last-modified': st.mtime.toUTCString(),
+      etag,
+      'x-content-type-options': 'nosniff',
+    };
+    if (req.headers['if-none-match'] === etag) {
+      res.writeHead(304, headers);
+      return res.end();
+    }
+    headers['content-length'] = body.length;
+    res.writeHead(200, headers);
+    res.end(req.method === 'HEAD' ? undefined : body);
+  }
+
   function sendHtml(res, status, html) {
     const body = Buffer.from(html, 'utf8');
     res.writeHead(status, {
@@ -129,8 +181,10 @@ module.exports = (ctx) => {
     if (req.method !== 'GET' && req.method !== 'HEAD') return false;
 
     let pathname;
+    let url;
     try {
-      pathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
+      url = new URL(req.url, 'http://localhost');
+      pathname = decodeURIComponent(url.pathname);
     } catch {
       return false; // malformed encoding — let the caller 404 it
     }
@@ -144,16 +198,24 @@ module.exports = (ctx) => {
       return false;
     }
 
+    const id = buildId();
     const target = resolveFile(pathname);
     const st = target && target !== root ? statFile(target) : null;
     if (st) {
       const name = path.basename(target);
-      sendFile(req, res, target, st, ALWAYS_REVALIDATE.has(name) ? NO_CACHE : IMMUTABLE);
+      const atRoot = path.dirname(target) === root;
+      if (id && atRoot && PIN[name]) {
+        sendPinned(req, res, target, st, id);
+      } else {
+        const pinned = id && atRoot && name === 'main.dart.js' && url.searchParams.get('v') === id;
+        sendFile(req, res, target, st, pinned ? IMMUTABLE : NO_CACHE);
+      }
       return true;
     }
 
     // Unknown path → the SPA shell, so a deep link survives a reload.
-    sendFile(req, res, indexFile, index, NO_CACHE);
+    if (id) sendPinned(req, res, indexFile, index, id);
+    else sendFile(req, res, indexFile, index, NO_CACHE);
     return true;
   }
 
