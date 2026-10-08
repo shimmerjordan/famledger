@@ -127,39 +127,25 @@ class _Summary extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        LedgerLayout.pagePadding,
-        LedgerLayout.pagePadding,
-        LedgerLayout.pagePadding,
-        LedgerLayout.itemGap,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('每天花费', style: theme.textTheme.bodySmall),
-          const SizedBox(height: 2),
-          if (summary.isEmpty)
-            Text('东西都退役或卖掉了', style: theme.textTheme.titleMedium)
-          else
-            DailyMoney(summary.dailyCents, size: MoneySize.display),
-          const SizedBox(height: 4),
+    return SegmentSummary(
+      label: '每天花费',
+      value: summary.isEmpty
+          ? Text('东西都退役或卖掉了', style: theme.textTheme.titleMedium)
+          : DailyMoney(summary.dailyCents, size: MoneySize.title),
+      lines: [
+        Text(
+          summary.isEmpty
+              ? '在用的物品每天花多少，会在这里合计'
+              : '在用和闲置 ${summary.count} 件 · 原价合计 ${Money.format(summary.priceCents)}',
+          style: theme.textTheme.bodySmall,
+        ),
+        if (!summary.isEmpty)
           Text(
-            summary.isEmpty
-                ? '在用的物品每天花多少，会在这里合计'
-                : '在用和闲置 ${summary.count} 件 · 原价合计 ${Money.format(summary.priceCents)}',
+            _valuationLine(summary),
+            key: const ValueKey('assets-valuation-summary'),
             style: theme.textTheme.bodySmall,
           ),
-          if (!summary.isEmpty) ...[
-            const SizedBox(height: 2),
-            Text(
-              _valuationLine(summary),
-              key: const ValueKey('assets-valuation-summary'),
-              style: theme.textTheme.bodySmall,
-            ),
-          ],
-        ],
-      ),
+      ],
     );
   }
 }

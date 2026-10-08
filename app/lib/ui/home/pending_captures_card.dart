@@ -95,9 +95,17 @@ class _PendingCard extends StatelessWidget {
         ? theme.colorScheme.onSurfaceVariant
         : fundColorOf(context, fund, index < 0 ? 0 : index);
 
+    // 两行：第一行「图标 · 商户 · 金额」，第二行「来源与置信度 + 修改 / 确认」。
+    // 之前是三层（信息、错误、两个通栏按钮），三条待确认就占一整屏。
+    final compact = ButtonStyle(
+      minimumSize: const WidgetStatePropertyAll(Size(56, 36)),
+      padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 12)),
+      visualDensity: VisualDensity.compact,
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    );
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(LedgerLayout.itemGap),
+        padding: const EdgeInsets.fromLTRB(LedgerLayout.itemGap, LedgerLayout.itemGap, LedgerLayout.itemGap, 8),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -106,24 +114,13 @@ class _PendingCard extends StatelessWidget {
                 CategoryIcon(category?.icon, background: true, color: color),
                 const SizedBox(width: LedgerLayout.itemGap),
                 Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        tx.merchant?.isNotEmpty == true
-                            ? tx.merchant!
-                            : (category?.name ?? tx.typeLabel),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodyLarge,
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        _provenance(fund),
-                        maxLines: 2,
-                        style: theme.textTheme.bodySmall,
-                      ),
-                    ],
+                  child: Text(
+                    tx.merchant?.isNotEmpty == true
+                        ? tx.merchant!
+                        : (category?.name ?? tx.typeLabel),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodyLarge,
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -134,7 +131,7 @@ class _PendingCard extends StatelessWidget {
               ],
             ),
             if (error != null) ...[
-              const SizedBox(height: 8),
+              const SizedBox(height: 6),
               Text(
                 error!,
                 style: theme.textTheme.bodySmall?.copyWith(
@@ -142,27 +139,35 @@ class _PendingCard extends StatelessWidget {
                 ),
               ),
             ],
-            const SizedBox(height: 8),
+            const SizedBox(height: 4),
             Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 Expanded(
-                  child: FilledButton.tonal(
-                    onPressed: busy ? null : onConfirm,
-                    child: busy
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Text('确认'),
+                  child: Text(
+                    _provenance(fund),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall,
                   ),
                 ),
                 const SizedBox(width: 8),
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: busy ? null : onEdit,
-                    child: const Text('修改'),
-                  ),
+                OutlinedButton(
+                  style: compact,
+                  onPressed: busy ? null : onEdit,
+                  child: const Text('修改'),
+                ),
+                const SizedBox(width: 8),
+                FilledButton.tonal(
+                  style: compact,
+                  onPressed: busy ? null : onConfirm,
+                  child: busy
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('确认'),
                 ),
               ],
             ),

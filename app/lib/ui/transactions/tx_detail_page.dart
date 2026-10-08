@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../app/providers.dart';
 import '../../app/theme.dart';
+import '../../core/colors.dart';
 import '../../core/dates.dart';
 import '../../core/money.dart';
 import '../../data/models/models.dart';
@@ -61,6 +62,11 @@ class _TxDetailPageState extends ConsumerState<TxDetailPage> {
 
   String? _error;
   bool _busy = false;
+
+  /// 正展开着改的那一段（一次只展开一段）；null = 全收着，页面就是一份摘要。
+  String? _open;
+
+  void _toggle(String key) => setState(() => _open = _open == key ? null : key);
 
   @override
   void dispose() {
@@ -280,8 +286,18 @@ class _TxDetailPageState extends ConsumerState<TxDetailPage> {
         : (type == Transaction.typeIncome
               ? ledger.incomeCategories()
               : ledger.expenseCategories());
+    final categoryId = _value(_kCategory, tx.categoryId);
+    final fundId = _value(_kFund, tx.fundId);
+    final toFundId = _value(_kToFund, tx.toFundId);
+    final accountId = _value(_kAccount, tx.accountId);
+    final toAccountId = _value(_kToAccount, tx.toAccountId);
+    final memberId = _value(_kMember, tx.memberId);
+    final merchant = _merchant.text.trim();
+    final note = _note.text.trim();
 
-    return ListView(
+    // 一行一项的摘要，点哪一项就在它下面展开选择器：看一笔账不用滚过 15 个类别图标和
+    // 三排芯片；要改哪个就点哪个。
+    return ReadableListView(
       padding: const EdgeInsets.only(bottom: LedgerLayout.groupGap),
       children: [
         _Header(tx: tx, amount: _amount, type: type),
@@ -311,69 +327,82 @@ class _TxDetailPageState extends ConsumerState<TxDetailPage> {
             }),
           ),
         ),
+        const SizedBox(height: LedgerLayout.itemGap),
         if (ledger == null)
           const SkeletonList(rows: 3)
         else ...[
           if (!isTransfer)
-            PickerField(
+            _section(
+              key: _kCategory,
               label: '类别',
+              value: _categoryValue(ledger.category(categoryId)),
               child: CategoryGrid(
                 categories: categories,
-                selectedId: _value(_kCategory, tx.categoryId),
+                selectedId: categoryId,
                 onSelected: (id) => _pick(_kCategory, id),
               ),
             ),
-          PickerField(
+          _section(
+            key: _kFund,
             label: isTransfer ? '从哪个基金转出' : '基金',
-            contentPadding: EdgeInsets.zero,
+            value: _fundValue(ledger, fundId),
+            flush: true,
             child: FundPicker(
               funds: ledger.activeFunds,
-              selectedId: _value(_kFund, tx.fundId),
+              selectedId: fundId,
               onSelected: (id) => _pick(_kFund, id),
             ),
           ),
           if (isTransfer)
-            PickerField(
+            _section(
+              key: _kToFund,
               label: '转入哪个基金',
-              topGap: LedgerLayout.itemGap,
-              contentPadding: EdgeInsets.zero,
+              value: _fundValue(ledger, toFundId),
+              flush: true,
               child: FundPicker(
                 funds: ledger.activeFunds,
                 keyPrefix: 'to-fund',
-                selectedId: _value(_kToFund, tx.toFundId),
+                selectedId: toFundId,
                 onSelected: (id) => _pick(_kToFund, id),
               ),
             ),
-          PickerField(
+          _section(
+            key: _kAccount,
             label: isTransfer ? '从哪个账户转出' : '账户',
+            value: _plain(ledger.account(accountId)?.name, isTransfer ? '不走账户' : '没填'),
             child: AccountPicker(
               accounts: ledger.activeAccounts,
-              selectedId: _value(_kAccount, tx.accountId),
+              selectedId: accountId,
               onSelected: (id) => _pick(_kAccount, id),
             ),
           ),
           if (isTransfer)
-            PickerField(
+            _section(
+              key: _kToAccount,
               label: '转入哪个账户',
-              topGap: LedgerLayout.itemGap,
+              value: _plain(ledger.account(toAccountId)?.name, '不走账户'),
               child: AccountPicker(
                 accounts: ledger.activeAccounts,
-                selectedId: _value(_kToAccount, tx.toAccountId),
+                selectedId: toAccountId,
                 keyPrefix: 'to-account',
                 onSelected: (id) => _pick(_kToAccount, id),
               ),
             ),
-          PickerField(
+          _section(
+            key: _kMember,
             label: '成员',
+            value: _plain(ledger.member(memberId)?.label, '没填'),
             child: MemberPicker(
               members: ledger.activeMembers,
-              selectedId: _value(_kMember, tx.memberId),
+              selectedId: memberId,
               onSelected: (id) => _pick(_kMember, id),
             ),
           ),
         ],
-        PickerField(
+        _section(
+          key: 'time',
           label: '时间',
+          value: _plain(Dates.dateTimeLabel(_timeOf(tx)), ''),
           child: Row(
             children: [
               Expanded(
@@ -394,18 +423,25 @@ class _TxDetailPageState extends ConsumerState<TxDetailPage> {
             ],
           ),
         ),
-        PickerField(
+        _section(
+          key: 'note',
           label: '商户与备注',
+          value: _plain(
+            [if (merchant.isNotEmpty) merchant, if (note.isNotEmpty) note].join(' · '),
+            '没填',
+          ),
           child: Column(
             children: [
               TextField(
                 controller: _merchant,
+                onChanged: (_) => setState(() {}),
                 decoration: const InputDecoration(hintText: '商户'),
               ),
               const SizedBox(height: 8),
               TextField(
                 controller: _note,
                 maxLines: 2,
+                onChanged: (_) => setState(() {}),
                 decoration: const InputDecoration(hintText: '备注'),
               ),
             ],
@@ -485,6 +521,131 @@ class _TxDetailPageState extends ConsumerState<TxDetailPage> {
           ),
         ),
       ],
+    );
+  }
+
+  /// 摘要一行 + （展开时）它的选择器。[flush] 的选择器自带左右边距（横滑芯片行要出血到屏幕边）。
+  Widget _section({
+    required String key,
+    required String label,
+    required Widget value,
+    required Widget child,
+    bool flush = false,
+  }) {
+    final expanded = _open == key;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _SummaryRow(
+          key: ValueKey('tx-section-$key'),
+          label: label,
+          value: value,
+          expanded: expanded,
+          onTap: () => _toggle(key),
+        ),
+        if (expanded)
+          Padding(
+            padding: EdgeInsets.fromLTRB(
+              flush ? 0 : LedgerLayout.pagePadding,
+              0,
+              flush ? 0 : LedgerLayout.pagePadding,
+              LedgerLayout.itemGap,
+            ),
+            child: child,
+          ),
+      ],
+    );
+  }
+
+  Widget _plain(String? text, String empty) => Builder(
+    builder: (context) {
+      final theme = Theme.of(context);
+      final filled = text != null && text.isNotEmpty;
+      return Text(
+        filled ? text : empty,
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        style: theme.textTheme.bodyLarge?.copyWith(
+          color: filled ? null : theme.colorScheme.onSurfaceVariant,
+        ),
+      );
+    },
+  );
+
+  Widget _categoryValue(TxCategory? category) {
+    if (category == null) return _plain(null, '未分类');
+    return Builder(
+      builder: (context) => Row(
+        children: [
+          CategoryIcon(category.icon, size: 18, color: hexColor(category.color)),
+          const SizedBox(width: 8),
+          Flexible(child: _plain(category.name, '')),
+        ],
+      ),
+    );
+  }
+
+  Widget _fundValue(LedgerData ledger, String? id) {
+    final fund = ledger.fund(id);
+    if (fund == null) return _plain(null, '没填');
+    return Builder(
+      builder: (context) => Row(
+        children: [
+          FundDot.of(context, fund: fund, index: ledger.fundIndex(fund.id)),
+          const SizedBox(width: 8),
+          Flexible(child: _plain(fund.name, '')),
+        ],
+      ),
+    );
+  }
+}
+
+/// 摘要行：左边名目，右边当前的值，末尾一个展开/收起的箭头。整行可点。
+class _SummaryRow extends StatelessWidget {
+  const _SummaryRow({
+    super.key,
+    required this.label,
+    required this.value,
+    required this.expanded,
+    required this.onTap,
+  });
+
+  final String label;
+  final Widget value;
+  final bool expanded;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return InkWell(
+      onTap: onTap,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 48),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(LedgerLayout.pagePadding, 10, 8, 10),
+          child: Row(
+            children: [
+              SizedBox(
+                width: 104,
+                child: Text(
+                  label,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              Expanded(child: value),
+              Icon(
+                expanded ? Icons.expand_less : Icons.expand_more,
+                size: 20,
+                color: theme.colorScheme.onSurfaceVariant,
+                semanticLabel: expanded ? '收起' : '展开修改',
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

@@ -63,9 +63,9 @@ class _AnalysisPageState extends ConsumerState<AnalysisPage> {
       const SectionHeader('类别构成'),
       AsyncValueView<StatsOverview>(
         value: stats,
-        loading: const _ChartSkeleton(height: 176),
+        loading: const _ChartSkeleton(height: 136),
         onRetry: () => ref.read(statsProvider(_month).notifier).refresh(),
-        data: (data) => CategoryDonut(
+        data: (data) => _Composition(
           slices: _categorySlices(context, ledger, data, prevOverview),
           totalCents: data.month.expenseCents,
         ),
@@ -116,6 +116,88 @@ class _AnalysisPageState extends ConsumerState<AnalysisPage> {
               side: ListView(children: side),
             )
           : ListView(children: [...main, ...side]),
+    );
+  }
+}
+
+/// 类别构成：小环 + 右边一栏小结（合计、最大的一类占几成、共几类）。
+///
+/// 环不单独摆在中间：手机上一个 176dp 的环下面才是排行榜，颜色是谁要滚一屏才知道；
+/// 颜色的解释交给紧接着的「类别排行」，这里只说结论。
+class _Composition extends StatelessWidget {
+  const _Composition({required this.slices, required this.totalCents});
+
+  final List<AnalysisSlice> slices;
+  final int totalCents;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    if (slices.isEmpty || totalCents <= 0) {
+      return CategoryDonut(slices: slices, totalCents: totalCents);
+    }
+    final top = slices.first;
+    final topShare = (top.cents * 100 / totalCents).round();
+    final second = slices.length > 1 ? slices[1] : null;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: LedgerLayout.pagePadding),
+      child: Row(
+        children: [
+          CategoryDonut(
+            slices: slices,
+            totalCents: totalCents,
+            size: 120,
+            thickness: 18,
+            showCenter: false,
+          ),
+          const SizedBox(width: LedgerLayout.pagePadding),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('本月支出', style: theme.textTheme.bodySmall),
+                const SizedBox(height: 2),
+                MoneyText(totalCents, size: MoneySize.title),
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    ChartSwatch(top.color),
+                    const SizedBox(width: 6),
+                    Flexible(
+                      child: Text(
+                        '${top.label} 占 $topShare%',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodyMedium,
+                      ),
+                    ),
+                  ],
+                ),
+                if (second != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Row(
+                      children: [
+                        ChartSwatch(second.color),
+                        const SizedBox(width: 6),
+                        Flexible(
+                          child: Text(
+                            '其次 ${second.label} ${(second.cents * 100 / totalCents).round()}%',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodySmall,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                const SizedBox(height: 2),
+                Text('共 ${slices.length} 类，明细在下面的排行', style: theme.textTheme.bodySmall),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

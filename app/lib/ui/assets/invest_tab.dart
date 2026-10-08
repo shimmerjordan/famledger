@@ -167,84 +167,68 @@ class _Header extends StatelessWidget {
     );
     final failed = lastRefresh?.failed ?? const <QuoteFailure>[];
     final rate = summary.gainRate;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        LedgerLayout.pagePadding,
-        LedgerLayout.pagePadding,
-        LedgerLayout.pagePadding,
-        LedgerLayout.itemGap,
+    return SegmentSummary(
+      label: '总市值',
+      value: MoneyText(summary.marketCents, size: MoneySize.title),
+      trailing: TextButton.icon(
+        onPressed: refreshing ? null : onRefresh,
+        icon: refreshing
+            ? const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : const Icon(Icons.refresh, size: 18),
+        label: const Text('刷新行情'),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('总市值', style: theme.textTheme.bodySmall),
-          const SizedBox(height: 2),
-          MoneyText(summary.marketCents, size: MoneySize.display),
-          const SizedBox(height: LedgerLayout.itemGap),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: _Cell(
-                  label: '总收益',
-                  child: Wrap(
-                    spacing: 6,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      MoneyText(summary.gainCents, signed: true),
-                      RateText(rate),
-                    ],
-                  ),
-                ),
-              ),
-              Expanded(
-                child: _Cell(
-                  label: '今日涨跌',
-                  child: MoneyText(summary.todayChangeCents, signed: true),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  priceAt == null
-                      ? '还没有价格'
-                      : '价格更新于 ${Dates.dateTimeLabel(priceAt!)}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.bodySmall,
-                ),
-              ),
-              TextButton.icon(
-                onPressed: refreshing ? null : onRefresh,
-                icon: refreshing
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.refresh, size: 18),
-                label: const Text('刷新行情'),
-              ),
-            ],
-          ),
-          if (refreshError != null)
-            Text('刷新失败：${describeError(refreshError!)}', style: errorStyle),
-          if (refreshNote != null)
-            Text(refreshNote!, style: theme.textTheme.bodySmall),
-          if (failed.isNotEmpty)
-            Text(_failedLine(failed), style: errorStyle),
-          if (summary.unpricedCount > 0)
-            Text(
-              '${summary.unpricedCount} 只还没有价格，没算进市值'
-              '${_waitingForQuotes ? '；行情刚刷过，几分钟后再点「刷新行情」' : ''}',
-              style: theme.textTheme.bodySmall,
+      lines: [
+        // 收益、涨跌、价格时间挤在一两行小字里：这一段的主角是下面一只只持仓。
+        Wrap(
+          spacing: LedgerLayout.itemGap,
+          runSpacing: 2,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('总收益 ', style: theme.textTheme.bodySmall),
+                MoneyText(summary.gainCents, signed: true, size: MoneySize.small),
+                const SizedBox(width: 4),
+                RateText(rate, small: true),
+              ],
             ),
-        ],
-      ),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('今日涨跌 ', style: theme.textTheme.bodySmall),
+                MoneyText(summary.todayChangeCents, signed: true, size: MoneySize.small),
+              ],
+            ),
+          ],
+        ),
+        Text(
+          priceAt == null
+              ? '还没有价格'
+              : '价格更新于 ${Dates.dateTimeLabel(priceAt!)}',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: theme.textTheme.bodySmall,
+        ),
+      ],
+      children: [
+        if (refreshError != null)
+          Text('刷新失败：${describeError(refreshError!)}', style: errorStyle),
+        if (refreshNote != null)
+          Text(refreshNote!, style: theme.textTheme.bodySmall),
+        if (failed.isNotEmpty)
+          Text(_failedLine(failed), style: errorStyle),
+        if (summary.unpricedCount > 0)
+          Text(
+            '${summary.unpricedCount} 只还没有价格，没算进市值'
+            '${_waitingForQuotes ? '；行情刚刷过，几分钟后再点「刷新行情」' : ''}',
+            style: theme.textTheme.bodySmall,
+          ),
+      ],
     );
   }
 
@@ -269,23 +253,6 @@ class _Header extends StatelessWidget {
     final more = failed.length > 2 ? ' 等' : '';
     return '${failed.length} 只没拿到行情：${parts.join('；')}$more';
   }
-}
-
-class _Cell extends StatelessWidget {
-  const _Cell({required this.label, required this.child});
-
-  final String label;
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Text(label, style: Theme.of(context).textTheme.bodySmall),
-      const SizedBox(height: 2),
-      child,
-    ],
-  );
 }
 
 /// 收益率：正数用收入色带 +，负数只带 −（同金额，不靠红绿）。
@@ -343,10 +310,11 @@ class HoldingTile extends StatelessWidget {
     final daily = m.dailyGainCents;
     final sub = m.cleared
         ? [if (code != null) code, '已清仓'].join(' · ')
+        // 不换行空格：副标题放不下折成两行时在「·」处折，别把「日均 +¥2,681.25」折成两截。
         : [
             if (code != null) code,
-            '持有 ${m.days} 天',
-            if (daily != null) '日均 ${Money.format(daily.round(), signed: true)}',
+            '持有\u00A0${m.days}\u00A0天',
+            if (daily != null) '日均\u00A0${Money.format(daily.round(), signed: true)}',
           ].join(' · ');
     final tag = m.cleared ? null : priceTag(h, m);
 
@@ -358,32 +326,34 @@ class HoldingTile extends StatelessWidget {
         vertical: 4,
       ),
       leading: AssetAvatar(holdingIcon(h.market), muted: m.cleared),
-      title: Text(
-        h.label,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: theme.textTheme.bodyLarge,
+      // 「手动价 / 行情过期」挂在名字后面：副标题只有一行，塞标签进去会把「持有 N 天 · 日均」截掉。
+      title: Row(
+        children: [
+          Flexible(
+            child: Text(
+              h.label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodyLarge,
+            ),
+          ),
+          if (tag != null) ...[
+            const SizedBox(width: 6),
+            TagLabel(
+              tag,
+              tone: tag == '手动价' ? TagTone.neutral : TagTone.warning,
+            ),
+          ],
+        ],
       ),
       subtitle: Padding(
         padding: const EdgeInsets.only(top: 2),
-        child: Row(
-          children: [
-            Flexible(
-              child: Text(
-                sub,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.bodySmall,
-              ),
-            ),
-            if (tag != null) ...[
-              const SizedBox(width: 6),
-              TagLabel(
-                tag,
-                tone: tag == '手动价' ? TagTone.neutral : TagTone.warning,
-              ),
-            ],
-          ],
+        // 手机上「代码 · 持有 N 天 · 日均 +¥…」偶尔一行放不下，折成两行也比截成「日均 +¥2,…」强。
+        child: Text(
+          sub,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: theme.textTheme.bodySmall,
         ),
       ),
       trailing: m.cleared

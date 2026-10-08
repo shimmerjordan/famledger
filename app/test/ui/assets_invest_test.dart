@@ -80,7 +80,7 @@ void main() {
       );
 
       expect(find.text('招商中证白酒'), findsOneWidget);
-      expect(find.text('161725 · 持有 10 天 · 日均 +¥20.00'), findsOneWidget);
+      expect(find.text('161725 · 持有\u00A010\u00A0天 · 日均\u00A0+¥20.00'), findsOneWidget, reason: '标签和数字之间是不换行空格');
       expect(find.text('¥1,200.00'), findsOneWidget);
       expect(find.text('+20.00%'), findsOneWidget);
 

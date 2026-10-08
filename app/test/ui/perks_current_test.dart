@@ -66,8 +66,11 @@ void main() {
 
       expect(find.text('本期待领 · 4 项'), findsOneWidget);
       expect(find.text('淘宝 · 2 项'), findsOneWidget);
-      expect(find.text('优酷 · 1 项'), findsOneWidget);
-      expect(find.text('京东 · 1 项'), findsOneWidget);
+      // 只有一项的平台不单起组头，平台名写进那一行：「去优酷领」。
+      expect(find.text('优酷 · 1 项'), findsNothing);
+      expect(find.text('去优酷领'), findsOneWidget);
+      expect(find.text('京东 · 1 项'), findsNothing);
+      expect(find.text('去京东领'), findsOneWidget);
       expect(find.byKey(const ValueKey('current-group-open-tb')), findsOneWidget, reason: '淘宝填了网址');
       expect(find.byKey(const ValueKey('current-group-open-yk')), findsNothing);
 
@@ -75,7 +78,7 @@ void main() {
       expect(find.widgetWithText(FilledButton, '领了'), findsNWidgets(3), reason: '购物券（先领）、优酷年卡、运费券');
       expect(find.text('本期 0/1 · 还剩 129 天'), findsOneWidget);
       expect(find.text('优酷App › 我的 › 88VIP'), findsOneWidget);
-      expect(find.text('长按或右键一行：记多份、改日期、改价值、本期跳过'), findsOneWidget, reason: '长按藏着的东西说一句');
+      expect(find.byTooltip('长按或右键一行：记多份、改日期、改价值、本期跳过'), findsOneWidget, reason: '长按藏着的东西用「?」说，不常驻占一行');
       expect(find.text('88VIP'), findsNWidgets(3), reason: '每行的来源卡');
       expect(find.text('芒果年卡 · 去芒果TV领'), findsOneWidget);
 
@@ -114,7 +117,7 @@ void main() {
       await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=perks', size: const Size(400, 2000));
 
       await tapVisible(tester, find.byKey(const ValueKey('check-in-b1')));
-      expect(find.text('优酷 · 1 项'), findsNothing, reason: '用完就不在本期待领了');
+      expect(find.text('去优酷领'), findsNothing, reason: '用完就不在本期待领了');
       expect(find.text('已完成 · 2 项'), findsOneWidget);
       await tester.tap(find.byKey(const ValueKey('snack-derived-card')));
       await settle(tester);
@@ -151,7 +154,7 @@ void main() {
       final body = backend.lastBody('POST', '/benefit-events');
       expect((body['benefitId'], body['kind'], body['count'], body['valueCents'], body['occurredOn']), ('b4', 'claim', 2, 650, '2026-09-20'));
       expect(find.text('领了：运费券 ×2'), findsOneWidget);
-      expect(find.text('京东 · 1 项'), findsNothing, reason: '每月 2 张，一次记了 2 张');
+      expect(find.text('去京东领'), findsNothing, reason: '每月 2 张，一次记了 2 张');
 
       await tester.ensureVisible(find.byKey(const ValueKey('current-b2')));
       await tester.longPress(find.byKey(const ValueKey('current-b2')));
@@ -330,9 +333,9 @@ void main() {
         '/assets?tab=perks',
         size: const Size(400, 2000),
       );
-      expect(find.text('京东 · 1 项'), findsOneWidget, reason: '默认全家');
+      expect(find.text('去京东领'), findsOneWidget, reason: '默认全家');
       await tapVisible(tester, find.byKey(const ValueKey('perk-scope-mine')));
-      expect(find.text('京东 · 1 项'), findsNothing, reason: '京东PLUS 是爸爸的');
+      expect(find.text('去京东领'), findsNothing, reason: '京东PLUS 是爸爸的');
       expect(find.text('淘宝 · 2 项'), findsOneWidget, reason: '全家共用的照样看得到');
       expect(await store.read<Map<String, dynamic>>(PerkViewPrefsController.storeKey), {'view': 'current', 'scope': 'mine', 'grouping': 'byMembership'});
 
@@ -344,7 +347,7 @@ void main() {
     testWidgets('没登录：不给「我 / 全家」，按全家看', (tester) async {
       await pumpAssetsAt(tester, bootAssets(currentBackend()), '/assets?tab=perks', size: const Size(400, 2000));
       expect(find.byKey(const ValueKey('perk-scope')), findsNothing);
-      expect(find.text('京东 · 1 项'), findsOneWidget);
+      expect(find.text('去京东领'), findsOneWidget);
     });
 
     testWidgets('本期用完的（已完成里）长按照样能记：超额只提示「超额 N」，不拦', (tester) async {

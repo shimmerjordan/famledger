@@ -63,9 +63,9 @@ class PerksCurrentView extends ConsumerWidget {
     AnimationStyle expand() => MediaQuery.disableAnimationsOf(context)
         ? AnimationStyle.noAnimation
         : AnimationStyle(duration: const Duration(milliseconds: 200), curve: Easing.emphasizedDecelerate);
-    Widget tile(CurrentEntry e) => e.benefit.isChoice
-        ? ChoicePerkTile(key: ValueKey('current-${e.benefit.id}'), data: data, entry: e, onOpen: onOpen)
-        : CurrentPerkTile(key: ValueKey('current-${e.benefit.id}'), data: data, entry: e, onOpen: onOpen);
+    Widget tile(CurrentEntry e, {PerkPlatform? platform}) => e.benefit.isChoice
+        ? ChoicePerkTile(key: ValueKey('current-${e.benefit.id}'), data: data, entry: e, onOpen: onOpen, platform: platform)
+        : CurrentPerkTile(key: ValueKey('current-${e.benefit.id}'), data: data, entry: e, onOpen: onOpen, platform: platform);
 
     return LayoutBuilder(
       builder: (context, box) => ListView(
@@ -80,18 +80,28 @@ class PerksCurrentView extends ConsumerWidget {
             const SizedBox(height: LedgerLayout.itemGap),
           ],
           if (now.toClaim.isNotEmpty) ...[
-            SectionHeader('本期待领 · ${now.toClaimCount} 项', key: const ValueKey('perks-to-claim')),
-            // 长按藏着记多份、改日期这些，界面上说一句（网页上用鼠标右键）。
-            Padding(
-              padding: const EdgeInsets.fromLTRB(LedgerLayout.pagePadding, 0, LedgerLayout.pagePadding, 8),
-              child: Text(
-                '长按或右键一行：记多份、改日期、改价值、本期跳过',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
+            SectionHeader(
+              '本期待领 · ${now.toClaimCount} 项',
+              key: const ValueKey('perks-to-claim'),
+              // 长按藏着记多份、改日期这些，用一个「?」说，不常驻占一行（网页上用鼠标右键）。
+              trailing: IconButton(
+                key: const ValueKey('perks-long-press-help'),
+                tooltip: _longPressHint,
+                onPressed: () => showDialog<void>(
+                  context: context,
+                  builder: (context) => AlertDialog(
+                    title: const Text('怎么记'),
+                    content: const Text('点右边的大按钮记一次。$_longPressHint。'),
+                    actions: [TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('知道了'))],
+                  ),
+                ),
+                icon: const Icon(Icons.help_outline, size: 20),
               ),
             ),
             for (final g in now.toClaim) ...[
-              _GroupHeader(group: g),
-              for (final e in g.entries) tile(e),
+              // 只有一项的平台不单起一个组头「优酷 · 1 项」：平台名写进那一行里。
+              if (_GroupHeader.shownFor(g)) _GroupHeader(group: g),
+              for (final e in g.entries) tile(e, platform: _GroupHeader.shownFor(g) ? null : g.platform),
               const SizedBox(height: LedgerLayout.itemGap),
             ],
           ] else if (alerts.isEmpty && hints.isEmpty)
@@ -128,6 +138,8 @@ class PerksCurrentView extends ConsumerWidget {
   }
 }
 
+const String _longPressHint = '长按或右键一行：记多份、改日期、改价值、本期跳过';
+
 /// 卡片级的提醒：这张卡有扣费线索时由线索那一行替掉。
 const Set<PerkAlertKind> _cardKinds = {
   PerkAlertKind.renewCheck,
@@ -141,6 +153,9 @@ class _GroupHeader extends ConsumerWidget {
   const _GroupHeader({required this.group});
 
   final CurrentGroup group;
+
+  /// 两项起才值得一个组头；只有一项、又没有网址可「打开」的，省掉。
+  static bool shownFor(CurrentGroup g) => g.entries.length > 1 || g.platform?.url != null;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -173,11 +188,14 @@ class _GroupHeader extends ConsumerWidget {
 /// 「本期」里的一项：来源卡、进度、截止、领取路径（点击复制）；右边大按钮「领了」/「用了」。
 /// 长按（网页上右键）记多份、改日期、改价值、本期跳过；请求还在路上时大按钮转圈、再点不做事。
 class CurrentPerkTile extends ConsumerWidget {
-  const CurrentPerkTile({super.key, required this.data, required this.entry, required this.onOpen});
+  const CurrentPerkTile({super.key, required this.data, required this.entry, required this.onOpen, this.platform});
 
   final LedgerData data;
   final CurrentEntry entry;
   final void Function(String membershipId) onOpen;
+
+  /// 没有组头时在行里写「去优酷领」。
+  final PerkPlatform? platform;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -208,6 +226,7 @@ class CurrentPerkTile extends ConsumerWidget {
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
                 TagLabel(entry.membership.title),
+                if (platform != null) TagLabel('去${platformLabel(platform)}领'),
                 if (s.termProjected) const TagLabel('推算本期', tone: TagTone.warning),
                 Text(perkStatusLine(s), style: theme.textTheme.bodySmall),
               ],
@@ -275,11 +294,14 @@ class _ClaimHowCopy extends StatelessWidget {
 /// 记多份、改日期……chip 不带 tooltip：chip 里的 Tooltip 在触屏上自己认长按，会抢在外层的长按前面，只弹出一句提示。
 /// 请求还在路上时整组 chip 点不动（一期只挑一个）。
 class ChoicePerkTile extends ConsumerWidget {
-  const ChoicePerkTile({super.key, required this.data, required this.entry, required this.onOpen});
+  const ChoicePerkTile({super.key, required this.data, required this.entry, required this.onOpen, this.platform});
 
   final LedgerData data;
   final CurrentEntry entry;
   final void Function(String membershipId) onOpen;
+
+  /// 没有组头时在行里写「去优酷领」。
+  final PerkPlatform? platform;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -303,6 +325,7 @@ class ChoicePerkTile extends ConsumerWidget {
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
                 TagLabel(entry.membership.title),
+                if (platform != null) TagLabel('去${platformLabel(platform)}领'),
                 if (s.termProjected) const TagLabel('推算本期', tone: TagTone.warning),
                 Text(perkStatusLine(s), style: theme.textTheme.bodySmall),
               ],

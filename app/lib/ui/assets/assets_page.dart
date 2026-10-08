@@ -189,6 +189,21 @@ class _AssetsPageState extends ConsumerState<AssetsPage>
     }
   }
 
+  /// 顶栏「新建」的全称（tooltip、无障碍）和按钮上的短字。
+  String get _addLabel => switch (_index) {
+    AssetsPage.fundsTab => '新建基金',
+    AssetsPage.investTab => '添加持仓',
+    AssetsPage.perksTab => '记一张会员卡',
+    _ => '记一件物品',
+  };
+
+  String get _addShortLabel => switch (_index) {
+    AssetsPage.fundsTab => '新建基金',
+    AssetsPage.investTab => '添加持仓',
+    AssetsPage.perksTab => '记一张',
+    _ => '记一件',
+  };
+
   @override
   Widget build(BuildContext context) {
     ref.listen(ledgerProvider, (_, _) => _maybeAutoRefresh());
@@ -206,20 +221,20 @@ class _AssetsPageState extends ConsumerState<AssetsPage>
               icon: const Icon(Icons.auto_awesome_outlined),
               onPressed: () => context.push(perkImportLocation(want: ImportWant.items)),
             ),
-          IconButton(
-            tooltip: switch (_index) {
-              AssetsPage.fundsTab => '新建基金',
-              AssetsPage.investTab => '添加持仓',
-              AssetsPage.perksTab => '记一张会员卡',
-              _ => '记一件物品',
-            },
-            icon: const Icon(Icons.add),
-            onPressed: () => switch (_index) {
-              AssetsPage.fundsTab => startNewFund(context, ref),
-              AssetsPage.perksTab => showPerkAddSheet(context),
-              AssetsPage.investTab => context.push('/assets/holdings/new'),
-              _ => context.push('/assets/items/new'),
-            },
+          // 带字的「新建」：右下角的 FAB 也是个加号（记一笔），同屏两个光秃秃的「+」分不清谁是谁。
+          Tooltip(
+            message: _addLabel,
+            child: TextButton.icon(
+              key: const ValueKey('assets-add'),
+              onPressed: () => switch (_index) {
+                AssetsPage.fundsTab => startNewFund(context, ref),
+                AssetsPage.perksTab => showPerkAddSheet(context),
+                AssetsPage.investTab => context.push('/assets/holdings/new'),
+                _ => context.push('/assets/items/new'),
+              },
+              icon: const Icon(Icons.add, size: 20),
+              label: Text(_addShortLabel),
+            ),
           ),
           // 溢出菜单：会员权益 tab 有平台管理、会员提醒（从「我的」挪过来）；物品和会员权益都有
           // 「最近的 AI 导入」（7 天内导进来的可以整批撤销，spec §1）。

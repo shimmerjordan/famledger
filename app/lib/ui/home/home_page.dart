@@ -327,47 +327,28 @@ class _BudgetAlertRow extends StatelessWidget {
         ? ledger?.fund(alert.refId)?.name
         : ledger?.category(alert.refId)?.name;
     final color = alert.isOver ? theme.colorScheme.error : ledgerColors.warning;
+    // 一行说完：名字、还剩/超了多少、用了几成。进度条基金卡上已经画了一根，这里不再画第二根。
     return Padding(
-      padding: const EdgeInsets.only(bottom: LedgerLayout.itemGap),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
         children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  name ?? (isFund ? '某个基金' : '某个类别'),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.bodyLarge,
-                ),
-              ),
-              Text(
-                alert.isOver
-                    ? '超预算 ${Money.format(-alert.remainCents)}'
-                    : '还剩 ${Money.format(alert.remainCents)}',
-                style: theme.textTheme.bodySmall?.copyWith(color: color),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(4),
-            child: LinearProgressIndicator(
-              value: alert.ratio > 1 ? 1 : alert.ratio,
-              minHeight: 6,
-              backgroundColor: ledgerColors.surface3,
-              color: color,
+          Expanded(
+            child: Text(
+              name ?? (isFund ? '某个基金' : '某个类别'),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodyMedium,
             ),
           ),
-          const SizedBox(height: 4),
-          Row(
-            children: [
-              MoneyText(alert.spentCents, size: MoneySize.small),
-              Text(' / ', style: theme.textTheme.bodySmall),
-              MoneyText(alert.budgetCents, size: MoneySize.small, muted: true),
-            ],
+          const SizedBox(width: 8),
+          Text(
+            alert.isOver
+                ? '超预算 ${Money.format(-alert.remainCents)}'
+                : '还剩 ${Money.format(alert.remainCents)}',
+            style: theme.textTheme.bodyMedium?.copyWith(color: color),
           ),
+          const SizedBox(width: 8),
+          Text('${(alert.ratio * 100).round()}%', style: theme.textTheme.bodySmall),
         ],
       ),
     );

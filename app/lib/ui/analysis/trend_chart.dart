@@ -101,7 +101,7 @@ class TrendChart extends StatelessWidget {
                       getTitlesWidget: (value, meta) => SideTitleWidget(
                         meta: meta,
                         child: Text(
-                          _compactYuan(value),
+                          compactYuan(value),
                           style: theme.textTheme.bodySmall,
                         ),
                       ),
@@ -205,8 +205,8 @@ String _monthTick(String month) {
   return '${int.tryParse(parts[1]) ?? parts[1]}月';
 }
 
-/// 纵轴刻度：分 → `1.2万` / `800`
-String _compactYuan(double cents) {
+/// 纵轴刻度：分 → `1.2万` / `800`（基金详情的柱图也用）。
+String compactYuan(double cents) {
   final yuan = cents / 100;
   if (yuan >= 10000) {
     final wan = yuan / 10000;

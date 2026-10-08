@@ -19,6 +19,7 @@ class CategoryDonut extends StatelessWidget {
     this.size = 176,
     this.thickness = 24,
     this.maxSlices = kMaxDonutSlices,
+    this.showCenter = true,
   });
 
   final List<AnalysisSlice> slices;
@@ -27,6 +28,9 @@ class CategoryDonut extends StatelessWidget {
   final double size;
   final double thickness;
   final int maxSlices;
+
+  /// 环中间写不写「本月支出 ¥…」；环画小了（旁边另有一栏小结）就不写。
+  final bool showCenter;
 
   @override
   Widget build(BuildContext context) {
@@ -81,14 +85,15 @@ class CategoryDonut extends StatelessWidget {
                 ],
               ),
             ),
-            Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(caption, style: theme.textTheme.bodySmall),
-                const SizedBox(height: 2),
-                MoneyText(totalCents, size: MoneySize.title),
-              ],
-            ),
+            if (showCenter)
+              Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(caption, style: theme.textTheme.bodySmall),
+                  const SizedBox(height: 2),
+                  MoneyText(totalCents, size: MoneySize.title),
+                ],
+              ),
           ],
         ),
       ),

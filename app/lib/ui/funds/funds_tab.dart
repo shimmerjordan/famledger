@@ -180,29 +180,17 @@ class _Total extends StatelessWidget {
       balance += progress.balanceCents;
       expense += progress.monthExpenseCents;
     }
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        LedgerLayout.pagePadding,
-        8,
-        LedgerLayout.pagePadding,
-        LedgerLayout.groupGap,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('基金合计', style: theme.textTheme.bodySmall),
-          const SizedBox(height: 2),
-          if (overview == null && loading)
-            const Skeleton(width: 180, height: 30)
-          else
-            MoneyText(balance, size: MoneySize.display),
-          const SizedBox(height: 4),
-          Text(
-            '本月支出 ${Money.format(expense)} · ${funds.length} 个基金',
-            style: theme.textTheme.bodySmall,
-          ),
-        ],
-      ),
+    return SegmentSummary(
+      label: '基金合计',
+      value: overview == null && loading
+          ? const Skeleton(width: 140, height: 22)
+          : MoneyText(balance, size: MoneySize.title),
+      lines: [
+        Text(
+          '本月支出 ${Money.format(expense)} · ${funds.length} 个基金',
+          style: theme.textTheme.bodySmall,
+        ),
+      ],
     );
   }
 }

@@ -95,8 +95,8 @@ void main() {
     await tester.pumpWidget(wrap(TxTile(tx: tx(), ledger: ledger)));
 
     expect(find.text('巷口面馆'), findsOneWidget);
-    expect(find.text('家庭公共'), findsOneWidget);
-    expect(find.text('微信 · 12:30'), findsOneWidget);
+    // 基金名、账户、时间是一整段富文本（一个省略号），不再是三个 Text。
+    expect(find.textContaining('家庭公共 · 微信 · 12:30'), findsOneWidget);
   });
 
   testWidgets('没有商户时退回类别名', (tester) async {

@@ -106,4 +106,14 @@ void main() {
     await tapVisible(tester, find.byKey(const ValueKey('net-worth-accounts')));
     expect(find.text('账户管理页'), findsOneWidget);
   });
+
+  testWidgets('大字号（1.3×）：净资产条、顶栏「新建基金」、基金列表在 360 宽上不溢出', (tester) async {
+    tester.platformDispatcher.textScaleFactorTestValue = 1.3;
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    await pumpAssetsAt(tester, bootAssets(AssetsBackend()), '/assets', size: const Size(360, 1600));
+    expect(tester.takeException(), isNull, reason: '不能有 RenderFlex overflow');
+    expect(find.byTooltip('新建基金'), findsOneWidget);
+    expect(find.byKey(const ValueKey('net-worth-strip')), findsOneWidget);
+  });
+
 }

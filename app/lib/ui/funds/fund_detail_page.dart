@@ -9,6 +9,7 @@ import '../../app/theme.dart';
 import '../../core/colors.dart';
 import '../../data/models/models.dart';
 import '../../data/repos/ledger_repo.dart';
+import '../analysis/trend_chart.dart' show compactYuan;
 import '../transactions/tx_tile.dart';
 import '../widgets/widgets.dart';
 import 'allocate_sheet.dart';
@@ -67,7 +68,10 @@ class FundDetailPage extends ConsumerWidget {
           ref.invalidate(fundTrendProvider(id));
           await ref.read(ledgerProvider.notifier).sync();
         },
-        child: AdaptiveTwoPane(
+        // 宽屏整块限宽：主栏的环图图例、柱图别拉到 1000 多宽。
+        child: ReadableBox(
+          maxWidth: 1120,
+          child: AdaptiveTwoPane(
           main: ListView(
             padding: const EdgeInsets.only(bottom: 96),
             children: [
@@ -100,6 +104,7 @@ class FundDetailPage extends ConsumerWidget {
                   children: _sideContent(context, ref, fund, ledger!, color),
                 )
               : null,
+          ),
         ),
       ),
     );
@@ -360,6 +365,13 @@ class _Trend extends ConsumerWidget {
           final points = series.series.length > 6
               ? series.series.sublist(series.series.length - 6)
               : series.series;
+          var maxCents = 0;
+          for (final p in points) {
+            if (p.expenseCents > maxCents) maxCents = p.expenseCents;
+            if (p.incomeCents > maxCents) maxCents = p.incomeCents;
+          }
+          // 纵轴给两道刻度（半、满）：光有柱子没有数，高矮只能靠猜。
+          final maxY = (maxCents == 0 ? 100 : maxCents * 1.15).toDouble();
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -368,12 +380,30 @@ class _Trend extends ConsumerWidget {
                 child: BarChart(
                   BarChartData(
                     alignment: BarChartAlignment.spaceAround,
-                    maxY: series.maxCents.toDouble() * 1.15,
-                    gridData: const FlGridData(show: false),
+                    maxY: maxY,
+                    minY: 0,
+                    gridData: FlGridData(
+                      drawVerticalLine: false,
+                      horizontalInterval: maxY / 2,
+                      getDrawingHorizontalLine: (_) => FlLine(
+                        color: theme.colorScheme.outlineVariant,
+                        strokeWidth: 1,
+                      ),
+                    ),
                     borderData: FlBorderData(show: false),
                     barTouchData: BarTouchData(enabled: false),
                     titlesData: FlTitlesData(
-                      leftTitles: const AxisTitles(),
+                      leftTitles: AxisTitles(
+                        sideTitles: SideTitles(
+                          showTitles: true,
+                          reservedSize: 44,
+                          interval: maxY / 2,
+                          getTitlesWidget: (value, meta) => SideTitleWidget(
+                            meta: meta,
+                            child: Text(compactYuan(value), style: theme.textTheme.bodySmall),
+                          ),
+                        ),
+                      ),
                       rightTitles: const AxisTitles(),
                       topTitles: const AxisTitles(),
                       bottomTitles: AxisTitles(

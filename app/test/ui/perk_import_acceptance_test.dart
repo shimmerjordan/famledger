@@ -11,7 +11,7 @@ import 'perks_fake.dart';
 // 假服务端回的草稿照服务端真实输出写（perk_import_fixtures.dart）；服务端那一半的验收在 server/test/asset_import_apply.test.js。
 
 void main() {
-  testWidgets('验收 ①：88VIP 说明 → 领取平台「优酷视频」并入已有的「优酷」→ 导入 → 本期待领里「优酷 · 1 项」有优酷视频年卡', (tester) async {
+  testWidgets('验收 ①：88VIP 说明 → 领取平台「优酷视频」并入已有的「优酷」→ 导入 → 本期待领里有「去优酷领」的优酷视频年卡', (tester) async {
     final backend = AssetsBackend(perks: PerksFake(platforms: [platformJson('tb'), platformJson('yk', name: '优酷', sort: 1)]));
     backend.imports.draft = vip88Draft();
     await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=perks', size: const Size(400, 2400));
@@ -35,7 +35,8 @@ void main() {
 
     await tester.tap(find.byKey(const ValueKey('perk-import-go')));
     await settle(tester);
-    expect(find.descendant(of: find.byKey(const ValueKey('current-group-yk')), matching: find.text('优酷 · 1 项')), findsOneWidget);
+    // 优酷下只有这一项，不单起组头：平台名写在那一行里。
+    expect(find.text('去优酷领'), findsOneWidget);
     expect(find.byKey(const ValueKey('current-b-imp-b1')), findsOneWidget);
     expect(find.text('优酷视频年卡'), findsOneWidget);
   });

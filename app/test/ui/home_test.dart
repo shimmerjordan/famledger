@@ -268,4 +268,15 @@ void main() {
     // 主栏不再放基金卡片横滑。
     expect(find.text('基金'), findsNothing);
   });
+
+  testWidgets('长辈的大字号（1.3×）：手机宽度上基金卡、预算提醒、待确认都不溢出', (tester) async {
+    tester.platformDispatcher.textScaleFactorTestValue = 1.3;
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    await pumpHome(tester, pending: [pendingTx], recent: [recentTx], size: const Size(360, 780));
+
+    expect(tester.takeException(), isNull, reason: '不能有 RenderFlex overflow');
+    expect(find.text('本月支出'), findsOneWidget);
+    expect(find.text('巷口面馆'), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, '确认'), findsOneWidget);
+  });
 }

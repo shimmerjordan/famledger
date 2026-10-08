@@ -272,8 +272,9 @@ void main() {
     testWidgets('余额、预算进度、类别构成、趋势、流水都在', (tester) async {
       await pumpDetail(tester);
 
-      // 标题一次，流水行的基金标签一次。
-      expect(find.text('家庭公共'), findsNWidgets(2));
+      // 标题一次；流水行的基金名在副标题那段富文本里。
+      expect(find.text('家庭公共'), findsOneWidget);
+      expect(find.textContaining('家庭公共 · '), findsWidgets);
       expect(find.text('¥12,000.00'), findsOneWidget);
       expect(find.text('本月预算还剩 ¥200.00'), findsOneWidget);
 

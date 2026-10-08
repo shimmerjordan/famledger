@@ -150,24 +150,31 @@ class _NetWorthStripState extends ConsumerState<NetWorthStrip> {
           child: Padding(
             padding: const EdgeInsets.fromLTRB(
               LedgerLayout.pagePadding,
-              LedgerLayout.itemGap,
+              8,
               LedgerLayout.pagePadding,
-              LedgerLayout.itemGap,
+              8,
             ),
+            // 折叠时两行就够：「净资产 ¥…」一行，分项一行（放不下就省略，展开有明细）。
+            // 这一条压在四段上面，它每多一行，下面的列表就少露一行。
             child: Row(
               children: [
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('净资产', style: theme.textTheme.bodySmall),
-                      const SizedBox(height: 2),
-                      MoneyText(o.netWorthCents, size: MoneySize.title),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          Text('净资产', style: theme.textTheme.bodySmall),
+                          const SizedBox(width: 8),
+                          Flexible(child: MoneyText(o.netWorthCents, size: MoneySize.title)),
+                        ],
+                      ),
                       const SizedBox(height: 2),
                       Text(
                         netWorthBreakdown(o),
                         key: const ValueKey('net-worth-breakdown'),
-                        maxLines: 2,
+                        maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: theme.textTheme.bodySmall,
                       ),

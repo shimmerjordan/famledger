@@ -107,6 +107,9 @@ class FundBalanceList extends StatelessWidget {
   final StatsOverview? stats;
   final ValueChanged<Fund> onTap;
 
+  /// 够放「−¥123,456.78」；再长的就省略号，不把条撑乱。
+  static const double amountWidth = 112;
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -127,7 +130,14 @@ class FundBalanceList extends StatelessWidget {
                   padding: const EdgeInsets.only(top: 4),
                   child: FundProgressBar(progress: progress, color: color),
                 ),
-                trailing: MoneyText(progress.balanceCents),
+                // 金额列定宽：每行余额位数不同，进度条才不会一行长一行短。
+                trailing: SizedBox(
+                  width: amountWidth,
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: MoneyText(progress.balanceCents),
+                  ),
+                ),
               );
             },
           ),

@@ -84,7 +84,18 @@ class TxTile extends StatelessWidget {
             signed: tx.isIncome,
             color: tx.status == 'void' ? theme.colorScheme.onSurfaceVariant : null,
           ),
-          if (trailingBelow != null) ...[const SizedBox(height: 2), trailingBelow!],
+          // 状态小标挂在金额下面，不挤副标题：副标题里「基金 · 账户 · 时间」本来就只有一行的地方，
+          // 再塞一个标签，时间就被截成「15:…」。
+          if (trailingBelow != null) ...[
+            const SizedBox(height: 2),
+            trailingBelow!,
+          ] else if (tx.pendingSync) ...[
+            const SizedBox(height: 2),
+            TxStatusBadge.offline(),
+          ] else if (tx.status != 'confirmed') ...[
+            const SizedBox(height: 2),
+            TxStatusBadge(status: tx.status),
+          ],
         ],
       ),
     );
@@ -128,40 +139,31 @@ class _Subtitle extends StatelessWidget {
       if (showTime) Dates.timeLabel(tx.occurredAt),
       if (tx.source != 'manual') tx.sourceLabel,
     ];
+    final style = theme.textTheme.bodySmall;
+    // 一整段富文本、一个省略号：之前基金名和「账户 · 时间」是两个 Flexible，各占一半宽，
+    // 基金名短也不让出空间，「15:17」就被截成「15:…」。
     return Padding(
       padding: const EdgeInsets.only(top: 2),
-      child: Row(
-        children: [
-          if (fundName != null) ...[
-            FundDot(color: fundColor),
-            const SizedBox(width: 6),
-            Flexible(
-              child: Text(
-                fundName!,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.bodySmall,
+      child: Text.rich(
+        TextSpan(
+          children: [
+            if (fundName != null) ...[
+              WidgetSpan(
+                alignment: PlaceholderAlignment.middle,
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: FundDot(color: fundColor),
+                ),
               ),
-            ),
-            if (parts.isNotEmpty)
-              Text(' · ', style: theme.textTheme.bodySmall),
+              TextSpan(text: fundName),
+              if (parts.isNotEmpty) const TextSpan(text: ' · '),
+            ],
+            TextSpan(text: parts.join(' · ')),
           ],
-          Flexible(
-            child: Text(
-              parts.join(' · '),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.bodySmall,
-            ),
-          ),
-          if (tx.pendingSync) ...[
-            const SizedBox(width: 6),
-            TxStatusBadge.offline(),
-          ] else if (tx.status != 'confirmed') ...[
-            const SizedBox(width: 6),
-            TxStatusBadge(status: tx.status),
-          ],
-        ],
+        ),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: style,
       ),
     );
   }
