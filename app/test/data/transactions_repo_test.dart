@@ -863,6 +863,7 @@ void main() {
     expect(local.single.pendingSync, isTrue);
     expect(await ctx.repo.pendingCount(), 1);
   });
+  _listCacheTests();
 }
 
 OutboxItem _item(String clientId, String op, Map<String, dynamic> payload) =>
@@ -872,3 +873,37 @@ OutboxItem _item(String clientId, String op, Map<String, dynamic> payload) =>
       payload: payload,
       queuedAt: DateTime(2026, 9, 12, 10),
     );
+
+void _listCacheTests() {
+  group('列表的本机缓存', () {
+    test('第一页落盘；断网时拿它顶上并标 stale、不给游标；没缓存过的条件和带游标的翻页照样报错', () async {
+      final server = FakeServer({
+        'GET /api/v1/transactions': (req) => {
+          'items': [txRow('t1'), txRow('t2', clientId: 'cid-2')],
+          'nextCursor': 'c2',
+        },
+      });
+      final b = build(server);
+      final page = await b.repo.list(const TxFilter(limit: 10));
+      expect(page.items.length, 2);
+      expect(page.stale, isFalse);
+      expect(page.hasMore, isTrue);
+
+      server.offline = true;
+      final cached = await b.repo.list(const TxFilter(limit: 10));
+      expect(cached.stale, isTrue);
+      expect(cached.items.map((t) => t.id), ['t1', 't2']);
+      expect(cached.hasMore, isFalse, reason: '缓存页不给翻页');
+      await expectLater(
+        b.repo.list(const TxFilter(limit: 5, status: 'pending')),
+        throwsA(isA<ApiException>()),
+        reason: '这种筛选条件没缓存过',
+      );
+      await expectLater(
+        b.repo.list(const TxFilter(limit: 10), cursor: 'c2'),
+        throwsA(isA<ApiException>()),
+        reason: '翻页从不缓存',
+      );
+    });
+  });
+}

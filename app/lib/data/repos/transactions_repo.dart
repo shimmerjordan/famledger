@@ -112,10 +112,37 @@ class TransactionsRepo {
   /// 旧名，保留给已经写好的调用方。
   Future<void> clearFailedItems() => clearFailed();
 
+  /// 列表的第一页（没带游标的请求）落一份到本机，断网时拿它顶上：首页的「最近流水」「待确认」、
+  /// 账单页的首屏离线也有东西看（标成 [TxPage.stale]）。只存第一页：翻页的内容多，也没人离线翻。
+  /// 每种筛选条件各存一份（key 带查询串），换了服务器、登出时随本机缓存一起清。
+  static const String listCachePrefix = 'tx_list:';
+
   Future<TxPage> list(TxFilter filter, {String? cursor}) async {
     final query = filter.toQuery();
     if (cursor != null && cursor.isNotEmpty) query['cursor'] = cursor;
-    return TxPage.fromJson(await _api.get('/transactions', query: query));
+    final cacheKey = cursor == null || cursor.isEmpty ? _listCacheKey(query) : null;
+    final Map<String, dynamic> res;
+    try {
+      res = await _api.get('/transactions', query: query);
+    } on ApiException catch (e) {
+      if (!e.isNetwork || cacheKey == null) rethrow;
+      final cached = await _store?.read<Map<String, dynamic>>(cacheKey);
+      if (cached == null) rethrow;
+      return TxPage.fromJson(cached, stale: true);
+    }
+    if (cacheKey != null) {
+      try {
+        await _store?.write(cacheKey, res);
+      } catch (_) {
+        // 本机存不下（配额、权限）不影响这次列表。
+      }
+    }
+    return TxPage.fromJson(res);
+  }
+
+  static String _listCacheKey(Map<String, String> query) {
+    final keys = query.keys.toList()..sort();
+    return '$listCachePrefix${keys.map((k) => '$k=${query[k]}').join('&')}';
   }
 
   Future<Transaction> get(String id) async =>

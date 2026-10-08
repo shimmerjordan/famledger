@@ -419,6 +419,8 @@ class _TransactionsPageState extends ConsumerState<TransactionsPage> {
                 onRetry: _bulkError!.retry,
                 onClose: () => setState(() => _bulkError = null),
               ),
+            // 断网时首屏是本机缓存顶上的：说一声，别让人以为这就是最新的。
+            if (list.valueOrNull?.stale ?? false) const _OfflineNotice(),
             Expanded(
               child: RefreshIndicator(
                 onRefresh: () => ref.read(txListProvider.notifier).refresh(),
@@ -457,6 +459,34 @@ class _TransactionsPageState extends ConsumerState<TransactionsPage> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// 「离线中，显示的是上次同步的账单」。
+class _OfflineNotice extends StatelessWidget {
+  const _OfflineNotice();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      key: const ValueKey('tx-offline-notice'),
+      width: double.infinity,
+      color: LedgerColors.of(context).warningContainer,
+      padding: const EdgeInsets.symmetric(horizontal: LedgerLayout.pagePadding, vertical: 8),
+      child: Row(
+        children: [
+          Icon(Icons.cloud_off_outlined, size: 18, color: theme.colorScheme.onSurface),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              '连不上服务器，显示的是上次同步的账单',
+              style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurface),
+            ),
+          ),
+        ],
       ),
     );
   }

@@ -463,21 +463,25 @@ class TxFilter {
 
 /// 一页流水 + 下一页游标。
 class TxPage {
-  const TxPage({required this.items, this.nextCursor});
+  const TxPage({required this.items, this.nextCursor, this.stale = false});
 
   final List<Transaction> items;
   final String? nextCursor;
 
-  bool get hasMore => nextCursor != null && nextCursor!.isNotEmpty;
+  /// 断网时从本机缓存顶上的一页（上次联网拿到的那份）：UI 要说一声，也别再往下翻。
+  final bool stale;
+
+  bool get hasMore => !stale && nextCursor != null && nextCursor!.isNotEmpty;
   bool get isEmpty => items.isEmpty;
 
   static const TxPage empty = TxPage(items: []);
 
-  factory TxPage.fromJson(Map<String, dynamic> json) => TxPage(
+  factory TxPage.fromJson(Map<String, dynamic> json, {bool stale = false}) => TxPage(
     items: jsonList(json['items'], Transaction.fromJson),
     nextCursor: jsonStringOrNull(json['nextCursor']),
+    stale: stale,
   );
 
   TxPage append(TxPage next) =>
-      TxPage(items: [...items, ...next.items], nextCursor: next.nextCursor);
+      TxPage(items: [...items, ...next.items], nextCursor: next.nextCursor, stale: stale || next.stale);
 }

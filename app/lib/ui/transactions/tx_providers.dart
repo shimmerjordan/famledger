@@ -42,12 +42,16 @@ class TxListState {
     this.cursor,
     this.loadingMore = false,
     this.moreError,
+    this.stale = false,
   });
 
   final List<Transaction> items;
 
   /// 下一页游标；为空表示到底了。
   final String? cursor;
+
+  /// 首屏是断网时从本机缓存顶上的（见 [TransactionsRepo.list]）：页面顶上说一声。
+  final bool stale;
 
   /// 正在加载下一页（首屏加载看外层的 `AsyncValue`）。
   final bool loadingMore;
@@ -62,6 +66,7 @@ class TxListState {
     String? cursor,
     bool? loadingMore,
     Object? moreError,
+    bool? stale,
     bool clearCursor = false,
     bool clearError = false,
   }) => TxListState(
@@ -69,6 +74,7 @@ class TxListState {
     cursor: clearCursor ? null : (cursor ?? this.cursor),
     loadingMore: loadingMore ?? this.loadingMore,
     moreError: clearError ? null : (moreError ?? this.moreError),
+    stale: stale ?? this.stale,
   );
 }
 
@@ -130,7 +136,8 @@ class TxListController extends AsyncNotifier<TxListState> {
 
   Future<TxListState> _firstPage() async {
     final page = await ref.read(transactionsRepoProvider).list(filter);
-    return TxListState(items: page.items, cursor: page.nextCursor);
+    // 缓存顶上的那页不给游标：翻下一页要联网，联不上只会报错。
+    return TxListState(items: page.items, cursor: page.stale ? null : page.nextCursor, stale: page.stale);
   }
 }
 

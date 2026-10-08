@@ -5,6 +5,10 @@ import '../local/local_store.dart';
 import '../models/models.dart';
 
 /// 主数据的一次快照，给 UI `ref.watch` 用。
+///
+/// 列表里每一行都要把 fundId/categoryId/accountId 翻成名字，一屏几十行、每行三四次查找；
+/// [LedgerRepo.snapshot] 给出的快照带一份 [LedgerIndex]（id → 对象的 map，和过滤好的「在用」列表），
+/// 查找就是一次哈希。测试里直接 `LedgerData(...)` 构造的没有索引，退回线性查找，行为一样。
 class LedgerData {
   const LedgerData({
     this.members = const [],
@@ -20,6 +24,7 @@ class LedgerData {
     this.benefits = const [],
     this.benefitEvents = const [],
     this.seq = 0,
+    this.index,
   });
 
   final List<Member> members;
@@ -38,11 +43,14 @@ class LedgerData {
   /// 已同步到的全局序号。
   final int seq;
 
+  /// 见类注释；null = 没建索引，查找走线性。
+  final LedgerIndex? index;
+
   bool get isEmpty => funds.isEmpty && accounts.isEmpty && categories.isEmpty;
 
-  List<Fund> get activeFunds => funds.where((f) => !f.archived).toList();
-  List<Account> get activeAccounts => accounts.where((a) => !a.archived).toList();
-  List<Member> get activeMembers => members.where((m) => !m.archived).toList();
+  List<Fund> get activeFunds => index?.activeFunds ?? funds.where((f) => !f.archived).toList();
+  List<Account> get activeAccounts => index?.activeAccounts ?? accounts.where((a) => !a.archived).toList();
+  List<Member> get activeMembers => index?.activeMembers ?? members.where((m) => !m.archived).toList();
   List<Asset> get activeAssets => assets.where((a) => !a.archived).toList();
   List<Holding> get activeHoldings => holdings.where((h) => !h.archived).toList();
   List<PerkPlatform> get activePlatforms => platforms.where((p) => !p.archived).toList();
@@ -50,23 +58,29 @@ class LedgerData {
   List<Benefit> get activeBenefits => benefits.where((b) => !b.archived).toList();
 
   List<Category> expenseCategories() =>
-      categories.where((c) => !c.archived && c.kind == 'expense').toList();
+      index?.expenseCategories ?? categories.where((c) => !c.archived && c.kind == 'expense').toList();
 
   List<Category> incomeCategories() =>
-      categories.where((c) => !c.archived && c.kind == 'income').toList();
+      index?.incomeCategories ?? categories.where((c) => !c.archived && c.kind == 'income').toList();
 
-  Fund? fund(String? id) => _find(funds, id, (e) => e.id);
-  Account? account(String? id) => _find(accounts, id, (e) => e.id);
-  Category? category(String? id) => _find(categories, id, (e) => e.id);
-  Member? member(String? id) => _find(members, id, (e) => e.id);
+  Fund? fund(String? id) => _get(index?.funds, funds, id, (e) => e.id);
+  Account? account(String? id) => _get(index?.accounts, accounts, id, (e) => e.id);
+  Category? category(String? id) => _get(index?.categories, categories, id, (e) => e.id);
+  Member? member(String? id) => _get(index?.members, members, id, (e) => e.id);
   Asset? asset(String? id) => _find(assets, id, (e) => e.id);
   Holding? holding(String? id) => _find(holdings, id, (e) => e.id);
-  PerkPlatform? platform(String? id) => _find(platforms, id, (e) => e.id);
-  Membership? membership(String? id) => _find(memberships, id, (e) => e.id);
-  Benefit? benefit(String? id) => _find(benefits, id, (e) => e.id);
+  PerkPlatform? platform(String? id) => _get(index?.platforms, platforms, id, (e) => e.id);
+  Membership? membership(String? id) => _get(index?.memberships, memberships, id, (e) => e.id);
+  Benefit? benefit(String? id) => _get(index?.benefits, benefits, id, (e) => e.id);
 
   /// 基金在 12 色盘里的位置（没设颜色时按顺序取色）。
-  int fundIndex(String id) => funds.indexWhere((f) => f.id == id);
+  int fundIndex(String id) => index?.fundOrder[id] ?? funds.indexWhere((f) => f.id == id);
+
+  static T? _get<T>(Map<String, T>? map, List<T> list, String? id, String Function(T) idOf) {
+    if (id == null) return null;
+    if (map != null) return map[id];
+    return _find(list, id, idOf);
+  }
 
   static T? _find<T>(List<T> list, String? id, String Function(T) idOf) {
     if (id == null) return null;
@@ -75,6 +89,66 @@ class LedgerData {
     }
     return null;
   }
+}
+
+/// [LedgerData] 的查找索引：按 id 的 map + 过滤好的「在用」列表，一次快照建一次。
+/// 只索引列表行里反复查的那几张表（基金、账户、类别、成员、平台、会员、权益）。
+class LedgerIndex {
+  LedgerIndex._({
+    required this.funds,
+    required this.accounts,
+    required this.categories,
+    required this.members,
+    required this.platforms,
+    required this.memberships,
+    required this.benefits,
+    required this.fundOrder,
+    required this.activeFunds,
+    required this.activeAccounts,
+    required this.activeMembers,
+    required this.expenseCategories,
+    required this.incomeCategories,
+  });
+
+  factory LedgerIndex.of({
+    required List<Fund> funds,
+    required List<Account> accounts,
+    required List<Category> categories,
+    required List<Member> members,
+    required List<PerkPlatform> platforms,
+    required List<Membership> memberships,
+    required List<Benefit> benefits,
+  }) => LedgerIndex._(
+    funds: {for (final e in funds) e.id: e},
+    accounts: {for (final e in accounts) e.id: e},
+    categories: {for (final e in categories) e.id: e},
+    members: {for (final e in members) e.id: e},
+    platforms: {for (final e in platforms) e.id: e},
+    memberships: {for (final e in memberships) e.id: e},
+    benefits: {for (final e in benefits) e.id: e},
+    fundOrder: {for (var i = 0; i < funds.length; i++) funds[i].id: i},
+    activeFunds: List.unmodifiable(funds.where((f) => !f.archived)),
+    activeAccounts: List.unmodifiable(accounts.where((a) => !a.archived)),
+    activeMembers: List.unmodifiable(members.where((m) => !m.archived)),
+    expenseCategories: List.unmodifiable(categories.where((c) => !c.archived && c.kind == 'expense')),
+    incomeCategories: List.unmodifiable(categories.where((c) => !c.archived && c.kind == 'income')),
+  );
+
+  final Map<String, Fund> funds;
+  final Map<String, Account> accounts;
+  final Map<String, Category> categories;
+  final Map<String, Member> members;
+  final Map<String, PerkPlatform> platforms;
+  final Map<String, Membership> memberships;
+  final Map<String, Benefit> benefits;
+
+  /// 基金 id → 在列表里的位置（取色盘用）。
+  final Map<String, int> fundOrder;
+  final List<Fund> activeFunds;
+  final List<Account> activeAccounts;
+  final List<Member> activeMembers;
+  final List<Category> expenseCategories;
+  final List<Category> incomeCategories;
 }
 
 /// 主数据缓存 + `GET /changes` 增量同步 + 各实体的增删改。
@@ -124,6 +198,15 @@ class LedgerRepo {
     benefits: List.unmodifiable(benefits),
     benefitEvents: List.unmodifiable(benefitEvents),
     seq: seq,
+    index: LedgerIndex.of(
+      funds: funds,
+      accounts: accounts,
+      categories: categories,
+      members: members,
+      platforms: platforms,
+      memberships: memberships,
+      benefits: benefits,
+    ),
   );
 
   /// 读本地缓存（离线也能先把界面画出来）。
