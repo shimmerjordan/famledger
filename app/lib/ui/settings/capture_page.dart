@@ -222,7 +222,7 @@ class _CapturePageState extends ConsumerState<CapturePage> with WidgetsBindingOb
             ),
         ],
       ),
-      body: ListView(
+      body: ReadableListView(
         padding: const EdgeInsets.only(bottom: 32),
         children: [
           if (!supported) ...[

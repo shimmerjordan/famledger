@@ -155,7 +155,7 @@ class _AiProvidersPageState extends ConsumerState<AiProvidersPage> {
         value: providers,
         onRetry: () => ref.invalidate(aiProvidersProvider),
         loading: const SkeletonList(rows: 3),
-        data: (items) => ListView(
+        data: (items) => ReadableListView(
           padding: const EdgeInsets.only(bottom: 32),
           children: [
             Padding(

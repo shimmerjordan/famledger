@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app/providers.dart';
+import '../../app/shell.dart';
 import '../../app/theme.dart';
 import '../../core/dates.dart';
 import '../../core/ids.dart';
@@ -57,6 +59,10 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
   final TextEditingController _merchant = TextEditingController();
   final TextEditingController _note = TextEditingController();
 
+  /// 实体键盘（网页、平板外接键盘）：数字和小数点直接进金额，Backspace 退格，Delete 清空，
+  /// Enter 保存。焦点在商户/备注输入框里时不出手（那时 [FocusNode.hasPrimaryFocus] 为假）。
+  final FocusNode _keys = FocusNode(debugLabel: 'add-tx-keys');
+
   String? _amountError;
   String? _fundError;
   String? _transferError;
@@ -70,7 +76,38 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
   void dispose() {
     _merchant.dispose();
     _note.dispose();
+    _keys.dispose();
     super.dispose();
+  }
+
+  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    if (!_keys.hasPrimaryFocus || event is KeyUpEvent) return KeyEventResult.ignored;
+    final key = event.logicalKey;
+    final ch = event.character;
+    if (ch != null && ch.length == 1 && '0123456789.'.contains(ch)) {
+      _onDigit(ch);
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.backspace) {
+      _onBackspace();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.delete) {
+      _onClear();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter) {
+      final data = ref.read(ledgerProvider).valueOrNull;
+      if (data != null && !_saving) _save(data);
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  /// 点过屏幕键盘之后把焦点收回来：之前点进商户框的话，接着敲实体键盘的数字该进金额，不该进商户。
+  void _focusKeys() {
+    if (!_keys.hasPrimaryFocus) _keys.requestFocus();
   }
 
   int get _cents => Money.tryParse(_raw) ?? 0;
@@ -210,7 +247,9 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
     // 转账的两对是正交的：只填账户对时基金那一侧必须是空的，
     // 否则服务端会收到 fundId 有、toFundId 没有的半对，直接 400。
     final fundId = _isTransfer ? _fundId : _resolvedFund(ledger, memory);
-    final accountId = _isTransfer ? _accountId : _resolvedAccount(ledger, memory);
+    final accountId = _isTransfer
+        ? _accountId
+        : _resolvedAccount(ledger, memory);
     final categoryId = _resolvedCategory(categories, memory);
     final memberId = _resolvedMember(ledger, memory);
 
@@ -320,6 +359,7 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
     final ledger = ref.watch(ledgerProvider);
     // 系统键盘弹起来时把自绘键盘收掉，两个键盘叠着没法用。
     final systemKeyboard = MediaQuery.viewInsetsOf(context).bottom > 0;
+    final width = widthClassOf(context);
 
     return Scaffold(
       appBar: AppBar(
@@ -334,42 +374,86 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
           ),
         ],
       ),
-      body: AsyncValueView<LedgerData>(
-        value: ledger,
-        onRetry: () => ref.invalidate(ledgerProvider),
-        loading: const SkeletonList(rows: 6),
-        data: (data) => data.activeFunds.isEmpty
-            ? EmptyState(
-                title: '还没有基金',
-                message: '每一笔钱都要落到一个基金里，先建一个再记账。',
-                icon: Icons.savings_outlined,
-                actionLabel: '新建基金',
-                onAction: () => context.push('/funds/new'),
-              )
-            : Column(
-                children: [
-                  _AmountHeader(
-                    type: _type,
-                    onType: _setType,
-                    cents: _cents,
-                    error: _amountError,
-                    saveError: _saveError,
-                    notice: _saveNotice,
+      body: Focus(
+        focusNode: _keys,
+        autofocus: true,
+        onKeyEvent: _onKey,
+        child: AsyncValueView<LedgerData>(
+          value: ledger,
+          onRetry: () => ref.invalidate(ledgerProvider),
+          loading: const SkeletonList(rows: 6),
+          data: (data) => data.activeFunds.isEmpty
+              ? EmptyState(
+                  title: '还没有基金',
+                  message: '每一笔钱都要落到一个基金里，先建一个再记账。',
+                  icon: Icons.savings_outlined,
+                  actionLabel: '新建基金',
+                  onAction: () => context.push('/funds/new'),
+                )
+              : switch (width) {
+                  WidthClass.compact => _compactLayout(data, systemKeyboard),
+                  // 平板竖放：还是手机的上下结构，只是别把键盘拉到 700 宽。
+                  WidthClass.medium => ReadableBox(
+                    maxWidth: 600,
+                    child: _compactLayout(data, systemKeyboard),
                   ),
-                  Expanded(child: _form(data)),
-                  if (!systemKeyboard)
-                    AmountKeypad(
-                      onDigit: _onDigit,
-                      onBackspace: _onBackspace,
-                      onClear: _onClear,
-                      onSave: () => _save(data),
-                      busy: _saving,
-                    ),
-                ],
-              ),
+                  WidthClass.expanded => _wideLayout(data, systemKeyboard),
+                },
+        ),
       ),
     );
   }
+
+  Widget _header() => _AmountHeader(
+    type: _type,
+    onType: _setType,
+    cents: _cents,
+    error: _amountError,
+    saveError: _saveError,
+    notice: _saveNotice,
+    onTap: _focusKeys,
+  );
+
+  Widget _keypad(LedgerData data) => AmountKeypad(
+    onDigit: (ch) {
+      _focusKeys();
+      _onDigit(ch);
+    },
+    onBackspace: () {
+      _focusKeys();
+      _onBackspace();
+    },
+    onClear: _onClear,
+    onSave: () => _save(data),
+    busy: _saving,
+  );
+
+  /// 手机：金额在上、表单在中间滚、键盘贴底。
+  Widget _compactLayout(LedgerData data, bool systemKeyboard) => Column(
+    children: [
+      _header(),
+      Expanded(child: _form(data)),
+      if (!systemKeyboard) _keypad(data),
+    ],
+  );
+
+  /// 宽屏（≥ 840）：左边是表单，右边一块固定 360 宽的「计算器」—— 类型、金额、键盘靠在一起，
+  /// 眼睛不用在整屏上来回找；整体限宽 1040，再宽也不把类别格拉成 280 一格。
+  Widget _wideLayout(LedgerData data, bool systemKeyboard) => ReadableBox(
+    maxWidth: 1040,
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Expanded(child: _form(data)),
+        SizedBox(
+          width: 360,
+          child: Column(
+            children: [_header(), if (!systemKeyboard) _keypad(data)],
+          ),
+        ),
+      ],
+    ),
+  );
 
   Widget _form(LedgerData ledger) {
     final memory = ref.watch(addTxMemoryProvider).forType(_type);
@@ -515,6 +599,7 @@ class _AmountHeader extends StatelessWidget {
     this.error,
     this.saveError,
     this.notice,
+    this.onTap,
   });
 
   final String type;
@@ -526,65 +611,75 @@ class _AmountHeader extends StatelessWidget {
   /// 保存成功但有话要说（例如服务器判定疑似重复）。
   final String? notice;
 
+  /// 点一下金额区把实体键盘的焦点收回来（见 _AddTxPageState._focusKeys）。
+  final VoidCallback? onTap;
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final ledger = LedgerColors.of(context);
-    return Container(
-      width: double.infinity,
-      color: ledger.surface2,
-      padding: const EdgeInsets.fromLTRB(
-        LedgerLayout.pagePadding,
-        12,
-        LedgerLayout.pagePadding,
-        16,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SegmentedButton<String>(
-            segments: const [
-              ButtonSegment(value: Transaction.typeExpense, label: Text('支出')),
-              ButtonSegment(value: Transaction.typeIncome, label: Text('收入')),
-              ButtonSegment(
-                value: Transaction.typeTransfer,
-                label: Text('转账·拨款'),
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        width: double.infinity,
+        color: ledger.surface2,
+        padding: const EdgeInsets.fromLTRB(
+          LedgerLayout.pagePadding,
+          12,
+          LedgerLayout.pagePadding,
+          16,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(
+                  value: Transaction.typeExpense,
+                  label: Text('支出'),
+                ),
+                ButtonSegment(value: Transaction.typeIncome, label: Text('收入')),
+                ButtonSegment(
+                  value: Transaction.typeTransfer,
+                  label: Text('转账·拨款'),
+                ),
+              ],
+              selected: {type},
+              showSelectedIcon: false,
+              style: SegmentedButton.styleFrom(minimumSize: const Size(0, 48)),
+              onSelectionChanged: (values) => onType(values.first),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              Money.format(cents),
+              style: theme.textTheme.displaySmall?.copyWith(
+                color: error != null ? theme.colorScheme.error : null,
               ),
-            ],
-            selected: {type},
-            showSelectedIcon: false,
-            style: SegmentedButton.styleFrom(
-              minimumSize: const Size(0, 48),
+              maxLines: 1,
             ),
-            onSelectionChanged: (values) => onType(values.first),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            Money.format(cents),
-            style: theme.textTheme.displaySmall?.copyWith(
-              color: error != null ? theme.colorScheme.error : null,
-            ),
-            maxLines: 1,
-          ),
-          if (error != null || saveError != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Text(
-                error ?? saveError!,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.error,
+            if (error != null || saveError != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  error ?? saveError!,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.error,
+                  ),
+                ),
+              )
+            else if (notice != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  notice!,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: ledger.warning,
+                  ),
                 ),
               ),
-            )
-          else if (notice != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Text(
-                notice!,
-                style: theme.textTheme.bodySmall?.copyWith(color: ledger.warning),
-              ),
-            ),
-        ],
+          ],
+        ),
       ),
     );
   }

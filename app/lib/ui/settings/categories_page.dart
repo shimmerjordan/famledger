@@ -267,7 +267,7 @@ class _CategoryList extends StatelessWidget {
       );
     }
 
-    return ListView(
+    return ReadableListView(
       padding: const EdgeInsets.only(bottom: 96),
       children: [
         if (error != null) InlineError(message: error!),

@@ -55,7 +55,7 @@ class _RulesPageState extends ConsumerState<RulesPage> {
             );
           }
           final error = _error;
-          return ListView(
+          return ReadableListView(
             padding: const EdgeInsets.only(bottom: 96),
             children: [
               if (error != null) InlineError(message: error),

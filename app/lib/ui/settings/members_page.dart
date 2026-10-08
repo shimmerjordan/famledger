@@ -44,7 +44,7 @@ class MembersPage extends ConsumerWidget {
               onAction: isAdmin ? () => showMemberForm(context) : null,
             );
           }
-          return ListView(
+          return ReadableListView(
             padding: const EdgeInsets.only(bottom: 96),
             children: [
               for (final member in active)

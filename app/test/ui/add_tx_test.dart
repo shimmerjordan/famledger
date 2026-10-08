@@ -350,4 +350,14 @@ void main() {
 
     expect(find.text('至少填一对：账户→账户，或基金→基金'), findsOneWidget);
   });
+
+  testWidgets('大字号（1.3×）：金额区、类别格、键盘在 360 宽上都不溢出，键盘还能点', (tester) async {
+    tester.platformDispatcher.textScaleFactorTestValue = 1.3;
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    await pumpAddTx(tester);
+    expect(tester.takeException(), isNull, reason: '不能有 RenderFlex overflow');
+    await tapKeys(tester, '35.5');
+    expect(find.text('¥35.50'), findsOneWidget);
+  });
+
 }

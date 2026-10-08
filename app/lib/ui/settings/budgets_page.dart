@@ -33,20 +33,22 @@ class _BudgetsPageState extends ConsumerState<BudgetsPage> {
       appBar: AppBar(title: const Text('预算')),
       body: Column(
         children: [
-          MonthPicker(
-            month: _month,
-            onChanged: (value) => setState(() => _month = value),
-            subtitle: overview == null
-                ? (stats.hasError
-                      ? Text(
-                          '本月支出取不到',
-                          style: Theme.of(context).textTheme.bodySmall,
-                        )
-                      : const Skeleton(width: 120, height: 12))
-                : Text(
-                    '本月支出 ${Money.format(overview.month.expenseCents)}',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
+          ReadableBox(
+            child: MonthPicker(
+              month: _month,
+              onChanged: (value) => setState(() => _month = value),
+              subtitle: overview == null
+                  ? (stats.hasError
+                        ? Text(
+                            '本月支出取不到',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          )
+                        : const Skeleton(width: 120, height: 12))
+                  : Text(
+                      '本月支出 ${Money.format(overview.month.expenseCents)}',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+            ),
           ),
           const Divider(height: 1),
           Expanded(
@@ -76,7 +78,7 @@ class _BudgetsPageState extends ConsumerState<BudgetsPage> {
       );
     }
 
-    return ListView(
+    return ReadableListView(
       padding: const EdgeInsets.only(bottom: 32),
       children: [
         if (statsFailed)
@@ -552,12 +554,14 @@ class _BudgetSheetState extends ConsumerState<_BudgetSheet> {
     });
     final navigator = Navigator.of(context);
     try {
-      await ref.read(ledgerRepoProvider).setBudget(
-        scope: widget.scope,
-        refId: widget.refId,
-        month: month,
-        amountCents: null,
-      );
+      await ref
+          .read(ledgerRepoProvider)
+          .setBudget(
+            scope: widget.scope,
+            refId: widget.refId,
+            month: month,
+            amountCents: null,
+          );
       navigator.pop(true);
     } catch (e) {
       if (mounted) {

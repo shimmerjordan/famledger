@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 import '../../app/theme.dart';
+import '../widgets/widgets.dart';
 
 /// 拿不到包信息时的兜底版本号（跟 pubspec 保持一致）。
 const String kFallbackVersion = '1.0.0';
@@ -24,7 +25,7 @@ class AboutPage extends StatelessWidget {
     final theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(title: const Text('关于')),
-      body: ListView(
+      body: ReadableListView(
         padding: const EdgeInsets.all(LedgerLayout.pagePadding),
         children: [
           const SizedBox(height: 8),

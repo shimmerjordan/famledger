@@ -204,7 +204,7 @@ class _FundFormPageState extends ConsumerState<FundFormPage> {
             TextButton(onPressed: _pickTemplate, child: const Text('用模板')),
         ],
       ),
-      body: ListView(
+      body: ReadableListView(
         padding: const EdgeInsets.only(bottom: LedgerLayout.groupGap),
         children: [
           PickerField(

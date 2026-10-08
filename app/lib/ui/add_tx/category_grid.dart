@@ -13,13 +13,13 @@ class CategoryGrid extends StatelessWidget {
     required this.categories,
     required this.selectedId,
     required this.onSelected,
-    this.columns = 5,
+    this.maxColumns = 9,
   });
 
   final List<TxCategory> categories;
   final String? selectedId;
   final ValueChanged<String> onSelected;
-  final int columns;
+  final int maxColumns;
 
   @override
   Widget build(BuildContext context) {
@@ -28,9 +28,9 @@ class CategoryGrid extends StatelessWidget {
     }
     return LayoutBuilder(
       builder: (context, constraints) {
-        // 一格至少 64dp 宽，窄屏就自动少放几列。
-        final fit = (constraints.maxWidth / 64).floor();
-        final count = fit < 3 ? 3 : (fit > columns ? columns : fit);
+        // 一格 64–80dp 宽：手机 5 列，宽屏（限宽后约 660）8 列、两行放完，而不是 5 个 130 宽的大格。
+        final fit = (constraints.maxWidth / 80).floor();
+        final count = fit < 3 ? 3 : (fit > maxColumns ? maxColumns : fit);
         return GridView.builder(
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),

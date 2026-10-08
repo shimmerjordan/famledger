@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../../app/providers.dart';
 import '../../app/theme.dart';
 import '../../core/colors.dart';
+import '../widgets/widgets.dart';
 
 /// 「我的」：一组一组的入口，真正的内容在各子页里。
 class SettingsPage extends ConsumerWidget {
@@ -18,7 +19,7 @@ class SettingsPage extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(title: const Text('我的')),
-      body: ListView(
+      body: ReadableListView(
         padding: const EdgeInsets.only(bottom: 32),
         children: [
           _Profile(

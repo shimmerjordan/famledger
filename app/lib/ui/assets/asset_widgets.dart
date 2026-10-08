@@ -12,6 +12,8 @@ import '../add_tx/fund_picker.dart';
 import '../add_tx/picker_field.dart';
 import '../widgets/widgets.dart';
 
+export '../widgets/readable.dart' show readableInsets;
+
 const Map<String, IconData> kAssetCategoryIcons = {
   'digital': Icons.devices_other_outlined,
   'appliance': Icons.kitchen_outlined,
@@ -82,6 +84,72 @@ class TagLabel extends StatelessWidget {
               ? theme.colorScheme.onSurface
               : theme.colorScheme.onSurfaceVariant,
         ),
+      ),
+    );
+  }
+}
+
+/// 资产 tab 每一段顶上的小结：「基金合计 ¥42,285.10」一行 + 下面一两行小字。
+///
+/// 故意不用大字：净资产条已经是这一页唯一的大数字，四段再各顶一个 36sp 的合计，
+/// 手机上首屏四分之一都是数字、列表反而看不见（DESIGN.md「一屏一个英雄指标」）。
+class SegmentSummary extends StatelessWidget {
+  const SegmentSummary({
+    super.key,
+    required this.label,
+    required this.value,
+    this.lines = const [],
+    this.trailing,
+    this.children = const [],
+  });
+
+  final String label;
+
+  /// 通常是 [MoneyText]（`MoneySize.title`）；加载中传骨架。
+  final Widget value;
+
+  /// 下面的小字，一行一条。
+  final List<Widget> lines;
+
+  /// 第一行右边（例如「刷新行情」）。
+  final Widget? trailing;
+
+  /// 小字之后再接的东西（提示、错误）。
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        LedgerLayout.pagePadding,
+        LedgerLayout.itemGap,
+        LedgerLayout.pagePadding,
+        LedgerLayout.itemGap,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              // 标签 + 数字包在一个 Expanded 里：不然数字和右边按钮之间的 Spacer 会把数字
+              // 挤成「¥58,982.…」。
+              Expanded(
+                child: Row(
+                  children: [
+                    Text(label, style: theme.textTheme.bodySmall),
+                    const SizedBox(width: 8),
+                    Flexible(child: value),
+                  ],
+                ),
+              ),
+              if (trailing != null) trailing!,
+            ],
+          ),
+          for (final line in lines) ...[const SizedBox(height: 2), line],
+          ...children,
+        ],
       ),
     );
   }
@@ -361,12 +429,6 @@ class RecordTargetFields extends StatelessWidget {
     );
   }
 }
-
-/// 宽屏上把内容收窄到 [maxWidth]：名字和数字别隔着半个屏幕。
-EdgeInsets readableInsets(double width, {double maxWidth = 880}) =>
-    EdgeInsets.symmetric(
-      horizontal: width > maxWidth ? (width - maxWidth) / 2 : 0,
-    );
 
 /// 同步失败的横幅（同基金页：下拉失败要看得见，不能只让圈圈转完）。
 class SyncErrorBanner extends StatelessWidget {

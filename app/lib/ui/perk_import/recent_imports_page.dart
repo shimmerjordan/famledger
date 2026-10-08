@@ -5,7 +5,6 @@ import 'package:go_router/go_router.dart';
 import '../../app/providers.dart';
 import '../../app/theme.dart';
 import '../../data/models/models.dart';
-import '../assets/asset_widgets.dart' show readableInsets;
 import '../widgets/widgets.dart';
 import 'import_undo.dart';
 import 'perk_import_providers.dart';

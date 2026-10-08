@@ -12,7 +12,6 @@ import '../../data/api/api_client.dart';
 import '../../data/models/models.dart';
 import '../../data/repos/ai_repo.dart';
 import '../add_tx/picker_field.dart';
-import '../assets/asset_widgets.dart';
 import '../widgets/widgets.dart';
 import 'draft_store.dart';
 import 'import_undo.dart' show ImportNote;

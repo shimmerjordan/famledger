@@ -7,7 +7,7 @@ import '../../app/theme.dart';
 import '../../core/dates.dart';
 import '../../core/money.dart';
 import '../../data/repos/transactions_repo.dart';
-import '../widgets/async_value_view.dart';
+import '../widgets/widgets.dart';
 
 /// 服务器与账号：地址、当前成员、改密码、切服务器、退出登录。
 class ServerPage extends ConsumerStatefulWidget {
@@ -197,7 +197,7 @@ class _ServerPageState extends ConsumerState<ServerPage> {
 
     return Scaffold(
       appBar: AppBar(title: const Text('服务器与账号')),
-      body: ListView(
+      body: ReadableListView(
         padding: const EdgeInsets.only(bottom: 32),
         children: [
           ListTile(
