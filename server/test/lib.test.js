@@ -13,6 +13,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { openDb, rowToJson } = require('../src/lib/db');
+const { nextMonth, monthRange } = require('../src/lib/stats_sql');
 const { hashPassword, verifyPassword, signToken, verifyToken } = require('../src/lib/auth');
 const { loadOrCreateSecret, encrypt, decrypt, isEncrypted } = require('../src/lib/secret');
 const { RateLimiter } = require('../src/lib/ratelimit');
@@ -301,4 +302,17 @@ test('crud: onDelete runs inside the delete transaction — a throw rolls the to
   assert.equal(db.get('SELECT deleted_at FROM widgets WHERE id = ?', b.id).deleted_at, null, 'tombstone rolled back');
   assert.equal(db.meta('widgets_cleanup'), a.id, "onDelete's own write rolled back too");
   assert.equal(db.meta('change_seq'), seqBefore, 'no seq burnt');
+});
+
+test('stats_sql: 月份过滤用字符串区间（能走 idx_tx_occurred），跨年也对', () => {
+  assert.equal(nextMonth('2026-09'), '2026-10');
+  assert.equal(nextMonth('2026-12'), '2027-01');
+  assert.deepEqual(monthRange('2026-09'), { sql: 'occurred_at >= ? AND occurred_at < ?', args: ['2026-09', '2026-10'] });
+  assert.deepEqual(monthRange('2025-11', '2026-01').args, ['2025-11', '2026-02']);
+  // 区间和「前缀 = 月份」是同一回事：带偏移的本地时间串落在 [YYYY-MM, 下个月) 里。
+  const inSep = (t) => t >= '2026-09' && t < '2026-10';
+  assert.ok(inSep('2026-09-01T00:00:00+08:00'));
+  assert.ok(inSep('2026-09-30T23:59:59+08:00'));
+  assert.ok(!inSep('2026-08-31T23:59:59+08:00'));
+  assert.ok(!inSep('2026-10-01T00:00:00+08:00'));
 });

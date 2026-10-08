@@ -17,9 +17,26 @@
 /** 只有确认且未软删的流水算数。 */
 const CONFIRMED = "deleted_at IS NULL AND status = 'confirmed'";
 
-// 本地日期的前缀。不要换成 strftime —— 见文件头。
+// 本地日期的前缀。不要换成 strftime —— 见文件头。只用来**分组**；过滤某个月用 [monthRange]：
+// `substr(occurred_at, 1, 7) = ?` 走不了 idx_tx_occurred，每次统计都全表扫；
+// `occurred_at >= '2026-09' AND occurred_at < '2026-10'` 是同一回事（都是字符串前缀比较），能走索引。
 const MONTH_OF = 'substr(occurred_at, 1, 7)';
 const DATE_OF = 'substr(occurred_at, 1, 10)';
+
+/** `2026-09` → `2026-10`（跨年也对）。 */
+function nextMonth(month) {
+  const y = Number(month.slice(0, 4));
+  const m = Number(month.slice(5, 7));
+  return m === 12 ? `${String(y + 1).padStart(4, '0')}-01` : `${month.slice(0, 5)}${String(m + 1).padStart(2, '0')}`;
+}
+
+/**
+ * 「occurred_at 落在这几个月里」的 WHERE 片段 + 参数。闭区间 [fromMonth, toMonth]（都是 `YYYY-MM`）；
+ * 只给一个月就 `monthRange(m)`。字符串比较：`'2026-09-01T00:00:00+08:00' >= '2026-09'` 且 `< '2026-10'`。
+ */
+function monthRange(fromMonth, toMonth = fromMonth) {
+  return { sql: 'occurred_at >= ? AND occurred_at < ?', args: [fromMonth, nextMonth(toMonth)] };
+}
 
 const EXPENSE_SUM = "SUM(CASE WHEN type = 'expense' THEN amount_cents ELSE 0 END)";
 const INCOME_SUM = "SUM(CASE WHEN type = 'income' THEN amount_cents ELSE 0 END)";
@@ -85,10 +102,11 @@ function deltaMap(db, side, onlyId = null) {
  */
 function monthSums(db, month, filter) {
   const f = filterClause(filter);
+  const r = monthRange(month);
   const row = db.get(
     `SELECT ${EXPENSE_SUM} AS expense, ${INCOME_SUM} AS income
-       FROM transactions WHERE ${CONFIRMED} AND ${MONTH_OF} = ?${f.sql}`,
-    month, ...f.args,
+       FROM transactions WHERE ${CONFIRMED} AND ${r.sql}${f.sql}`,
+    ...r.args, ...f.args,
   );
   return { expenseCents: cents(row && row.expense), incomeCents: cents(row && row.income) };
 }
@@ -101,12 +119,13 @@ function monthSums(db, month, filter) {
 function totalsByColumn(db, month, column, filter) {
   const col = groupColumn(column);
   const f = filterClause(filter);
+  const r = monthRange(month);
   return db.all(
     `SELECT ${col} AS ref, ${EXPENSE_SUM} AS expense, ${INCOME_SUM} AS income
-       FROM transactions WHERE ${CONFIRMED} AND ${MONTH_OF} = ? AND type IN ('expense', 'income')
+       FROM transactions WHERE ${CONFIRMED} AND ${r.sql} AND type IN ('expense', 'income')
        AND ${col} IS NOT NULL${f.sql}
       GROUP BY ref ORDER BY expense DESC, income DESC, ref ASC`,
-    month, ...f.args,
+    ...r.args, ...f.args,
   ).map((r) => ({ ref: r.ref, expenseCents: cents(r.expense), incomeCents: cents(r.income) }));
 }
 
@@ -118,11 +137,12 @@ function totalsByColumn(db, month, column, filter) {
 function expenseByColumn(db, month, column, filter) {
   const col = groupColumn(column);
   const f = filterClause(filter);
+  const r = monthRange(month);
   return db.all(
     `SELECT ${col} AS ref, SUM(amount_cents) AS expense
-       FROM transactions WHERE ${CONFIRMED} AND ${MONTH_OF} = ? AND type = 'expense'${f.sql}
+       FROM transactions WHERE ${CONFIRMED} AND ${r.sql} AND type = 'expense'${f.sql}
       GROUP BY ref ORDER BY expense DESC, ref ASC`,
-    month, ...f.args,
+    ...r.args, ...f.args,
   ).map((r) => ({ ref: r.ref === undefined ? null : r.ref, expenseCents: cents(r.expense) }));
 }
 
@@ -133,11 +153,12 @@ function expenseByColumn(db, month, column, filter) {
  */
 function monthlyTotals(db, fromMonth, toMonth, filter) {
   const f = filterClause(filter);
+  const r = monthRange(fromMonth, toMonth);
   return db.all(
     `SELECT ${MONTH_OF} AS month, ${EXPENSE_SUM} AS expense, ${INCOME_SUM} AS income
-       FROM transactions WHERE ${CONFIRMED} AND ${MONTH_OF} >= ? AND ${MONTH_OF} <= ?${f.sql}
+       FROM transactions WHERE ${CONFIRMED} AND ${r.sql}${f.sql}
       GROUP BY month ORDER BY month`,
-    fromMonth, toMonth, ...f.args,
+    ...r.args, ...f.args,
   ).map((r) => ({ month: r.month, expenseCents: cents(r.expense), incomeCents: cents(r.income) }));
 }
 
@@ -147,11 +168,12 @@ function monthlyTotals(db, fromMonth, toMonth, filter) {
  */
 function dailyTotals(db, month, filter) {
   const f = filterClause(filter);
+  const r = monthRange(month);
   return db.all(
     `SELECT ${DATE_OF} AS date, ${EXPENSE_SUM} AS expense, ${INCOME_SUM} AS income, COUNT(*) AS n
-       FROM transactions WHERE ${CONFIRMED} AND ${MONTH_OF} = ?${f.sql}
+       FROM transactions WHERE ${CONFIRMED} AND ${r.sql}${f.sql}
       GROUP BY date ORDER BY date ASC`,
-    month, ...f.args,
+    ...r.args, ...f.args,
   ).map((r) => ({
     date: r.date,
     expenseCents: cents(r.expense),
@@ -185,6 +207,6 @@ function investPositions(db) {
 
 module.exports = {
   CONFIRMED, MONTH_OF, DATE_OF, EXPENSE_SUM, INCOME_SUM,
-  filterClause, deltaMap, monthSums, totalsByColumn, expenseByColumn, monthlyTotals, dailyTotals,
+  nextMonth, monthRange, filterClause, deltaMap, monthSums, totalsByColumn, expenseByColumn, monthlyTotals, dailyTotals,
   marketCents, investPositions,
 };
