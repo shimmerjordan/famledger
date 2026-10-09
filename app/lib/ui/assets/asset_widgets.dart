@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme.dart';
 import '../../core/dates.dart';
@@ -153,6 +154,39 @@ class SegmentSummary extends StatelessWidget {
       ),
     );
   }
+}
+
+/// 宽屏右栏里嵌一整页（带自己 AppBar 的详情页）：把 MediaQuery 的宽度改成栏宽，页面里的
+/// widthClassOf 才按「窄」排版，不会在 420 宽里再分两栏；顶部安全区也去掉（外层顶栏已经让过了）。
+/// 详情页自己的 push / go 照常走根 navigator，编辑表单仍是整屏打开。
+class DetailPane extends StatelessWidget {
+  const DetailPane({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, box) {
+      final mq = MediaQuery.of(context);
+      return MediaQuery(
+        data: mq.copyWith(
+          size: Size(box.maxWidth, mq.size.height),
+          padding: mq.padding.copyWith(top: 0),
+          viewPadding: mq.viewPadding.copyWith(top: 0),
+        ),
+        child: child,
+      );
+    },
+  );
+}
+
+/// 列表里的 id 不在了（删了、归档了）就退回第一条；画完这一帧再写回 provider（build 里不能改 provider）。
+void pinSelection(WidgetRef ref, StateProvider<String?> provider, String? shown) {
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    if (!ref.context.mounted) return;
+    final selected = ref.read(provider.notifier);
+    if (selected.state != shown) selected.state = shown;
+  });
 }
 
 /// 「¥16.43/天」。分以下四舍五入，只在展示时做。

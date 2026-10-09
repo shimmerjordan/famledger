@@ -58,6 +58,7 @@ class _HomePageState extends ConsumerState<HomePage> {
           onChanged: (next) =>
               ref.read(homeMonthProvider.notifier).state = next,
         ),
+        actions: const [ThemeModeButton()],
       ),
       body: AdaptiveTwoPane(
         main: RefreshIndicator(

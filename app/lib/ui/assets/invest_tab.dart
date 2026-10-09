@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app/providers.dart';
+import '../../app/shell.dart';
 import '../../app/theme.dart';
 import '../../core/dates.dart';
 import '../../core/money.dart';
@@ -12,6 +13,7 @@ import '../../data/repos/ledger_repo.dart';
 import '../widgets/widgets.dart';
 import 'asset_providers.dart';
 import 'asset_widgets.dart';
+import 'holding_detail_page.dart';
 
 /// 投资：总市值、收益、今日涨跌，下面一只一只列；清了仓的收在最后。
 class InvestTab extends ConsumerStatefulWidget {
@@ -71,8 +73,23 @@ class _InvestTabState extends ConsumerState<InvestTab> {
     final now = ref.watch(assetClockProvider)();
     final lastRefresh = ref.watch(quoteRefreshProvider);
     final banner = SyncErrorBanner(error: _syncError, onRetry: _sync);
+    // ≥ 840：左边列表、右边嵌着选中那只持仓的详情页。
+    final twoPane = widthClassOf(context) == WidthClass.expanded;
+    final all = ledger.valueOrNull?.activeHoldings ?? const <Holding>[];
+    final selected = ref.watch(selectedHoldingProvider);
+    final shown = twoPane
+        ? (all.any((h) => h.id == selected) ? selected : all.firstOrNull?.id)
+        : null;
+    if (twoPane && shown != selected) pinSelection(ref, selectedHoldingProvider, shown);
+    void open(Holding h) {
+      if (twoPane) {
+        ref.read(selectedHoldingProvider.notifier).state = h.id;
+      } else {
+        context.push('/assets/holdings/${h.id}');
+      }
+    }
 
-    return RefreshIndicator(
+    final list = RefreshIndicator(
       onRefresh: _sync,
       child: LayoutBuilder(
         builder: (context, box) => AsyncValueView<LedgerData>(
@@ -100,7 +117,7 @@ class _InvestTabState extends ConsumerState<InvestTab> {
             final held = holdings.where((h) => !h.isCleared).toList();
             final cleared = holdings.where((h) => h.isCleared).toList();
             return ListView(
-              padding: readableInsets(box.maxWidth).copyWith(bottom: 96),
+              padding: (twoPane ? EdgeInsets.zero : readableInsets(box.maxWidth)).copyWith(bottom: 96),
               children: [
                 banner,
                 _Header(
@@ -113,17 +130,25 @@ class _InvestTabState extends ConsumerState<InvestTab> {
                   holdings: holdings,
                   onRefresh: _refreshQuotes,
                 ),
-                for (final h in held) HoldingTile(holding: h, now: now),
+                for (final h in held) HoldingTile(holding: h, now: now, selected: h.id == shown, onTap: () => open(h)),
                 if (cleared.isNotEmpty) ...[
                   const SizedBox(height: LedgerLayout.groupGap),
                   const SectionHeader('已清仓'),
-                  for (final h in cleared) HoldingTile(holding: h, now: now),
+                  for (final h in cleared) HoldingTile(holding: h, now: now, selected: h.id == shown, onTap: () => open(h)),
                 ],
               ],
             );
           },
         ),
       ),
+    );
+    if (!twoPane) return list;
+    return AdaptiveTwoPane(
+      main: list,
+      sideWidth: LedgerLayout.detailPaneWidth,
+      side: shown == null
+          ? const EmptyState(title: '选一只持仓看详情', compact: true)
+          : DetailPane(key: ValueKey('holding-pane-$shown'), child: HoldingDetailPage(shown)),
     );
   }
 
@@ -296,10 +321,14 @@ String? priceTag(Holding h, HoldingMetrics m) {
 
 /// 一只持仓：市值、收益与收益率、持有天数、日均收益。
 class HoldingTile extends StatelessWidget {
-  const HoldingTile({super.key, required this.holding, required this.now});
+  const HoldingTile({super.key, required this.holding, required this.now, this.onTap, this.selected = false});
 
   final Holding holding;
   final DateTime now;
+
+  /// 不给就整页打开详情；宽屏的理财段给「选中它」。
+  final VoidCallback? onTap;
+  final bool selected;
 
   @override
   Widget build(BuildContext context) {
@@ -320,7 +349,8 @@ class HoldingTile extends StatelessWidget {
 
     return ListTile(
       key: ValueKey('holding-${h.id}'),
-      onTap: () => context.push('/assets/holdings/${h.id}'),
+      selected: selected,
+      onTap: onTap ?? () => context.push('/assets/holdings/${h.id}'),
       contentPadding: const EdgeInsets.symmetric(
         horizontal: LedgerLayout.pagePadding,
         vertical: 4,

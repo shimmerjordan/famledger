@@ -40,3 +40,9 @@ void refreshNetWorth(WidgetRef ref) {
   ref.invalidate(statsProvider);
   ref.invalidate(settingsProvider);
 }
+
+/// 宽屏（≥ 840）右栏正在看的那一条；null = 默认看列表里第一条（各段画出来后会把它写回这里）。
+/// 会员权益的在 perk_providers.dart（selectedMembershipProvider）。
+final selectedFundProvider = StateProvider<String?>((ref) => null);
+final selectedAssetProvider = StateProvider<String?>((ref) => null);
+final selectedHoldingProvider = StateProvider<String?>((ref) => null);

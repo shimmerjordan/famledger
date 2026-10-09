@@ -3,11 +3,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app/providers.dart';
+import '../../app/shell.dart';
 import '../../app/theme.dart';
 import '../../core/money.dart';
 import '../../data/models/models.dart';
 import '../../data/repos/ledger_repo.dart';
 import '../widgets/widgets.dart';
+import 'asset_detail_page.dart';
 import 'asset_providers.dart';
 import 'asset_widgets.dart';
 
@@ -49,8 +51,23 @@ class _ItemsTabState extends ConsumerState<ItemsTab> {
     final now = ref.watch(assetClockProvider)();
     final sort = ref.watch(assetSortProvider);
     final banner = SyncErrorBanner(error: _syncError, onRetry: _refresh);
+    // ≥ 840：左边列表、右边嵌着选中那件物品的详情页。
+    final twoPane = widthClassOf(context) == WidthClass.expanded;
+    final all = ledger.valueOrNull?.activeAssets ?? const <Asset>[];
+    final selected = ref.watch(selectedAssetProvider);
+    final shown = twoPane
+        ? (all.any((a) => a.id == selected) ? selected : all.firstOrNull?.id)
+        : null;
+    if (twoPane && shown != selected) pinSelection(ref, selectedAssetProvider, shown);
+    void open(Asset asset) {
+      if (twoPane) {
+        ref.read(selectedAssetProvider.notifier).state = asset.id;
+      } else {
+        context.push('/assets/items/${asset.id}');
+      }
+    }
 
-    return RefreshIndicator(
+    final list = RefreshIndicator(
       onRefresh: _refresh,
       child: LayoutBuilder(
         builder: (context, box) => AsyncValueView<LedgerData>(
@@ -78,7 +95,7 @@ class _ItemsTabState extends ConsumerState<ItemsTab> {
             final held = sortAssets(assets.where((a) => a.isHeld), sort, now);
             final ended = sortAssets(assets.where((a) => a.isEnded), sort, now);
             return ListView(
-              padding: readableInsets(box.maxWidth).copyWith(bottom: 96),
+              padding: (twoPane ? EdgeInsets.zero : readableInsets(box.maxWidth)).copyWith(bottom: 96),
               children: [
                 banner,
                 _Summary(summary: summarizeAssets(assets, now)),
@@ -104,17 +121,25 @@ class _ItemsTabState extends ConsumerState<ItemsTab> {
                     ],
                   ),
                 ),
-                for (final asset in held) AssetTile(asset: asset, now: now),
+                for (final asset in held) AssetTile(asset: asset, now: now, selected: asset.id == shown, onTap: () => open(asset)),
                 if (ended.isNotEmpty) ...[
                   const SizedBox(height: LedgerLayout.groupGap),
                   const SectionHeader('已退役 · 已卖出'),
-                  for (final asset in ended) AssetTile(asset: asset, now: now),
+                  for (final asset in ended) AssetTile(asset: asset, now: now, selected: asset.id == shown, onTap: () => open(asset)),
                 ],
               ],
             );
           },
         ),
       ),
+    );
+    if (!twoPane) return list;
+    return AdaptiveTwoPane(
+      main: list,
+      sideWidth: LedgerLayout.detailPaneWidth,
+      side: shown == null
+          ? const EmptyState(title: '选一件物品看详情', compact: true)
+          : DetailPane(key: ValueKey('asset-pane-$shown'), child: AssetDetailPage(shown)),
     );
   }
 }
@@ -159,10 +184,14 @@ String _valuationLine(AssetSummary summary) {
 
 /// 一件物品：分类图标、名字、用了几天、估值、每天多少钱、状态。
 class AssetTile extends StatelessWidget {
-  const AssetTile({super.key, required this.asset, required this.now});
+  const AssetTile({super.key, required this.asset, required this.now, this.onTap, this.selected = false});
 
   final Asset asset;
   final DateTime now;
+
+  /// 不给就整页打开详情；宽屏的物品段给「选中它」。
+  final VoidCallback? onTap;
+  final bool selected;
 
   @override
   Widget build(BuildContext context) {
@@ -174,7 +203,8 @@ class AssetTile extends StatelessWidget {
         : '${asset.isEnded ? '用了' : '已用'} ${usage.days} / $expected 天';
     return ListTile(
       key: ValueKey('asset-${asset.id}'),
-      onTap: () => context.push('/assets/items/${asset.id}'),
+      selected: selected,
+      onTap: onTap ?? () => context.push('/assets/items/${asset.id}'),
       contentPadding: const EdgeInsets.symmetric(
         horizontal: LedgerLayout.pagePadding,
         vertical: 4,

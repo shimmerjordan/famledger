@@ -156,6 +156,7 @@ class _PerksTabState extends ConsumerState<PerksTab> {
           if (!wide) return list;
           return AdaptiveTwoPane(
             main: list,
+            sideWidth: LedgerLayout.detailPaneWidth,
             side: shown == null
                 ? const EmptyState(title: '选一张卡看详情', compact: true)
                 : MembershipDetailView(

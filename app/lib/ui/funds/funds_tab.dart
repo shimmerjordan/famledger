@@ -9,10 +9,12 @@ import '../../core/dates.dart';
 import '../../core/money.dart';
 import '../../data/models/models.dart';
 import '../../data/repos/ledger_repo.dart';
+import '../assets/asset_providers.dart';
 import '../assets/asset_widgets.dart';
 import '../home/fund_carousel.dart';
 import '../widgets/widgets.dart';
 import 'fund_progress.dart';
+import 'fund_detail_page.dart';
 import 'fund_providers.dart';
 import 'fund_template_sheet.dart';
 
@@ -71,11 +73,33 @@ class _FundsTabState extends ConsumerState<FundsTab> {
     final month = Dates.currentMonth();
     final ledger = ref.watch(ledgerProvider);
     final stats = ref.watch(statsProvider(month));
-    final wide = widthClassOf(context) != WidthClass.compact;
+    final width = widthClassOf(context);
+    final grid = width != WidthClass.compact;
+    // ≥ 840：左边卡片、右边嵌着选中那个基金的详情页（fund_detail_page），右半屏不再空着。
+    final twoPane = width == WidthClass.expanded;
+    final funds = ledger.valueOrNull?.activeFunds ?? const <Fund>[];
+    final selected = ref.watch(selectedFundProvider);
+    final shown = twoPane
+        ? (funds.any((f) => f.id == selected) ? selected : funds.firstOrNull?.id)
+        : null;
+    if (twoPane && shown != selected) pinSelection(ref, selectedFundProvider, shown);
 
-    // 和物品、理财两段一样：宽屏限宽居中，跟顶上的净资产总览对齐。
-    return LayoutBuilder(
-      builder: (context, box) => _body(month, ledger, stats, wide, readableInsets(box.maxWidth)),
+    final list = LayoutBuilder(
+      builder: (context, box) => _body(month, ledger, stats, grid, twoPane ? EdgeInsets.zero : readableInsets(box.maxWidth), (fund) {
+        if (twoPane) {
+          ref.read(selectedFundProvider.notifier).state = fund.id;
+        } else {
+          context.push('/funds/${fund.id}');
+        }
+      }),
+    );
+    if (!twoPane) return list;
+    return AdaptiveTwoPane(
+      main: list,
+      sideWidth: LedgerLayout.detailPaneWidth,
+      side: shown == null
+          ? const EmptyState(title: '选一个基金看详情', compact: true)
+          : DetailPane(key: ValueKey('fund-pane-$shown'), child: FundDetailPage(shown)),
     );
   }
 
@@ -85,6 +109,7 @@ class _FundsTabState extends ConsumerState<FundsTab> {
     AsyncValue<StatsOverview> stats,
     bool wide,
     EdgeInsets side,
+    ValueChanged<Fund> onOpen,
   ) {
     return RefreshIndicator(
       onRefresh: () => _refresh(month),
@@ -138,8 +163,7 @@ class _FundsTabState extends ConsumerState<FundsTab> {
                       index: index,
                       width: double.infinity,
                       progress: fundProgressOf(funds[index], overview),
-                      onTap: () =>
-                          context.push('/funds/${funds[index].id}'),
+                      onTap: () => onOpen(funds[index]),
                     ),
                   ),
                 )
@@ -151,7 +175,7 @@ class _FundsTabState extends ConsumerState<FundsTab> {
                   child: FundBalanceList(
                     funds: funds,
                     stats: overview,
-                    onTap: (fund) => context.push('/funds/${fund.id}'),
+                    onTap: onOpen,
                   ),
                 ),
             ],

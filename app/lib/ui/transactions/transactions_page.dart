@@ -363,6 +363,7 @@ class _TransactionsPageState extends ConsumerState<TransactionsPage> {
                 child: const Icon(Icons.filter_list),
               ),
             ),
+            const ThemeModeButton(),
           ],
           bottom: PreferredSize(
             preferredSize: const Size.fromHeight(60),

@@ -79,6 +79,7 @@ Future<void> pumpFunds(
   LedgerData data = ledgerData,
   Size size = const Size(390, 900),
   Object? syncError,
+  List<Override> overrides = const [],
 }) async {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1.0;
@@ -96,6 +97,7 @@ Future<void> pumpFunds(
           () => FakeLedger(data, syncError: syncError),
         ),
         statsProvider.overrideWith(() => FakeStats(overview)),
+        ...overrides,
       ],
       child: MaterialApp(
         theme: buildTheme(Brightness.light),
@@ -189,12 +191,25 @@ void main() {
     expect(find.text('还没有基金'), findsOneWidget);
   });
 
-  testWidgets('宽屏用卡片网格，窄屏用列表', (tester) async {
-    await pumpFunds(tester, size: const Size(1200, 1000));
+  testWidgets('宽屏用卡片网格，右栏嵌着选中基金的详情；点另一张卡右栏跟着换', (tester) async {
+    await pumpFunds(
+      tester,
+      size: const Size(1200, 1000),
+      overrides: [
+        fundStatsProvider.overrideWith((ref, id) async => const FundStats(balanceCents: 1200000)),
+        fundTrendProvider.overrideWith((ref, id) async => const TrendSeries()),
+      ],
+    );
 
     expect(find.byType(GridView), findsOneWidget);
-    expect(find.text('家庭公共'), findsOneWidget);
-    expect(find.text('¥12,000.00'), findsOneWidget);
+    expect(find.byType(FundDetailPage), findsOneWidget, reason: '≥ 840 右栏嵌着详情');
+    expect(find.text('家庭公共'), findsNWidgets(2), reason: '卡片一次、右栏标题一次');
+    expect(find.text('目标与预算'), findsOneWidget);
+    expect((tester.widget(find.byType(FundDetailPage)) as FundDetailPage).id, 'f1', reason: '默认看第一个');
+
+    await tester.tap(find.text('旅行基金'));
+    await tester.pumpAndSettle();
+    expect((tester.widget(find.byType(FundDetailPage)) as FundDetailPage).id, 'f2');
   });
 
   group('基金详情', () {

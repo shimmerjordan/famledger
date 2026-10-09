@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'app/providers.dart';
 import 'app/router.dart';
 import 'app/theme.dart';
+import 'app/theme_mode.dart';
 import 'data/local/local_store.dart';
 import 'data/local/secure_store.dart';
 import 'data/repos/session_repo.dart';
@@ -17,6 +18,8 @@ Future<void> main() async {
   final secure = await SecureStore.open();
   final sessionRepo = SessionRepo(secure: secure);
   await sessionRepo.restore();
+  // 外观也先读好：深色的用户不该先看到一帧白的。
+  final themeMode = await readThemeMode(store);
 
   runApp(
     ProviderScope(
@@ -24,6 +27,7 @@ Future<void> main() async {
         localStoreProvider.overrideWithValue(store),
         secureStoreProvider.overrideWithValue(secure),
         sessionRepoProvider.overrideWithValue(sessionRepo),
+        themeModeProvider.overrideWith(() => ThemeModeController(themeMode)),
       ],
       child: const FamLedgerApp(),
     ),
@@ -39,7 +43,7 @@ class FamLedgerApp extends ConsumerWidget {
     debugShowCheckedModeBanner: false,
     theme: lightTheme,
     darkTheme: darkTheme,
-    themeMode: ThemeMode.system,
+    themeMode: ref.watch(themeModeProvider),
     routerConfig: ref.watch(routerProvider),
     locale: const Locale('zh', 'CN'),
     supportedLocales: const [Locale('zh', 'CN'), Locale('en', 'US')],

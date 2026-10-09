@@ -155,6 +155,9 @@ class LedgerLayout {
   /// 宽屏内容不要拉得太开。
   static const double maxContentWidth = 1200;
 
+  /// 资产四段、「我的」在 ≥ 840 时右边嵌的详情栏宽度：左边是列表，右边直接看详情，不再把右半屏空着。
+  static const double detailPaneWidth = 420;
+
   static bool isCompact(double width) => width < compact;
   static bool isExpanded(double width) => width >= medium;
 }

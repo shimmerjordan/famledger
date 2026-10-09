@@ -109,7 +109,7 @@ class _AnalysisPageState extends ConsumerState<AnalysisPage> {
 
     final wide = widthClassOf(context) == WidthClass.expanded;
     return Scaffold(
-      appBar: AppBar(title: const Text('分析')),
+      appBar: AppBar(title: const Text('分析'), actions: const [ThemeModeButton()]),
       body: wide
           ? AdaptiveTwoPane(
               main: ListView(children: main),

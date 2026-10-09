@@ -14,6 +14,7 @@ import '../perks/perks_tab.dart';
 import 'invest_tab.dart';
 import 'items_tab.dart';
 import 'net_worth_strip.dart';
+import '../widgets/widgets.dart';
 
 /// 资产（底部导航的一个 tab）：顶上一行净资产总览，下面四段 ——
 /// 「基金」每个资金模块还剩多少，「物品」看每天花多少和估值，「理财」看持仓市值和收益，
@@ -262,6 +263,7 @@ class _AssetsPageState extends ConsumerState<AssetsPage>
                 PopupMenuItem(key: ValueKey('menu-recent-imports'), value: 'imports', child: Text('最近的 AI 导入')),
               ],
             ),
+          const ThemeModeButton(),
         ],
       ),
       body: LayoutBuilder(

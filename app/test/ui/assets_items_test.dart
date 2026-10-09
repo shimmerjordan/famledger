@@ -469,7 +469,8 @@ void main() {
 
       testWidgets('列表 @$w', (tester) async {
         await pumpAssetsAt(tester, bootAssets(itemsBackend()), '/assets?tab=items', size: size);
-        expect(find.text('iPhone 16'), findsOneWidget);
+        // ≥ 840 时右栏嵌着选中那件的详情，名字会出现两次。
+        expect(find.text('iPhone 16'), findsWidgets);
         expect(tester.takeException(), isNull);
       });
 
