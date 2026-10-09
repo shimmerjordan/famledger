@@ -32,12 +32,16 @@ import '../ui/settings/settings_page.dart';
 import '../ui/transactions/transactions_page.dart';
 import '../data/repos/session_repo.dart';
 import '../ui/transactions/tx_detail_page.dart';
+import 'page_frame.dart';
 import 'providers.dart';
 import 'shell.dart';
 import 'startup.dart';
 
 /// 没登录时只能待在这三页里。
 const Set<String> kAuthRoutes = {'/connect', '/setup', '/login'};
+
+/// 压在外壳上面的整屏页：≥ 600 宽时左边带着同一条导航轨（page_frame.dart），手机上原样整屏。
+Widget _framed(GoRouterState state, Widget page) => PageFrame(location: state.uri.toString(), child: page);
 
 final routerProvider = Provider<GoRouter>((ref) {
   final refresh = _SessionRefresh(ref);
@@ -109,91 +113,91 @@ final routerProvider = Provider<GoRouter>((ref) {
         ],
       ),
 
-      // 详情/表单是整屏，压在外壳之上。`/new` 必须排在 `/:id` 前面。
+      // 详情/表单是整屏，压在外壳之上；≥ 600 宽时带着同一条导航轨（_framed）。`/new` 必须排在 `/:id` 前面。
       GoRoute(
         path: '/transactions/new',
-        builder: (context, state) => const AddTxPage(),
+        builder: (context, state) => _framed(state, const AddTxPage()),
       ),
       GoRoute(
         path: '/transactions/:id',
-        builder: (context, state) => TxDetailPage(state.pathParameters['id']!),
+        builder: (context, state) => _framed(state, TxDetailPage(state.pathParameters['id']!)),
       ),
       // 基金并进了资产 tab 的第一段：老地址（书签、旧版通知）转过去。
       GoRoute(path: '/funds', redirect: (context, state) => assetsLocation(AssetsPage.fundsTab)),
       GoRoute(
         path: '/funds/new',
-        builder: (context, state) => const FundFormPage(),
+        builder: (context, state) => _framed(state, const FundFormPage()),
       ),
       GoRoute(
         path: '/funds/:id',
-        builder: (context, state) => FundDetailPage(state.pathParameters['id']!),
+        builder: (context, state) => _framed(state, FundDetailPage(state.pathParameters['id']!)),
         routes: [
           GoRoute(
             path: 'edit',
             builder: (context, state) =>
-                FundFormPage(id: state.pathParameters['id']),
+                _framed(state, FundFormPage(id: state.pathParameters['id'])),
           ),
         ],
       ),
       GoRoute(
         path: '/import',
-        builder: (context, state) => const ImportPage(),
+        builder: (context, state) => _framed(state, const ImportPage()),
         routes: [
           GoRoute(
             path: 'preview',
-            builder: (context, state) => const ImportPreviewRoute(),
+            builder: (context, state) => _framed(state, const ImportPreviewRoute()),
           ),
           GoRoute(
             path: 'paste',
-            builder: (context, state) => const PasteImportPage(),
+            builder: (context, state) => _framed(state, const PasteImportPage()),
           ),
         ],
       ),
-      GoRoute(path: '/ai/chat', builder: (context, state) => const AiChatPage()),
-      GoRoute(path: '/ai/report', builder: (context, state) => const AiReportPage()),
+      GoRoute(path: '/ai/chat', builder: (context, state) => _framed(state, const AiChatPage())),
+      GoRoute(path: '/ai/report', builder: (context, state) => _framed(state, const AiReportPage())),
       GoRoute(
         path: '/settings/members',
-        builder: (context, state) => const MembersPage(),
+        builder: (context, state) => _framed(state, const MembersPage()),
       ),
       GoRoute(
         path: '/settings/accounts',
-        builder: (context, state) => const AccountsPage(),
+        builder: (context, state) => _framed(state, const AccountsPage()),
       ),
       GoRoute(
         path: '/settings/categories',
-        builder: (context, state) => const CategoriesPage(),
+        builder: (context, state) => _framed(state, const CategoriesPage()),
       ),
       GoRoute(
         path: '/settings/budgets',
-        builder: (context, state) => const BudgetsPage(),
+        builder: (context, state) => _framed(state, const BudgetsPage()),
       ),
       GoRoute(
         path: '/settings/rules',
-        builder: (context, state) => const RulesPage(),
+        builder: (context, state) => _framed(state, const RulesPage()),
       ),
       GoRoute(
         path: '/settings/capture',
-        builder: (context, state) => const CapturePage(),
+        builder: (context, state) => _framed(state, const CapturePage()),
       ),
       GoRoute(
         path: '/settings/perk-reminders',
-        builder: (context, state) => const PerkReminderPage(),
+        builder: (context, state) => _framed(state, const PerkReminderPage()),
       ),
       GoRoute(
         path: '/settings/ai',
-        builder: (context, state) => const AiProvidersPage(),
+        builder: (context, state) => _framed(state, const AiProvidersPage()),
       ),
       GoRoute(
         path: '/settings/backup',
-        builder: (context, state) => const BackupPage(),
+        builder: (context, state) => _framed(state, const BackupPage()),
       ),
       GoRoute(
         path: '/settings/server',
-        builder: (context, state) => const ServerPage(),
+        builder: (context, state) => _framed(state, const ServerPage()),
       ),
       GoRoute(
         path: '/settings/about',
-        builder: (context, state) => const AboutPage(),
+        builder: (context, state) => _framed(state, const AboutPage()),
       ),
     ],
     errorBuilder: (context, state) => _RouteNotFound(location: state.uri.toString()),

@@ -1,6 +1,7 @@
 import 'package:flutter/widgets.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../app/page_frame.dart';
 import '../../data/models/models.dart';
 import '../perk_import/perk_import_page.dart';
 import '../perk_import/perk_import_preview_page.dart';
@@ -55,8 +56,15 @@ String assetsLocation(int tab) => '/assets?tab=${kAssetsTabNames[tab]}';
 ///
 /// `new` 必须排在 `:id` 前面。
 GoRoute assetsTabRoute({GlobalKey<NavigatorState>? pagesOn}) {
-  GoRoute page(String path, GoRouterWidgetBuilder builder, {List<RouteBase> routes = const []}) =>
-      GoRoute(path: path, parentNavigatorKey: pagesOn, builder: builder, routes: routes);
+  // 挂在根 navigator 上的整屏页带导航轨（app/page_frame.dart）；测试里没有外壳就不套。
+  GoRoute page(String path, GoRouterWidgetBuilder builder, {List<RouteBase> routes = const []}) => GoRoute(
+    path: path,
+    parentNavigatorKey: pagesOn,
+    builder: pagesOn == null
+        ? builder
+        : (context, state) => PageFrame(location: state.uri.toString(), child: builder(context, state)),
+    routes: routes,
+  );
 
   return GoRoute(
     path: '/assets',

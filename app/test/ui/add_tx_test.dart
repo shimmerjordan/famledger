@@ -9,6 +9,7 @@ import 'package:famledger/data/repos/ledger_repo.dart';
 import 'package:famledger/data/repos/session_repo.dart';
 import 'package:famledger/data/repos/transactions_repo.dart';
 import 'package:famledger/ui/add_tx/add_tx_page.dart';
+import 'package:flutter/foundation.dart' show debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -218,6 +219,56 @@ void main() {
 
     expect(find.text('工资'), findsOneWidget);
     expect(find.text('餐饮'), findsNothing);
+  });
+
+  group('桌面（电脑上的网页、桌面端）', () {
+    const desktopData = LedgerData(
+      funds: [Fund(id: 'f1', name: '家庭公共', isDefault: true)],
+      accounts: [Account(id: 'a1', name: '微信', kind: 'wechat')],
+      categories: [Category(id: 'c1', name: '餐饮', icon: 'restaurant')],
+    );
+
+    // 测试框架在用例结束时检查平台覆盖已经还原（比 tearDown 早），所以在用例里自己收。
+    Future<void> onDesktop(Future<void> Function() body) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+      try {
+        await body();
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    }
+
+    testWidgets('金额是输入框、没有九宫格；敲进去的只留数字和两位小数；点保存按敲的数记', (tester) async {
+      await onDesktop(() async {
+        final repo = RecordingTxRepo();
+        await pumpAddTxRouted(tester, repo, data: desktopData);
+
+        final field = find.byKey(const ValueKey('amount-field'));
+        expect(field, findsOneWidget);
+        expect(find.byKey(const ValueKey('key-1')), findsNothing, reason: '有实体键盘不画九宫格');
+        expect(find.byKey(const ValueKey('save-tx')), findsNothing);
+
+        await tester.enterText(field, '1a2.345');
+        await tester.pump();
+        expect(tester.widget<TextField>(field).controller!.text, '12.34');
+
+        await tester.tap(find.byKey(const ValueKey('save-tx-desktop')));
+        await tester.pumpAndSettle();
+        expect(repo.lastDraft?.amountCents, 1234);
+      });
+    });
+
+    testWidgets('回车就保存', (tester) async {
+      await onDesktop(() async {
+        final repo = RecordingTxRepo();
+        await pumpAddTxRouted(tester, repo, data: desktopData);
+        await tester.enterText(find.byKey(const ValueKey('amount-field')), '12.5');
+        await tester.testTextInput.receiveAction(TextInputAction.done);
+        await tester.pumpAndSettle();
+        expect(repo.lastDraft?.amountCents, 1250);
+        expect(find.text('回到首页'), findsOneWidget);
+      });
+    });
   });
 
   testWidgets('转账只填账户对时，默认基金不许偷偷塞进去', (tester) async {

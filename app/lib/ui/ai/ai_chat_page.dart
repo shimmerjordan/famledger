@@ -175,23 +175,26 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
             ),
         ],
       ),
+      // 对话、输入栏、顶上的月份/渠道都限宽 880：网页上一行字拉到 1400 宽没法读。
       body: Column(
         children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(
-              horizontal: LedgerLayout.pagePadding,
-            ),
-            child: Row(
-              children: [
-                AiMonthChip(month: _month, onChanged: _changeMonth),
-                const SizedBox(width: 8),
-                Flexible(
-                  child: AiProviderChip(
-                    providerId: _providerId,
-                    onChanged: (id) => setState(() => _providerId = id),
+          ReadableBox(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: LedgerLayout.pagePadding,
+              ),
+              child: Row(
+                children: [
+                  AiMonthChip(month: _month, onChanged: _changeMonth),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: AiProviderChip(
+                      providerId: _providerId,
+                      onChanged: (id) => setState(() => _providerId = id),
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
           const Divider(height: 1),
@@ -204,32 +207,36 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
     );
   }
 
-  Widget _list() => ListView.builder(
-    controller: _scroll,
-    padding: const EdgeInsets.fromLTRB(
-      LedgerLayout.pagePadding,
-      12,
-      LedgerLayout.pagePadding,
-      12,
-    ),
-    itemCount: _messages.length + (_isStreaming ? 1 : 0),
-    itemBuilder: (context, index) {
-      if (index >= _messages.length) {
+  Widget _list() => LayoutBuilder(
+    builder: (context, box) => ListView.builder(
+      controller: _scroll,
+      padding: readableInsets(box.maxWidth).add(
+        const EdgeInsets.fromLTRB(
+          LedgerLayout.pagePadding,
+          12,
+          LedgerLayout.pagePadding,
+          12,
+        ),
+      ),
+      itemCount: _messages.length + (_isStreaming ? 1 : 0),
+      itemBuilder: (context, index) {
+        if (index >= _messages.length) {
+          return MessageBubble(
+            message: AiChatMessage.assistant(_streaming),
+            streaming: true,
+          );
+        }
+        final message = _messages[index];
+        final isLastError = message.error && index == _messages.length - 1;
         return MessageBubble(
-          message: AiChatMessage.assistant(_streaming),
-          streaming: true,
+          message: message,
+          onRetry: isLastError ? _retry : null,
         );
-      }
-      final message = _messages[index];
-      final isLastError = message.error && index == _messages.length - 1;
-      return MessageBubble(
-        message: message,
-        onRetry: isLastError ? _retry : null,
-      );
-    },
+      },
+    ),
   );
 
-  Widget _empty(BuildContext context) => ListView(
+  Widget _empty(BuildContext context) => ReadableListView(
     padding: const EdgeInsets.only(bottom: 24),
     children: [
       EmptyState(
@@ -265,7 +272,8 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
     ),
     child: SafeArea(
       top: false,
-      child: Padding(
+      child: ReadableBox(
+        child: Padding(
         padding: const EdgeInsets.fromLTRB(LedgerLayout.pagePadding, 8, 8, 8),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.end,
@@ -301,6 +309,7 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                     ),
             ),
           ],
+        ),
         ),
       ),
     ),

@@ -69,6 +69,27 @@ void main() {
       await tester.tap(find.text('新建基金'));
       expect(tapped, 1);
     });
+
+    testWidgets('直接当页面正文：宽屏上也居中、说明限宽，不缩在左上角', (tester) async {
+      tester.view.physicalSize = const Size(1200, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildTheme(Brightness.light),
+          home: const Scaffold(
+            body: EmptyState(
+              title: '还没有识别规则',
+              message: '比如「商户 包含 星巴克 → 餐饮 · 我的零花」，以后这类通知就自动归好类，一句很长很长的说明也不该拉成通栏。',
+              icon: Icons.rule_outlined,
+            ),
+          ),
+        ),
+      );
+      expect(tester.getCenter(find.text('还没有识别规则')).dx, closeTo(600, 1));
+      expect(tester.getSize(find.textContaining('星巴克')).width, lessThanOrEqualTo(EmptyState.maxWidth));
+    });
   });
 
   group('FundDot', () {

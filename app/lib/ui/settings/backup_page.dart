@@ -279,6 +279,7 @@ class _BackupPageState extends ConsumerState<BackupPage> {
         data: (data) {
           _seedOnce(data);
           return ReadableListView(
+            maxWidth: 720,
             padding: const EdgeInsets.only(bottom: 40),
             children: [
               ..._webdavSection(data),

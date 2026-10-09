@@ -86,7 +86,7 @@ class _AiReportPageState extends ConsumerState<AiReportPage> {
 
     return Scaffold(
       appBar: AppBar(title: const Text('AI 月报')),
-      body: ListView(
+      body: ReadableListView(
         padding: const EdgeInsets.only(bottom: 32),
         children: [
           Padding(

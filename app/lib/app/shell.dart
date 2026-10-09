@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import 'page_frame.dart';
 import 'theme.dart';
 
 /// 底部导航/导航轨的五个目的地。
@@ -116,41 +117,14 @@ class AdaptiveShell extends StatelessWidget {
       );
     }
 
-    final expanded = width == WidthClass.expanded;
+    // 整屏页（page_frame.dart）画的是同一条轨：从外壳点进表单、详情，左边的导航不动。
     return Scaffold(
       body: Row(
         children: [
-          NavigationRail(
-            extended: expanded,
-            // 展开时标签在图标右边；不展开时放图标下面，别让人猜图标含义。
-            labelType: expanded
-                ? NavigationRailLabelType.none
-                : NavigationRailLabelType.all,
-            minExtendedWidth: 180,
+          LedgerRail(
             selectedIndex: navigationShell.currentIndex,
-            onDestinationSelected: _go,
-            leading: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              child: expanded
-                  ? FloatingActionButton.extended(
-                      onPressed: () => _addTx(context),
-                      icon: const Icon(Icons.add),
-                      label: const Text('记一笔'),
-                    )
-                  : FloatingActionButton(
-                      onPressed: () => _addTx(context),
-                      tooltip: '记一笔',
-                      child: const Icon(Icons.add),
-                    ),
-            ),
-            destinations: [
-              for (final d in kShellDestinations)
-                NavigationRailDestination(
-                  icon: Icon(d.icon),
-                  selectedIcon: Icon(d.selectedIcon),
-                  label: Text(d.label),
-                ),
-            ],
+            onSelect: _go,
+            onAddTx: () => _addTx(context),
           ),
           VerticalDivider(
             width: 1,

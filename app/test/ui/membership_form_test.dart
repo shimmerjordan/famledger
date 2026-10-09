@@ -371,7 +371,8 @@ void main() {
     for (final size in kWidths) {
       testWidgets('${size.width.toInt()} 宽：展开「更多」、勾上「同时记一笔」、打开平台选择都不溢出', (tester) async {
         await pumpAssetsAt(tester, bootAssets(withPlatforms()), '/assets/memberships/new?platformId=tb', size: Size(size.width, 3000));
-        await tapVisible(tester, find.text('更多'));
+        // 宽屏两列时「更多」已经摊开在右列，再点就收起来了；窄屏才要点开。
+        if (find.byKey(const ValueKey('membership-fee')).evaluate().isEmpty) await tapVisible(tester, find.text('更多'));
         await tester.enterText(find.byKey(const ValueKey('membership-fee')), '88');
         await tapVisible(tester, find.byKey(const ValueKey('membership-kind-credit_card')));
         await tapVisible(tester, find.byKey(const ValueKey('membership-record')));
@@ -385,7 +386,7 @@ void main() {
         tester.platformDispatcher.textScaleFactorTestValue = 1.5;
         addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
         await pumpAssetsAt(tester, bootAssets(withPlatforms()), '/assets/memberships/new?platformId=tb', size: Size(size.width, 5000));
-        await tapVisible(tester, find.text('更多'));
+        if (find.byKey(const ValueKey('membership-fee')).evaluate().isEmpty) await tapVisible(tester, find.text('更多'));
         expect(find.text('比如 88VIP 送的优酷会员'), findsOneWidget);
         expect(tester.takeException(), isNull);
       });

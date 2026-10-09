@@ -302,10 +302,9 @@ class _MembershipFormPageState extends ConsumerState<MembershipFormPage> {
 
     return Scaffold(
       appBar: AppBar(title: Text(title)),
-      body: LayoutBuilder(
-        builder: (context, box) => ListView(
-          padding: readableInsets(box.maxWidth, maxWidth: 720).copyWith(bottom: LedgerLayout.groupGap),
-          children: [
+      // 宽屏两列：左边三样必填 + 「同时记一笔」+ 提交，右边把「更多」直接摊开。
+      body: FormColumns(
+        main: [
             PickerField(
               label: '平台',
               topGap: LedgerLayout.pagePadding,
@@ -336,10 +335,14 @@ class _MembershipFormPageState extends ConsumerState<MembershipFormPage> {
                 onClear: () => setState(() => _expiresOn = null),
               ),
             ),
+        ],
+        side: [
             const SizedBox(height: LedgerLayout.itemGap),
             ExpansionTile(
               key: const ValueKey('membership-more'),
-              initiallyExpanded: (_editing && _moreFilled) || widget.initialSourceBenefitId != null,
+              // 两列时右边就是给它的，直接摊开；窄屏才折着。
+              initiallyExpanded:
+                  (_editing && _moreFilled) || widget.initialSourceBenefitId != null || formIsTwoColumn(context),
               expansionAnimationStyle: MediaQuery.disableAnimationsOf(context)
                   ? AnimationStyle.noAnimation
                   : AnimationStyle(duration: const Duration(milliseconds: 200), curve: Easing.emphasizedDecelerate),
@@ -351,6 +354,8 @@ class _MembershipFormPageState extends ConsumerState<MembershipFormPage> {
               subtitle: const Text('档位、持有人、续费价、本期、提醒、扣费特征……'),
               children: _more(context, ledger, sources),
             ),
+        ],
+        bottom: [
             if (!_editing && _recordAmount > 0) ...[
               SwitchListTile(
                 key: const ValueKey('membership-record'),
@@ -381,8 +386,7 @@ class _MembershipFormPageState extends ConsumerState<MembershipFormPage> {
               error: _error,
               onPressed: () => _save(ledger),
             ),
-          ],
-        ),
+        ],
       ),
     );
   }

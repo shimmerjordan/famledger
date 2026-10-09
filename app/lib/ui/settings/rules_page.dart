@@ -34,13 +34,21 @@ class _RulesPageState extends ConsumerState<RulesPage> {
   Widget build(BuildContext context) {
     final ledger = ref.watch(ledgerProvider);
 
+    final inAppBar = addButtonInAppBar(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('识别规则')),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => showRuleForm(context),
-        icon: const Icon(Icons.add),
-        label: const Text('添加规则'),
+      appBar: AppBar(
+        title: const Text('识别规则'),
+        actions: [
+          if (inAppBar) AppBarAddButton(label: '添加规则', onPressed: () => showRuleForm(context)),
+        ],
       ),
+      floatingActionButton: inAppBar
+          ? null
+          : FloatingActionButton.extended(
+              onPressed: () => showRuleForm(context),
+              icon: const Icon(Icons.add),
+              label: const Text('添加规则'),
+            ),
       body: AsyncValueView<LedgerData>(
         value: ledger,
         onRetry: () => ref.read(ledgerProvider.notifier).sync(),

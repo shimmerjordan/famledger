@@ -218,11 +218,9 @@ class _AssetFormPageState extends ConsumerState<AssetFormPage> {
 
     return Scaffold(
       appBar: AppBar(title: Text(title)),
-      body: LayoutBuilder(
-        builder: (context, box) => ListView(
-          padding: readableInsets(box.maxWidth, maxWidth: 720)
-              .copyWith(bottom: LedgerLayout.groupGap),
-          children: [
+      // 宽屏两列：左边是「这是什么、花了多少」，右边是估值、备注和「同时记一笔」。
+      body: FormColumns(
+        main: [
             PickerField(
               label: '名称',
               topGap: LedgerLayout.pagePadding,
@@ -320,6 +318,8 @@ class _AssetFormPageState extends ConsumerState<AssetFormPage> {
                 ],
               ),
             ),
+        ],
+        side: [
             ValuationFields(
               editor: _valuation,
               category: _category,
@@ -368,6 +368,8 @@ class _AssetFormPageState extends ConsumerState<AssetFormPage> {
                   onCategory: (id) => setState(() => _categoryId = id),
                 ),
             ],
+        ],
+        bottom: [
             const SizedBox(height: LedgerLayout.itemGap),
             FormSubmit(
               label: _editing ? '保存' : '记好了',
@@ -375,8 +377,7 @@ class _AssetFormPageState extends ConsumerState<AssetFormPage> {
               error: _error,
               onPressed: () => _save(ledger),
             ),
-          ],
-        ),
+        ],
       ),
     );
   }

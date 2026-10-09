@@ -83,10 +83,13 @@ class _AccountsPageState extends ConsumerState<AccountsPage> {
     final ledger = ref.watch(ledgerProvider);
     final stats = ref.watch(statsProvider(Dates.currentMonth()));
 
+    final inAppBar = addButtonInAppBar(context);
     return Scaffold(
       appBar: AppBar(
         title: const Text('账户'),
         actions: [
+          if (inAppBar && !_reordering)
+            AppBarAddButton(label: '添加账户', onPressed: () => showAccountForm(context)),
           if ((ledger.valueOrNull?.activeAccounts.length ?? 0) > 1)
             TextButton(
               onPressed: () => setState(() => _reordering = !_reordering),
@@ -94,7 +97,7 @@ class _AccountsPageState extends ConsumerState<AccountsPage> {
             ),
         ],
       ),
-      floatingActionButton: _reordering
+      floatingActionButton: _reordering || inAppBar
           ? null
           : FloatingActionButton.extended(
               onPressed: () => showAccountForm(context),

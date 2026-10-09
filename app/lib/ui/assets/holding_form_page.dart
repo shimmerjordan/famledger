@@ -293,13 +293,9 @@ class _HoldingFormPageState extends ConsumerState<HoldingFormPage> {
 
     return Scaffold(
       appBar: AppBar(title: Text(title)),
-      body: LayoutBuilder(
-        builder: (context, box) => ListView(
-          padding: readableInsets(
-            box.maxWidth,
-            maxWidth: 720,
-          ).copyWith(bottom: LedgerLayout.groupGap),
-          children: [
+      // 宽屏两列：左边是持仓本身（名称、代码、市场、价、份额、成本），右边是挂账户、转账和备注。
+      body: FormColumns(
+        main: [
             PickerField(
               label: '名称',
               topGap: LedgerLayout.pagePadding,
@@ -399,6 +395,8 @@ class _HoldingFormPageState extends ConsumerState<HoldingFormPage> {
               label: '哪天买的',
               child: DayButton(day: _openedOn, onPressed: _pickDate),
             ),
+        ],
+        side: [
             if (_editing) ...[
               investField,
               if (editHint != null)
@@ -439,6 +437,8 @@ class _HoldingFormPageState extends ConsumerState<HoldingFormPage> {
                 decoration: const InputDecoration(hintText: '定投、谁的'),
               ),
             ),
+        ],
+        bottom: [
             const SizedBox(height: LedgerLayout.itemGap),
             FormSubmit(
               label: _editing ? '保存' : '记好了',
@@ -446,8 +446,7 @@ class _HoldingFormPageState extends ConsumerState<HoldingFormPage> {
               error: _error,
               onPressed: _save,
             ),
-          ],
-        ),
+        ],
       ),
     );
   }

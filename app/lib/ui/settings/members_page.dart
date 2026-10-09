@@ -20,9 +20,20 @@ class MembersPage extends ConsumerWidget {
     final isAdmin = me?.isAdmin ?? false;
     final ledger = ref.watch(ledgerProvider);
 
+    final inAppBar = addButtonInAppBar(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('成员')),
-      floatingActionButton: isAdmin
+      appBar: AppBar(
+        title: const Text('成员'),
+        actions: [
+          if (isAdmin && inAppBar)
+            AppBarAddButton(
+              label: '添加成员',
+              icon: Icons.person_add_alt,
+              onPressed: () => showMemberForm(context),
+            ),
+        ],
+      ),
+      floatingActionButton: isAdmin && !inAppBar
           ? FloatingActionButton.extended(
               onPressed: () => showMemberForm(context),
               icon: const Icon(Icons.person_add_alt),

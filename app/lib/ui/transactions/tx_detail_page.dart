@@ -298,6 +298,7 @@ class _TxDetailPageState extends ConsumerState<TxDetailPage> {
     // 一行一项的摘要，点哪一项就在它下面展开选择器：看一笔账不用滚过 15 个类别图标和
     // 三排芯片；要改哪个就点哪个。
     return ReadableListView(
+      maxWidth: 720,
       padding: const EdgeInsets.only(bottom: LedgerLayout.groupGap),
       children: [
         _Header(tx: tx, amount: _amount, type: type),

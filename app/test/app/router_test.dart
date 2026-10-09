@@ -1,6 +1,9 @@
 import 'dart:convert';
 
 import 'package:famledger/app/providers.dart';
+import 'package:famledger/ui/settings/members_page.dart';
+import 'package:famledger/ui/settings/categories_page.dart';
+import 'package:famledger/app/theme_mode.dart';
 import 'package:famledger/app/router.dart';
 import 'package:famledger/app/shell.dart';
 import 'package:famledger/app/theme.dart';
@@ -109,6 +112,29 @@ void main() {
     expect(find.byType(NavigationBar), findsNothing);
   });
 
+  testWidgets('宽屏点进记一笔：整屏页左边还是导航轨，轨首「记一笔」灰掉；点「我的」直接切过去', (tester) async {
+    await pumpApp(
+      tester,
+      await boot(baseUrl: 'https://ledger.example.com', loggedIn: true),
+      size: const Size(1400, 1000),
+    );
+    await tester.tap(find.widgetWithText(FloatingActionButton, '记一笔'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('save-tx-appbar')), findsOneWidget);
+    // 外壳的轨在底下、离屏（不算）；整屏页自己带一条，高亮「账单」。
+    expect(find.byType(NavigationRail), findsOneWidget);
+    expect(tester.widget<NavigationRail>(find.byType(NavigationRail)).selectedIndex, 1);
+    expect(
+      tester.widget<FloatingActionButton>(find.widgetWithText(FloatingActionButton, '记一笔')).onPressed,
+      isNull,
+    );
+
+    await tester.tap(find.descendant(of: find.byType(NavigationRail), matching: find.text('我的')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('save-tx-appbar')), findsNothing);
+    expect(find.byKey(const ValueKey('settings-pane')), findsOneWidget);
+  });
+
   testWidgets('切到「我的」：资产、账户、会员提醒、导入账单都挪走了', (tester) async {
     await pumpApp(
       tester,
@@ -127,6 +153,31 @@ void main() {
     for (final gone in ['资产', '账户', '会员提醒', '导入账单']) {
       expect(entry(gone), findsNothing, reason: '「$gone」不该再在「我的」里');
     }
+  });
+
+  testWidgets('宽屏「我的」：左边入口、右边嵌着子页（默认成员），点「类别」右边换成类别页；右上角能切外观', (tester) async {
+    final container = await boot(baseUrl: 'https://ledger.example.com', loggedIn: true);
+    await pumpApp(tester, container, size: const Size(1400, 1000));
+    await tester.tap(find.text('我的').last);
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('settings-pane')), findsOneWidget);
+    expect(find.byType(MembersPage), findsOneWidget, reason: '默认嵌着「成员」');
+    await tester.tap(find.byKey(const ValueKey('settings-entry-/settings/categories')));
+    await tester.pumpAndSettle();
+    expect(find.byType(CategoriesPage), findsOneWidget);
+    expect(find.byType(MembersPage), findsNothing);
+    expect(find.byType(ListTile).evaluate().where((e) => (e.widget as ListTile).selected).length, 1, reason: '选中的入口高亮');
+
+    // 外观：顶栏右上角的按钮轮换，「外观」那一行也能直接选；都记进本机。
+    expect(container.read(themeModeProvider), ThemeMode.system);
+    await tester.tap(find.byKey(const ValueKey('theme-mode')).first);
+    await tester.pumpAndSettle();
+    expect(container.read(themeModeProvider), ThemeMode.light);
+    await tester.tap(find.descendant(of: find.byKey(const ValueKey('theme-mode-row')), matching: find.text('深色')));
+    await tester.pumpAndSettle();
+    expect(container.read(themeModeProvider), ThemeMode.dark);
+    expect(await readThemeMode(container.read(localStoreProvider)), ThemeMode.dark);
   });
 
   testWidgets('底部「资产」：基金、物品、理财、会员权益四段，默认在基金，还在外壳里', (tester) async {

@@ -289,10 +289,9 @@ class _BenefitFormPageState extends ConsumerState<BenefitFormPage> {
             ),
         ],
       ),
-      body: LayoutBuilder(
-        builder: (context, box) => ListView(
-          padding: readableInsets(box.maxWidth, maxWidth: 720).copyWith(bottom: LedgerLayout.groupGap),
-          children: [
+      // 宽屏两列：左边是权益是什么、在哪领、怎么算；右边是有效期、面值、限制、提醒、备注。
+      body: FormColumns(
+        main: [
             Padding(
               padding: const EdgeInsets.fromLTRB(LedgerLayout.pagePadding, LedgerLayout.pagePadding, LedgerLayout.pagePadding, 0),
               child: Text(
@@ -396,6 +395,8 @@ class _BenefitFormPageState extends ConsumerState<BenefitFormPage> {
               ),
               QuotaFields(editor: _quota, anchor: _anchor, onAnchor: (v) => setState(() => _anchor = v)),
             ],
+        ],
+        side: [
             PickerField(
               label: '有效期（选填）',
               trailing: Text('权益自己的起止，可以在将来', style: Theme.of(context).textTheme.bodySmall),
@@ -510,6 +511,8 @@ class _BenefitFormPageState extends ConsumerState<BenefitFormPage> {
               label: '备注（选填）',
               child: TextField(key: const ValueKey('benefit-note'), controller: _note, maxLines: 2),
             ),
+        ],
+        bottom: [
             const SizedBox(height: LedgerLayout.itemGap),
             FormSubmit(
               label: _editing ? '保存' : '加好了',
@@ -517,8 +520,7 @@ class _BenefitFormPageState extends ConsumerState<BenefitFormPage> {
               error: _error,
               onPressed: () => _save(membershipId: membership.id, option: option),
             ),
-          ],
-        ),
+        ],
       ),
     );
   }

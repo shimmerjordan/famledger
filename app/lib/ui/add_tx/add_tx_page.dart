@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -63,6 +64,18 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
   /// Enter 保存。焦点在商户/备注输入框里时不出手（那时 [FocusNode.hasPrimaryFocus] 为假）。
   final FocusNode _keys = FocusNode(debugLabel: 'add-tx-keys');
 
+  /// 桌面（电脑上的网页、桌面端）：有实体键盘，金额就是个输入框，不画手机那种九宫格。
+  /// 平板、手机上的网页还是键盘——没有实体键盘，九宫格比系统键盘好点。
+  static bool get _desktop => const {
+    TargetPlatform.linux,
+    TargetPlatform.macOS,
+    TargetPlatform.windows,
+  }.contains(defaultTargetPlatform);
+
+  /// 桌面金额框的文字和 [_raw] 保持一致（键盘快捷键、保存后清空都要同步过去）。
+  final TextEditingController _amountField = TextEditingController();
+  final FocusNode _amountFocus = FocusNode(debugLabel: 'add-tx-amount');
+
   String? _amountError;
   String? _fundError;
   String? _transferError;
@@ -77,7 +90,49 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
     _merchant.dispose();
     _note.dispose();
     _keys.dispose();
+    _amountField.dispose();
+    _amountFocus.dispose();
     super.dispose();
+  }
+
+  void _syncAmountField() {
+    if (_amountField.text == _raw) return;
+    _amountField.value = TextEditingValue(
+      text: _raw,
+      selection: TextSelection.collapsed(offset: _raw.length),
+    );
+  }
+
+  /// 桌面金额框里敲的：只留数字和一个小数点，最多两位小数、整数 [_maxYuanDigits] 位，
+  /// 多敲的当场扔掉——和九宫格的规矩一样。
+  void _onAmountTyped(String text) {
+    final buf = StringBuffer();
+    var dot = false;
+    var intDigits = 0;
+    var decimals = 0;
+    for (final ch in text.split('')) {
+      if (ch == '.') {
+        if (dot) continue;
+        dot = true;
+        if (buf.isEmpty) buf.write('0');
+        buf.write('.');
+        continue;
+      }
+      if (!'0123456789'.contains(ch)) continue;
+      if (dot) {
+        if (decimals >= 2) continue;
+        decimals++;
+      } else {
+        if (intDigits >= _maxYuanDigits) continue;
+        intDigits++;
+      }
+      buf.write(ch);
+    }
+    setState(() {
+      _amountError = null;
+      _raw = buf.toString();
+    });
+    _syncAmountField();
   }
 
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
@@ -107,6 +162,10 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
 
   /// 点过屏幕键盘之后把焦点收回来：之前点进商户框的话，接着敲实体键盘的数字该进金额，不该进商户。
   void _focusKeys() {
+    if (_desktop) {
+      if (!_amountFocus.hasPrimaryFocus) _amountFocus.requestFocus();
+      return;
+    }
     if (!_keys.hasPrimaryFocus) _keys.requestFocus();
   }
 
@@ -130,14 +189,19 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
       }
       _raw = _raw == '0' ? ch : '$_raw$ch';
     });
+    _syncAmountField();
   }
 
   void _onBackspace() {
     if (_raw.isEmpty) return;
     setState(() => _raw = _raw.substring(0, _raw.length - 1));
+    _syncAmountField();
   }
 
-  void _onClear() => setState(() => _raw = '');
+  void _onClear() {
+    setState(() => _raw = '');
+    _syncAmountField();
+  }
 
   void _setType(String type) {
     if (type == _type) return;
@@ -327,6 +391,7 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
           _saveNotice = '已保存，但服务器判定可能重复，已标为「疑似重复」，可在账单里处理。';
           _raw = '';
         });
+        _syncAmountField();
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
@@ -376,7 +441,8 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
       ),
       body: Focus(
         focusNode: _keys,
-        autofocus: true,
+        // 桌面上焦点给金额框（它自己 autofocus），不然两个都抢。
+        autofocus: !_desktop,
         onKeyEvent: _onKey,
         child: AsyncValueView<LedgerData>(
           value: ledger,
@@ -404,7 +470,7 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
     );
   }
 
-  Widget _header() => _AmountHeader(
+  Widget _header(LedgerData data) => _AmountHeader(
     type: _type,
     onType: _setType,
     cents: _cents,
@@ -412,6 +478,44 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
     saveError: _saveError,
     notice: _saveNotice,
     onTap: _focusKeys,
+    amountField: _desktop ? _amountInput(data) : null,
+  );
+
+  /// 桌面的金额框：大字、自动聚焦，回车就保存。
+  Widget _amountInput(LedgerData data) => TextField(
+    key: const ValueKey('amount-field'),
+    controller: _amountField,
+    focusNode: _amountFocus,
+    autofocus: true,
+    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+    textInputAction: TextInputAction.done,
+    onChanged: _onAmountTyped,
+    onSubmitted: (_) {
+      if (!_saving) _save(data);
+    },
+    style: Theme.of(context).textTheme.displaySmall,
+    decoration: const InputDecoration(prefixText: '¥ ', hintText: '0.00'),
+  );
+
+  /// 桌面没有九宫格，金额框下面直接一个保存键（顶栏那个太远）。
+  Widget _desktopSave(LedgerData data) => Padding(
+    padding: const EdgeInsets.fromLTRB(
+      LedgerLayout.pagePadding,
+      LedgerLayout.itemGap,
+      LedgerLayout.pagePadding,
+      LedgerLayout.pagePadding,
+    ),
+    child: SizedBox(
+      width: double.infinity,
+      height: 48,
+      child: FilledButton(
+        key: const ValueKey('save-tx-desktop'),
+        onPressed: _saving ? null : () => _save(data),
+        child: _saving
+            ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+            : const Text('保存'),
+      ),
+    ),
   );
 
   Widget _keypad(LedgerData data) => AmountKeypad(
@@ -431,9 +535,9 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
   /// 手机：金额在上、表单在中间滚、键盘贴底。
   Widget _compactLayout(LedgerData data, bool systemKeyboard) => Column(
     children: [
-      _header(),
+      _header(data),
       Expanded(child: _form(data)),
-      if (!systemKeyboard) _keypad(data),
+      if (_desktop) _desktopSave(data) else if (!systemKeyboard) _keypad(data),
     ],
   );
 
@@ -448,7 +552,10 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
         SizedBox(
           width: 360,
           child: Column(
-            children: [_header(), if (!systemKeyboard) _keypad(data)],
+            children: [
+              _header(data),
+              if (_desktop) _desktopSave(data) else if (!systemKeyboard) _keypad(data),
+            ],
           ),
         ),
       ],
@@ -600,6 +707,7 @@ class _AmountHeader extends StatelessWidget {
     this.saveError,
     this.notice,
     this.onTap,
+    this.amountField,
   });
 
   final String type;
@@ -607,6 +715,9 @@ class _AmountHeader extends StatelessWidget {
   final int cents;
   final String? error;
   final String? saveError;
+
+  /// 桌面：金额是输入框，不是只读的大数字。
+  final Widget? amountField;
 
   /// 保存成功但有话要说（例如服务器判定疑似重复）。
   final String? notice;
@@ -651,13 +762,14 @@ class _AmountHeader extends StatelessWidget {
               onSelectionChanged: (values) => onType(values.first),
             ),
             const SizedBox(height: 12),
-            Text(
-              Money.format(cents),
-              style: theme.textTheme.displaySmall?.copyWith(
-                color: error != null ? theme.colorScheme.error : null,
-              ),
-              maxLines: 1,
-            ),
+            amountField ??
+                Text(
+                  Money.format(cents),
+                  style: theme.textTheme.displaySmall?.copyWith(
+                    color: error != null ? theme.colorScheme.error : null,
+                  ),
+                  maxLines: 1,
+                ),
             if (error != null || saveError != null)
               Padding(
                 padding: const EdgeInsets.only(top: 4),

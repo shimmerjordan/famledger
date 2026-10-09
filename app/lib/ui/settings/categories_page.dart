@@ -135,10 +135,13 @@ class _CategoriesPageState extends ConsumerState<CategoriesPage>
   Widget build(BuildContext context) {
     final ledger = ref.watch(ledgerProvider);
 
+    final inAppBar = addButtonInAppBar(context);
     return Scaffold(
       appBar: AppBar(
         title: const Text('类别'),
         actions: [
+          if (inAppBar && !_reordering)
+            AppBarAddButton(label: '添加类别', onPressed: () => showCategoryForm(context, kind: _kind)),
           TextButton(
             onPressed: () => setState(() => _reordering = !_reordering),
             child: Text(_reordering ? '完成' : '排序'),
@@ -149,7 +152,7 @@ class _CategoriesPageState extends ConsumerState<CategoriesPage>
           tabs: const [Tab(text: '支出'), Tab(text: '收入')],
         ),
       ),
-      floatingActionButton: _reordering
+      floatingActionButton: _reordering || inAppBar
           ? null
           : FloatingActionButton.extended(
               onPressed: () => showCategoryForm(context, kind: _kind),

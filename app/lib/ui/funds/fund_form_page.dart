@@ -204,9 +204,9 @@ class _FundFormPageState extends ConsumerState<FundFormPage> {
             TextButton(onPressed: _pickTemplate, child: const Text('用模板')),
         ],
       ),
-      body: ReadableListView(
-        padding: const EdgeInsets.only(bottom: LedgerLayout.groupGap),
-        children: [
+      // 宽屏两列：左边名字、类型、颜色、图标，右边目标、预算、说明和开关。
+      body: FormColumns(
+        main: [
           PickerField(
             label: '名字',
             topGap: LedgerLayout.pagePadding,
@@ -261,6 +261,8 @@ class _FundFormPageState extends ConsumerState<FundFormPage> {
               ],
             ),
           ),
+        ],
+        side: [
           PickerField(
             label: '目标金额（选填）',
             trailing: Text('攒够就算达成', style: theme.textTheme.bodySmall),
@@ -301,6 +303,8 @@ class _FundFormPageState extends ConsumerState<FundFormPage> {
               title: const Text('归档'),
               subtitle: const Text('不再出现在选择列表里，历史流水还在'),
             ),
+        ],
+        bottom: [
           if (_error != null)
             Padding(
               padding: const EdgeInsets.fromLTRB(
