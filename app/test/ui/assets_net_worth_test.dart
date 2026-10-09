@@ -29,12 +29,13 @@ String breakdownText(WidgetTester tester) => tester.widget<Text>(_breakdown).dat
 
 void main() {
   group('资产页的净资产总览', () {
-    testWidgets('折叠：净资产 + 一行分项（标签说清口径）；点开是账户、投资、实物明细和开关', (tester) async {
+    testWidgets('折叠：净资产 + 一行分项（标签说清口径）；点开是现金流、可支配、投资、实物各一行带说明，和开关', (tester) async {
       await pumpAssetsAt(tester, bootAssets(worthBackend()), '/assets?tab=items');
 
       expect(find.text('净资产'), findsOneWidget);
       expect(find.text('¥16,215.88'), findsOneWidget);
-      expect(breakdownText(tester), '账户 ¥9,800.00 · 投资（账户外）¥520.00 · 实物计入 ¥5,895.88');
+      // 没有目标/储备基金攒着钱：可支配就是现金流，折叠行不重复写。
+      expect(breakdownText(tester), '现金流 ¥9,800.00 · 投资（账户外）¥520.00 · 实物计入 ¥5,895.88');
       expect(find.byKey(const ValueKey('net-worth-details')), findsNothing);
       expect(
         tester.getBottomLeft(find.byKey(const ValueKey('net-worth-strip'))).dy,
@@ -44,15 +45,92 @@ void main() {
 
       await expand(tester);
       expect(find.byKey(const ValueKey('net-worth-details')), findsOneWidget);
-      expect(find.text('¥9,800.00'), findsOneWidget);
+      expect(find.text('现金流'), findsOneWidget);
+      expect(find.text('账户余额合计，已减信用卡欠款'), findsOneWidget);
+      expect(find.text('可支配现金流'), findsOneWidget);
+      expect(find.text('目标、储备基金没攒着钱，和现金流一样'), findsOneWidget);
+      expect(find.text('¥9,800.00'), findsNWidgets(2), reason: '现金流、可支配各一个');
       expect(find.text('投资（账户外）'), findsOneWidget);
       expect(find.text('¥520.00'), findsOneWidget);
-      expect(find.byKey(const ValueKey('net-worth-invest-note')), findsNothing, reason: '没挂账户：市值就是这个数');
-      expect(find.text('实物估值'), findsOneWidget);
-      expect(find.text('¥8,819.99'), findsOneWidget);
-      expect(find.text('其中计入净资产'), findsOneWidget);
+      expect(find.text('持仓没挂账户，整份市值都算'), findsOneWidget, reason: '没挂账户：市值就是这个数');
+      expect(find.text('实物计入'), findsOneWidget);
       expect(find.text('¥5,895.88'), findsOneWidget);
+      expect(find.text('估值 ¥8,819.99，按类别计入'), findsOneWidget);
       expect(switchTile(tester).value, isTrue);
+    });
+
+    testWidgets('目标/储备基金攒着钱：可支配 = 现金流 − 专款，折叠行、展开的说明都写出来', (tester) async {
+      final backend = worthBackend()
+        ..extraFunds = [
+          {'id': 'f3', 'name': '应急', 'kind': 'reserve', 'sortOrder': 2},
+          {'id': 'f4', 'name': '旅行', 'kind': 'goal', 'sortOrder': 3},
+        ]
+        // 家庭公共 2000 是日常开销、不扣；应急 3000 扣；旅行超支 −500 的钱早花出去了，不再减。
+        ..fundBalances = {'f1': 200000, 'f3': 300000, 'f4': -50000};
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=items');
+
+      expect(
+        breakdownText(tester),
+        '现金流 ¥9,800.00 · 可支配 ¥6,800.00 · 投资（账户外）¥520.00 · 实物计入 ¥5,895.88',
+      );
+      await expand(tester);
+      expect(find.text('¥6,800.00'), findsOneWidget);
+      expect(find.text('已扣目标、储备基金攒着的 ¥3,000.00'), findsOneWidget);
+    });
+
+    testWidgets('宽屏（≥ 840）：总览和下面的四段一样宽，分项排成一行格子带口径，不用展开；展开只剩动作', (tester) async {
+      await pumpAssetsAt(
+        tester,
+        bootAssets(worthBackend()..investMarketCents = 1512000, session: await sessionAs('admin')),
+        '/assets?tab=items',
+        size: const Size(1400, 900),
+      );
+
+      for (final key in ['total', 'cash', 'disposable', 'invest', 'physical']) {
+        expect(find.byKey(ValueKey('net-worth-figure-$key')), findsOneWidget, reason: key);
+      }
+      expect(find.byKey(const ValueKey('net-worth-breakdown')), findsNothing, reason: '格子代替了那一行小字');
+      expect(find.text('现金流 + 投资 + 实物计入'), findsOneWidget);
+      expect(find.text('账户余额合计，已减信用卡欠款'), findsOneWidget);
+      expect(find.text('市值 ¥15,120.00，成本 ¥14,600.00 已在账户里'), findsOneWidget);
+      expect(find.text('估值 ¥8,819.99，按类别计入'), findsOneWidget);
+      expect(find.byKey(const ValueKey('net-worth-details')), findsNothing);
+      // 整行：第一格和 Tab 一样靠左，箭头顶在右边，不是收窄居中。
+      final strip = find.byKey(const ValueKey('net-worth-strip'));
+      final tabs = find.byType(TabBar);
+      expect(tester.getTopLeft(strip).dx, tester.getTopLeft(tabs).dx);
+      expect(tester.getTopRight(strip).dx, tester.getTopRight(tabs).dx);
+      expect(
+        tester.getTopLeft(find.byKey(const ValueKey('net-worth-figure-total'))).dx,
+        lessThan(tester.getTopLeft(tabs).dx + 24),
+      );
+      expect(
+        tester.getTopRight(find.byIcon(Icons.expand_more)).dx,
+        greaterThan(tester.getTopRight(tabs).dx - 40),
+      );
+
+      await expand(tester);
+      expect(find.byKey(const ValueKey('net-worth-details')), findsOneWidget);
+      expect(find.byKey(const ValueKey('net-worth-accounts')), findsOneWidget);
+      // 宽屏的开关是行内的：说明紧挨着开关，整块顶在右边；「管理账户」顶在左边（两端对齐）。
+      final toggle = find.byKey(const ValueKey('net-worth-switch'));
+      expect(tester.widget<Switch>(toggle).value, isTrue);
+      expect(tester.getTopRight(toggle).dx, greaterThan(tester.getTopRight(tabs).dx - 40));
+      expect(
+        tester.getTopRight(find.text('实物计入净资产')).dx,
+        greaterThan(tester.getTopLeft(toggle).dx - 480),
+        reason: '说明和开关之间不隔半个屏',
+      );
+      expect(
+        tester.getTopLeft(find.byKey(const ValueKey('net-worth-accounts'))).dx,
+        lessThan(tester.getTopLeft(tabs).dx + 24),
+      );
+      expect(find.text('现金流'), findsOneWidget, reason: '格子还在，没有再列一遍');
+      // 点说明文字也能翻开关。
+      await tester.tap(find.text('实物计入净资产'));
+      await tester.pump();
+      expect(tester.widget<Switch>(toggle).value, isFalse);
+      expect(tester.takeException(), isNull);
     });
 
     testWidgets('持仓挂了账户：分项只算账户外的浮盈，明细写出市值和已在账户里的成本', (tester) async {
@@ -63,10 +141,7 @@ void main() {
       expect(breakdownText(tester), contains('投资（账户外）¥520.00'));
       expect(find.text('¥16,215.88'), findsOneWidget);
       await expand(tester);
-      expect(
-        find.text('持仓市值 ¥15,120.00；挂了账户的持仓成本 ¥14,600.00 已在账户余额里，这里不再算'),
-        findsOneWidget,
-      );
+      expect(find.text('市值 ¥15,120.00，成本 ¥14,600.00 已在账户里'), findsOneWidget);
     });
 
     testWidgets('管理员关掉「实物计入净资产」：开关先翻、等总览回来才放开；净资产和分项跟着变', (tester) async {
@@ -93,8 +168,9 @@ void main() {
       await tester.pump(const Duration(seconds: 2));
       await settle(tester);
       expect(find.text('¥10,320.00'), findsOneWidget);
-      expect(breakdownText(tester), '账户 ¥9,800.00 · 投资（账户外）¥520.00 · 不含实物');
-      expect(find.text('打开开关后计入'), findsOneWidget);
+      expect(breakdownText(tester), '现金流 ¥9,800.00 · 投资（账户外）¥520.00 · 不含实物');
+      expect(find.text('实物估值'), findsOneWidget);
+      expect(find.text('不计入净资产，打开开关后计入 ¥5,895.88'), findsOneWidget);
       expect(switchTile(tester).value, isFalse);
       expect(switchTile(tester).onChanged, isNotNull);
     });
@@ -129,7 +205,7 @@ void main() {
       await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=items');
 
       expect(find.text('¥10,320.00'), findsOneWidget);
-      expect(breakdownText(tester), '账户 ¥9,800.00 · 投资（账户外）¥520.00');
+      expect(breakdownText(tester), '现金流 ¥9,800.00 · 投资（账户外）¥520.00');
       await expand(tester);
       expect(find.byKey(const ValueKey('net-worth-switch')), findsNothing);
     });
@@ -289,6 +365,37 @@ void main() {
       netWorthExPhysicalCents: 500000,
       physical: PhysicalSummary(counted: true),
     );
-    expect(netWorthBreakdown(accountsOnly), '账户 ¥5,000.00');
+    expect(netWorthBreakdown(accountsOnly), '现金流 ¥5,000.00');
+    expect(netWorthBreakdown(accountsOnly, reservedCents: 100000), '现金流 ¥5,000.00 · 可支配 ¥4,000.00');
+  });
+
+  test('可支配现金流 = 账户净额 − 目标/储备基金的正余额；超支的、日常的基金都不扣', () {
+    const funds = [
+      Fund(id: 'daily', name: '家庭公共', kind: 'shared'),
+      Fund(id: 'trip', name: '旅行', kind: 'goal'),
+      Fund(id: 'safe', name: '应急', kind: 'reserve'),
+      Fund(id: 'kid', name: '育儿', kind: 'goal'),
+    ];
+    const o = StatsOverview(
+      netWorthCents: 980000,
+      assetsCents: 1000000,
+      liabilitiesCents: 20000,
+      month: MonthStats(),
+      accounts: [
+        AccountBalance(accountId: 'bank', balanceCents: 1000000),
+        AccountBalance(accountId: 'card', balanceCents: -20000),
+      ],
+      funds: [
+        FundBalance(fundId: 'daily', balanceCents: 600000),
+        FundBalance(fundId: 'trip', balanceCents: 150000),
+        FundBalance(fundId: 'safe', balanceCents: 200000),
+        FundBalance(fundId: 'kid', balanceCents: -30000),
+        FundBalance(fundId: 'gone', balanceCents: 99999),
+      ],
+    );
+    expect(cashFlowCents(o), 980000);
+    expect(reservedCents(o, funds), 350000, reason: '旅行 + 应急；育儿超支不算，已删的基金不认');
+    expect(disposableCents(o, funds), 630000);
+    expect(disposableCents(o, const []), 980000, reason: '主数据还没到：先按没有专款算');
   });
 }

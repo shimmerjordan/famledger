@@ -190,6 +190,12 @@ class AssetsBackend {
   Map<String, int> accountBalances = {'bank': 1000000};
   int investNetCents = 0;
 
+  /// overview 里各基金的余额（fundId → 分）；没写的基金不出现在 `funds` 里。
+  Map<String, int> fundBalances = {};
+
+  /// 同步给客户端的基金，默认只有家庭公共和个人零花两只；要试目标/储备基金就往这里加。
+  List<Map<String, dynamic>> extraFunds = [];
+
   /// 持仓总市值；null = 不回这个键。比 [investNetCents] 大出来的就是挂了账户的持仓成本。
   int? investMarketCents;
 
@@ -287,6 +293,7 @@ class AssetsBackend {
     'funds': [
       {'id': 'f1', 'name': '家庭公共', 'kind': 'shared', 'isDefault': true, 'sortOrder': 0},
       {'id': 'f2', 'name': '个人零花', 'kind': 'personal', 'sortOrder': 1},
+      ...extraFunds,
     ],
     'categories': [
       {'id': 'c1', 'name': '数码', 'kind': 'expense', 'sortOrder': 0},
@@ -319,7 +326,10 @@ class AssetsBackend {
         'budgets': <Object>[],
       },
       'pendingCount': 0,
-      'funds': <Object>[],
+      'funds': [
+        for (final e in fundBalances.entries)
+          {'fundId': e.key, 'balanceCents': e.value},
+      ],
       'accounts': [
         for (final e in accountBalances.entries)
           {'accountId': e.key, 'balanceCents': e.value},

@@ -20,6 +20,9 @@ class Fund {
   /// personal | shared | goal | reserve | custom —— 只影响展示与模板。
   static const List<String> kinds = ['personal', 'shared', 'goal', 'reserve', 'custom'];
 
+  /// 攒专款的两类：里面的钱不算「可支配现金流」（net_worth_strip.dart 的 reservedCents）。
+  static const Set<String> savingKinds = {'goal', 'reserve'};
+
   static const Map<String, String> kindLabels = {
     'personal': '个人',
     'shared': '共同',
