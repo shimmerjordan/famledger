@@ -89,6 +89,9 @@ class HoldingsRepo {
   /// 有成本又挂了投资账户就必须给（服务端 400 `holding_needs_transfer`）：净资产只给挂账户的
   /// 持仓补浮盈，成本得先以转账的形式记进那个账户。
   ///
+  /// [realizedCents]：记账前已经到手的分红（份额类）/ 利息（定期类），只算进已实现收益（定期估值扣掉它），不记流水；
+  /// 按金额记的品类不发。
+  ///
   /// [clientId] 是幂等键：同一张表单重试时沿用同一个，回应丢了再发也只开一次仓、只记一笔。
   Future<Holding> create({
     required String name,
@@ -106,6 +109,7 @@ class HoldingsRepo {
     int? rateMaxE6,
     String? maturesOn,
     int? valueCents,
+    int? realizedCents,
     String? note,
     String? fromAccountId,
     String? clientId,
@@ -131,6 +135,9 @@ class HoldingsRepo {
       putIfNotNull(body, 'rateMaxE6', rateMaxE6);
       putIfNotNull(body, 'maturesOn', maturesOn);
       putIfNotNull(body, 'valueCents', valueCents);
+    }
+    if (Holding.modeOf(resolved) != InvestMode.balance && realizedCents != null && realizedCents > 0) {
+      body['realizedCents'] = realizedCents;
     }
     if (note != null && note.isNotEmpty) body['note'] = note;
     if (fromAccountId != null) {

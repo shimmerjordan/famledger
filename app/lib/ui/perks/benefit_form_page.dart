@@ -14,6 +14,7 @@ import '../add_tx/picker_field.dart';
 import '../assets/asset_providers.dart';
 import '../assets/asset_widgets.dart';
 import '../widgets/widgets.dart';
+import 'benefit_drafts.dart';
 import 'perk_providers.dart';
 import 'perk_widgets.dart';
 import 'platform_picker.dart';
@@ -29,9 +30,20 @@ class _LimitRow {
 
 /// 新建 / 编辑权益（spec §5「表单」）。额度用预设 chip，「高级」里能叠加上限、选起算点；
 /// 算法（flow）是三个直白的选项。给 N 选 1 加选项时（[parentId]）不设额度和算法，跟着父权益。
+/// 新建「N 选 1」时选项就在这张表单里一起加（[BenefitDraftList]），和它同一个请求建好。
 /// 编辑时能归档 / 取消归档（归档 = 隐藏，spec §2）。
+///
+/// [BenefitFormPage.draft]：草稿模式，同一张表单不连服务端 ——「加好了」把填的东西作为 [BenefitDraft] 交回去
+/// （建卡时顺带的权益、草稿里「N 选 1」的选项），由外面那张表单存的时候整批发。
 class BenefitFormPage extends ConsumerStatefulWidget {
-  const BenefitFormPage({super.key, this.id, this.membershipId, this.parentId});
+  const BenefitFormPage({super.key, this.id, this.membershipId, this.parentId}) : draftScope = null, initialDraft = null;
+
+  const BenefitFormPage.draft({super.key, required BenefitDraftScope scope, BenefitDraft? initial})
+    : id = null,
+      membershipId = null,
+      parentId = null,
+      draftScope = scope,
+      initialDraft = initial;
 
   /// null = 新建（此时 [membershipId] 必填）。
   final String? id;
@@ -39,6 +51,12 @@ class BenefitFormPage extends ConsumerStatefulWidget {
 
   /// 新建选项时它的 N 选 1。
   final String? parentId;
+
+  /// 不为 null = 草稿模式。
+  final BenefitDraftScope? draftScope;
+
+  /// 草稿模式下改的那一条（null = 新加一条）。
+  final BenefitDraft? initialDraft;
 
   @override
   ConsumerState<BenefitFormPage> createState() => _BenefitFormPageState();
@@ -73,10 +91,27 @@ class _BenefitFormPageState extends ConsumerState<BenefitFormPage> {
   bool _busy = false;
   String? _error;
 
+  /// 新建「N 选 1」时一起加的选项（还没存）。
+  List<BenefitDraft> _options = [];
+
+  /// 选项动过（加、删、改）：有没存的选项时退出要先问一句。
+  bool _optionsTouched = false;
+
   /// 幂等键：这张表单的每次重试都沿用它，回应丢了再点保存也只加一条。
   final String _clientId = newClientId();
 
   bool get _editing => widget.id != null;
+  bool get _draftMode => widget.draftScope != null;
+
+  @override
+  void initState() {
+    super.initState();
+    final draft = widget.initialDraft;
+    if (draft != null) {
+      _bind(draft.preview);
+      _options = [...draft.options];
+    }
+  }
 
   @override
   void dispose() {
@@ -120,15 +155,20 @@ class _BenefitFormPageState extends ConsumerState<BenefitFormPage> {
     if (picked != null) setState(() => onPicked(picked));
   }
 
-  Future<void> _save({required String membershipId, required bool option}) async {
+  Future<void> _save({required String? membershipId, required bool option}) async {
     final name = _name.text.trim();
     if (name.isEmpty) return setState(() => _error = '给这项权益起个名字，例如「优酷年卡」');
+    // 字数上限和服务端一样（perks_schema.js BENEFIT_FIELDS）：草稿要等存卡时才发，超了得在这里就说。
+    if (name.length > 60) return setState(() => _error = '名称最多 60 个字');
+    if (_claimHow.text.trim().length > 200) return setState(() => _error = '领取路径最多 200 个字');
+    if (_note.text.trim().length > 500) return setState(() => _error = '备注最多 500 个字');
     final quota = option ? const QuotaRead.ok([]) : _quota.read();
     if (quota.error != null) return setState(() => _error = quota.error);
     final url = _claimUrl.text.trim();
     if (url.isNotEmpty && !RegExp(r'^https?://\S+$', caseSensitive: false).hasMatch(url)) {
       return setState(() => _error = '链接要以 http:// 或 https:// 开头');
     }
+    if (url.length > 500) return setState(() => _error = '链接最多 500 个字');
     final face = parseMoneyField(_face.text);
     if (face == -1) return setState(() => _error = '面值填得不对，例如 25');
     final mine = parseMoneyField(_myValue.text);
@@ -161,26 +201,37 @@ class _BenefitFormPageState extends ConsumerState<BenefitFormPage> {
       'remind': _remind,
       'note': note.isEmpty ? null : note,
     };
+    // 新建只带填了的：null 和空列表交给服务端默认，请求体干净。
+    if (!_editing) body.removeWhere((k, v) => v == null || (v is List && v.isEmpty && k == 'limits'));
+    // 选项只跟着新建的「N 选 1」走；中途换成别的类型，填过的选项不存（表单上说了）。
+    final options = !option && _kind == Benefit.kindChoice ? _options : const <BenefitDraft>[];
+    if (_draftMode) {
+      Navigator.of(context).pop(BenefitDraft(key: widget.initialDraft?.key, body: body, options: options));
+      return;
+    }
     setState(() {
       _busy = true;
       _error = null;
     });
     final repo = ref.read(perksRepoProvider);
     try {
+      var made = 0;
       if (_editing) {
         await repo.updateBenefit(widget.id!, {...body, 'archived': _archived});
       } else {
-        // 新建只带填了的：null 和空列表交给服务端默认，请求体干净。
-        body.removeWhere((k, v) => v == null || (v is List && v.isEmpty && k == 'limits'));
-        await repo.createBenefit({
+        final res = await repo.createBenefitWithOptions({
           'membershipId': membershipId,
           if (widget.parentId != null) 'parentId': widget.parentId,
           ...body,
+          if (options.isNotEmpty) 'options': [for (final o in options) o.toJson()],
           'clientId': _clientId,
         });
+        // 按服务端真建好的数说：回应丢了再点是原样重放，后来又加的不算。
+        made = res.options.length;
       }
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_editing ? '已保存' : '加好了')));
+      final done = _editing ? '已保存' : (made == 0 ? '加好了' : '加好了，带 $made 个选项');
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(done)));
       context.canPop() ? context.pop() : context.go('/assets/memberships/$membershipId');
     } catch (error) {
       if (mounted) setState(() => _error = describeWriteError(error));
@@ -257,26 +308,52 @@ class _BenefitFormPageState extends ConsumerState<BenefitFormPage> {
   @override
   Widget build(BuildContext context) {
     final data = ref.watch(ledgerProvider).valueOrNull;
+    final scope = widget.draftScope;
     final benefit = _editing ? data?.benefit(widget.id) : null;
     if (benefit != null) _bind(benefit);
-    final parent = data?.benefit(benefit?.parentId ?? widget.parentId);
-    final option = parent != null;
-    final title = _editing ? '编辑权益' : (option ? '加一个选项' : '加一项权益');
+    final parent = scope != null ? null : data?.benefit(benefit?.parentId ?? widget.parentId);
+    final option = scope?.option ?? parent != null;
+    final title = scope != null
+        ? (widget.initialDraft != null ? (option ? '改这个选项' : '改这项权益') : (option ? '加一个选项' : '加一项权益'))
+        : _editing
+            ? '编辑权益'
+            : (option ? '加一个选项' : '加一项权益');
     if (data == null) {
       return Scaffold(appBar: AppBar(title: Text(title)), body: const SkeletonList(rows: 5));
     }
-    final membership = data.membership(benefit?.membershipId ?? widget.membershipId);
-    if ((_editing && benefit == null) || membership == null) {
+    final membership = scope != null ? null : data.membership(benefit?.membershipId ?? widget.membershipId);
+    if (scope == null && ((_editing && benefit == null) || membership == null)) {
       return Scaffold(appBar: AppBar(title: Text(title)), body: const InlineError(message: '这项权益或它的会员卡已经不在了。'));
     }
-    final home = platformLabel(data.platform(membership.platformId));
+    // 卡叫什么、会员本平台是哪个：草稿看外面那张表单当时填的，存过的看库里的卡。
+    final cardTitle = scope?.cardTitle ?? membership!.title;
+    final homeId = scope != null ? scope.homePlatformId : membership!.platformId;
+    final home = homeId == null ? null : platformLabel(data.platform(homeId));
+    final parentName = scope?.parentName ?? parent?.name;
     // 选项没写领取平台时跟它的 N 选 1（perk_groups.dart effectiveClaimPlatformId），N 选 1 也没写才是会员本平台。
-    final inherited = parent?.claimPlatformId;
-    final noneLabel = parent == null || inherited == null
-        ? '会员本平台（$home）'
-        : '跟着「${parent.name}」（${platformLabel(data.platform(inherited))}）';
+    final inherited = scope != null ? scope.parentClaimPlatformId : parent?.claimPlatformId;
+    final noneLabel = !option || inherited == null
+        ? (home == null ? '会员本平台' : '会员本平台（$home）')
+        : '跟着「$parentName」（${platformLabel(data.platform(inherited))}）';
+    // 选项一起加：只在新建「N 选 1」时（已有的在会员详情里加、改）。
+    final withOptions = !option && benefit == null && _kind == Benefit.kindChoice;
+    final droppedOptions = !option && benefit == null && _kind != Benefit.kindChoice && _options.isNotEmpty;
+    BenefitDraftScope optionScope() {
+      final name = _name.text.trim();
+      return BenefitDraftScope(
+        cardTitle: cardTitle,
+        homePlatformId: homeId,
+        parentName: name.isEmpty ? '这个 N 选 1' : name,
+        parentClaimPlatformId: _claimPlatformId,
+      );
+    }
 
-    return Scaffold(
+    return DiscardGuard(
+      // 新加的选项还没存：误点返回别一下子全丢了。
+      canPop: !_optionsTouched || _options.isEmpty || _busy,
+      title: '选项还没存',
+      message: '退出去，刚加的 ${_options.length} 个选项就没了。',
+      child: Scaffold(
       appBar: AppBar(
         title: Text(title),
         actions: [
@@ -295,7 +372,7 @@ class _BenefitFormPageState extends ConsumerState<BenefitFormPage> {
             Padding(
               padding: const EdgeInsets.fromLTRB(LedgerLayout.pagePadding, LedgerLayout.pagePadding, LedgerLayout.pagePadding, 0),
               child: Text(
-                option ? '${membership.title} ·「${parent.name}」的一个选项：额度和算法跟着它' : membership.title,
+                option ? '$cardTitle ·「$parentName」的一个选项：额度和算法跟着它' : cardTitle,
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ),
@@ -330,9 +407,19 @@ class _BenefitFormPageState extends ConsumerState<BenefitFormPage> {
                   if (_kind == Benefit.kindChoice) ...[
                     const SizedBox(height: 8),
                     Text(
-                      'N 选 1：先建这一条（额度写能选几次，比如每年 1 次），保存后在会员详情里往下加选项。',
+                      withOptions
+                          ? 'N 选 1：额度写能选几次（比如每年 1 次），能选的几样在下面「选项」里一起加。'
+                          : 'N 选 1：选项在会员详情里加、改。',
                       key: const ValueKey('benefit-choice-hint'),
                       style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                  if (droppedOptions) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      '换成了别的类型：刚才加的 ${_options.length} 个选项不会存，换回「N 选 1」还在。',
+                      key: const ValueKey('benefit-options-dropped'),
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.error),
                     ),
                   ],
                 ],
@@ -394,6 +481,23 @@ class _BenefitFormPageState extends ConsumerState<BenefitFormPage> {
                 ),
               ),
               QuotaFields(editor: _quota, anchor: _anchor, onAnchor: (v) => setState(() => _anchor = v)),
+              if (withOptions)
+                PickerField(
+                  label: '选项（选填）',
+                  trailing: Text('打名字回车就加；要补在哪领再点开', style: Theme.of(context).textTheme.bodySmall),
+                  child: BenefitDraftList(
+                    key: const ValueKey('benefit-options'),
+                    drafts: _options,
+                    enabled: !_busy,
+                    onChanged: (v) => setState(() {
+                      _options = v;
+                      _optionsTouched = true;
+                    }),
+                    scope: optionScope,
+                    keyPrefix: 'benefit-option',
+                    quickAdd: true,
+                  ),
+                ),
             ],
         ],
         side: [
@@ -515,13 +619,14 @@ class _BenefitFormPageState extends ConsumerState<BenefitFormPage> {
         bottom: [
             const SizedBox(height: LedgerLayout.itemGap),
             FormSubmit(
-              label: _editing ? '保存' : '加好了',
+              label: _editing ? '保存' : (widget.initialDraft != null ? '改好了' : '加好了'),
               busy: _busy,
               error: _error,
-              onPressed: () => _save(membershipId: membership.id, option: option),
+              onPressed: () => _save(membershipId: membership?.id, option: option),
             ),
         ],
       ),
+    ),
     );
   }
 }

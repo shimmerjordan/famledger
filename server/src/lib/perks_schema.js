@@ -310,6 +310,42 @@ function benefitParentRules(b, parent, optionCount) {
   return { flow: parent.flow };
 }
 
+/** 建卡时一次最多带多少项权益、建「N 选 1」时一次最多带多少个选项（AI 导入一批最多 200 项权益，手填不会更多）。 */
+const CHILDREN_MAX = { benefits: 50, options: 30 };
+
+/** 子项列表（建卡时的 benefits、建「N 选 1」时的 options）：数组、不超过上限、每项是对象（不是的话 details.path 指到那一项）。 */
+function childList(raw, field) {
+  const items = v.list(raw, field, { max: CHILDREN_MAX[field] });
+  items.forEach((item, i) => {
+    if (!v.isObject(item)) {
+      throw new HttpError(400, `invalid_${field}`, `${childLabel(field, i, {})}必须是对象`, { path: `${field}.${i}` });
+    }
+  });
+  return items;
+}
+
+/** 子项的叫法：「第 2 项权益「优酷年卡」」「第 1 个选项「芒果」」。 */
+function childLabel(field, i, item) {
+  const name = typeof item.name === 'string' && item.name.trim() ? `「${item.name.trim()}」` : '';
+  return field === 'options' ? `第 ${i + 1} 个选项${name}` : `第 ${i + 1} 项权益${name}`;
+}
+
+/**
+ * 父请求里顺带建的子项出错时说清楚是哪一项：消息前面加上「第 2 项权益「优酷年卡」：」，details.path 指到那一栏
+ * （benefits.1.quota、benefits.0.options.2.name），状态码、错误码不变。整个父请求照样回滚（调用方在同一个事务里）。
+ */
+function asChild(field, i, item, fn) {
+  try {
+    return fn();
+  } catch (e) {
+    if (!(e instanceof HttpError)) throw e;
+    const own = typeof e.code === 'string' && e.code.startsWith('invalid_') ? e.code.slice('invalid_'.length) : null;
+    const inner = e.details && typeof e.details.path === 'string' ? e.details.path : own;
+    const path = inner ? `${field}.${i}.${inner}` : `${field}.${i}`;
+    throw new HttpError(e.status, e.code, `${childLabel(field, i, item)}：${e.message}`, { ...(e.details || {}), path });
+  }
+}
+
 /**
  * 派生会员（88VIP 的「优酷年卡」带出来的优酷会员）不能成环：从来源权益出发，沿
  * 「权益 → 所属会员 → 那张卡的来源权益 → …」往上查，碰到自己就是环；查了 5 层还没到头也拒绝。
@@ -394,6 +430,9 @@ module.exports = {
   addPeriod,
   asList,
   benefitParentRules,
+  CHILDREN_MAX,
+  childList,
+  asChild,
   checkSourceChain,
   checkBenefitMove,
 };

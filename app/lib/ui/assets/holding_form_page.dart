@@ -26,6 +26,7 @@ final RegExp _codePattern = RegExp(r'^[0-9A-Za-z._-]{1,20}$');
 /// 新建时默认「同时记一笔转账」：买理财是把钱挪到投资账户，不是花掉。
 ///
 /// 编辑只改基础信息；份额、本金只能在详情页存取 / 加减仓。
+/// 新建时能顺带填记账前已经到手的分红（基金、股票）/ 利息（定期类），不用建完再去详情里一笔笔补；不记流水。
 ///
 /// 投资账户跟着转账走：净资产只给挂了账户的持仓补浮盈，前提是成本已经以转账记进那个账户
 /// （`server/src/modules/holdings.js`）。所以新建时关掉转账就不让挂账户；编辑时有成本的持仓
@@ -50,6 +51,7 @@ class _HoldingFormPageState extends ConsumerState<HoldingFormPage> {
   final TextEditingController _rate = TextEditingController();
   final TextEditingController _rateMax = TextEditingController();
   final TextEditingController _value = TextEditingController();
+  final TextEditingController _realized = TextEditingController();
 
   String _kind = Holding.kindFund;
   DateTime? _maturesOn;
@@ -88,7 +90,7 @@ class _HoldingFormPageState extends ConsumerState<HoldingFormPage> {
 
   @override
   void dispose() {
-    for (final c in [_name, _code, _quantity, _cost, _price, _note, _institution, _rate, _rateMax, _value]) {
+    for (final c in [_name, _code, _quantity, _cost, _price, _note, _institution, _rate, _rateMax, _value, _realized]) {
       c.dispose();
     }
     super.dispose();
@@ -178,6 +180,31 @@ class _HoldingFormPageState extends ConsumerState<HoldingFormPage> {
 
   void _fail(String message) => setState(() => _error = message);
 
+  /// 「已领分红 / 已领利息」：基金、股票（黄金没有分红）和定期类才有；按金额记的当前金额就是全部。
+  bool get _hasRealized => switch (_mode) {
+    InvestMode.unit => _kind != Holding.kindGold,
+    InvestMode.deposit => true,
+    InvestMode.balance => false,
+  };
+
+  String get _realizedLabel => _mode == InvestMode.deposit ? '已领利息' : '已领分红';
+
+  /// 新建时那一栏：记账前已经到手的分红 / 利息。
+  Widget _realizedField(ThemeData theme) => PickerField(
+    key: const ValueKey('holding-field-realized'),
+    label: '$_realizedLabel（选填）',
+    trailing: Text(
+      _mode == InvestMode.deposit ? '按月、按季付息已经到手的；估值会扣掉它' : '记账前就到手的，算进已实现收益',
+      style: theme.textTheme.bodySmall,
+    ),
+    child: TextField(
+      key: const ValueKey('holding-realized'),
+      controller: _realized,
+      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+      decoration: const InputDecoration(prefixText: '¥ ', hintText: '没有就空着；不另记账'),
+    ),
+  );
+
   Future<void> _save() async {
     final name = _name.text.trim();
     final code = _code.text.trim();
@@ -266,6 +293,11 @@ class _HoldingFormPageState extends ConsumerState<HoldingFormPage> {
       value = parseMoneyField(_value.text);
       if (value == null || value < 0) return _fail('当前金额填得不对，例如 10230.55');
     }
+    int? realized;
+    if (_hasRealized && _realized.text.trim().isNotEmpty) {
+      realized = parseMoneyField(_realized.text);
+      if (realized == null || realized < 0) return _fail('$_realizedLabel填得不对，例如 120');
+    }
     if (_record) {
       if (_accountId == null) return _fail('选一个投资账户，或关掉「同时记一笔转账」');
       if (_fromAccountId == null) return _fail('选一下钱从哪个账户转出');
@@ -289,6 +321,7 @@ class _HoldingFormPageState extends ConsumerState<HoldingFormPage> {
         rateMaxE6: _kind == Holding.kindStructured ? rateMax : null,
         maturesOn: maturesOn,
         valueCents: value,
+        realizedCents: realized,
         note: note,
         fromAccountId: _record ? _fromAccountId : null,
         clientId: _clientId,
@@ -411,6 +444,7 @@ class _HoldingFormPageState extends ConsumerState<HoldingFormPage> {
             decoration: const InputDecoration(prefixText: '¥ ', hintText: '10000'),
           ),
         ),
+        if (!gold) _realizedField(theme),
       ],
       PickerField(
         label: _openedLabel,
@@ -501,6 +535,7 @@ class _HoldingFormPageState extends ConsumerState<HoldingFormPage> {
           ],
         ),
       ),
+      if (!_editing) _realizedField(theme),
     ];
   }
 

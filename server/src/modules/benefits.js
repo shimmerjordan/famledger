@@ -6,11 +6,16 @@
 // flow 跟随父权益）。父权益换了卡或改了 flow，选项跟着一起改；换卡不能挪进由它（或选项）带出来的卡（成环）。
 // 新建收 clientId 做幂等（回应丢了再点保存也只建一条）。本期、剩余这些派生数只在 App 算（P3）。
 // 删除：还有选项或打卡事件时 409 has_children；?cascade=1 连选项和事件一起软删；指向被删权益的派生会员解开。
+// 新建「N 选 1」可以顺带 options:[{…选项字段}]（最多 30 个），和父权益同一个事务：哪个选项不对整条都不建，
+// 回应多一个 options（建好的选项）。建卡时顺带的权益（memberships.js）也走这里的 insertBenefit。
 
 const { HttpError } = require('../lib/router');
 const { makeCrud } = require('../lib/crud');
 const v = require('../lib/validate');
 const perks = require('../lib/perks_schema');
+
+/** 新建时顺带子项的请求体上限（建卡最多 50 项权益、每个「N 选 1」最多 30 个选项）。 */
+const CHILDREN_BODY_MAX = 512 * 1024;
 
 module.exports = (ctx) => {
   const { db } = ctx;
@@ -102,14 +107,27 @@ module.exports = (ctx) => {
         kind: given('kind') ? (body.kind ?? 'other') : (row ? row.kind : 'other'),
         quota: out.quota ?? (row ? row.quota : '[]'),
       };
+      // 顺带的选项只在新建「N 选 1」时收；已有的「N 选 1」加选项走 POST /benefits（parentId）。null 当没给。
+      if (!v.isMissing(body.options)) {
+        if (isPatch) v.bad('options', '已有的「N 选 1」在会员详情里加选项');
+        if (merged.kind !== 'choice') v.bad('options', '只有「N 选 1」能带选项');
+        perks.childList(body.options, 'options');
+      }
       // 父权益换卡时它的选项跟着搬（onWrite），所以这里只拿「搬之前」的选项数判断结构。
       Object.assign(out, perks.benefitParentRules(merged, parent, row ? optionIds(row.id).length : 0));
       return out;
     },
 
-    /** 父权益换了卡或改了 flow：选项跟着改（每行新的 seq）。 */
-    onWrite(row, { isPatch }) {
-      if (!isPatch || row.kind !== 'choice') return;
+    /** 新建「N 选 1」顺带的选项一个个建（同一个事务）；父权益换了卡或改了 flow：选项跟着改（每行新的 seq）。 */
+    onWrite(row, { isPatch, body, reqCtx }) {
+      if (!isPatch) {
+        if (row.kind === 'choice' && Array.isArray(body.options)) {
+          body.options.forEach((o, i) => perks.asChild('options', i, o, () =>
+            insertBenefit({ ...o, membershipId: row.membership_id, parentId: row.id }, reqCtx)));
+        }
+        return;
+      }
+      if (row.kind !== 'choice') return;
       const now = db.now();
       const kids = db.all(
         'SELECT id FROM benefits WHERE parent_id = ? AND deleted_at IS NULL AND (membership_id != ? OR flow != ?)',
@@ -121,6 +139,12 @@ module.exports = (ctx) => {
           row.membership_id, row.flow, now, db.nextSeq(), k.id,
         );
       }
+    },
+
+    /** 顺带建了选项的，回应里一并带上（App 落本地，不用等下一次同步）。 */
+    createExtra(row, body) {
+      if (!Array.isArray(body.options) || body.options.length === 0) return {};
+      return { options: childrenOf('parent_id', row.id).map(toJson) };
     },
 
     canDelete(row, reqCtx) {
@@ -142,5 +166,21 @@ module.exports = (ctx) => {
     },
   });
 
-  return { name: 'benefits', routes: crud.routes };
+  const toJson = (row) => crud.toJson(row);
+  /** 只建一条（不管幂等）：建卡、建「N 选 1」时顺带的子项用，调用方已经在事务里。 */
+  function insertBenefit(body, reqCtx) {
+    return crud.insert(body, reqCtx);
+  }
+  /** 某张卡（membership_id）或某个「N 选 1」（parent_id）下存活的权益，按用户的排序。 */
+  function childrenOf(column, id) {
+    return db.all(
+      `SELECT * FROM benefits WHERE ${column} = ? AND deleted_at IS NULL ORDER BY sort_order ASC, created_at ASC`,
+      id,
+    );
+  }
+  ctx.perks = { ...ctx.perks, insertBenefit, benefitsOf: (membershipId) => childrenOf('membership_id', membershipId).map(toJson) };
+
+  // 「N 选 1」带 30 个选项（各自有领取路径、限制、备注）可能超过默认的 64KB。
+  const routes = crud.routes.map((r) => (r.method === 'POST' && r.pattern === '/benefits' ? { ...r, maxBody: CHILDREN_BODY_MAX } : r));
+  return { name: 'benefits', routes };
 };

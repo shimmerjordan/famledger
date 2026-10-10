@@ -166,6 +166,13 @@ module.exports = (ctx) => {
       out.kind = kind;
       const mode = invest.modeOf(kind);
 
+      // 已领的分红 / 利息（记账前就到手的）：只在新建时收，之后经「分红」「付息」记。定期类的估值要扣掉它
+      // （lib/invest.js），份额类只进已实现盈亏；按金额记的（活期、保险）当前金额就是全部，不收。不记流水。
+      if (!v.isMissing(body.realizedCents)) {
+        if (isPatch) v.bad('realizedCents', '已实现盈亏经加仓/减仓/分红记');
+        if (mode === 'balance') v.bad('realizedCents', '活期、银行理财、保险这类填当前金额就好，不用填已领收益');
+        out.realized_cents = v.int(body.realizedCents, 'realizedCents', { min: 0, max: MAX_AMOUNT });
+      }
       if (isPatch) {
         for (const f of ['quantityE4', 'costCents']) {
           if (given(f)) v.bad(f, `${f} 只能通过加仓/减仓修改`);

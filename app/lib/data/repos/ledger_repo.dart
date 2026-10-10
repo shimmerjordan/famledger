@@ -458,6 +458,22 @@ class LedgerRepo {
 
   Future<void> putBenefit(Benefit item) => _put(benefits, item, (e) => e.id);
 
+  /// 一批权益（建卡时顺带的权益、建「N 选 1」时顺带的选项）：落一次盘、通知一次。
+  Future<void> putBenefits(List<Benefit> items) async {
+    if (items.isEmpty) return;
+    for (final item in items) {
+      final index = benefits.indexWhere((e) => e.id == item.id);
+      if (index < 0) {
+        benefits.add(item);
+      } else {
+        benefits[index] = item;
+      }
+    }
+    _sort();
+    await _persist();
+    _notify();
+  }
+
   /// 级联删权益时连它的选项和打卡事件一起拿掉。
   Future<void> dropBenefit(String id, {bool cascade = false}) async {
     final gone = {id, if (cascade) ...[for (final b in benefits) if (b.parentId == id) b.id]};

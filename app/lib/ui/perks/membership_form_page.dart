@@ -16,6 +16,7 @@ import '../add_tx/picker_field.dart';
 import '../assets/asset_providers.dart';
 import '../assets/asset_widgets.dart';
 import '../widgets/widgets.dart';
+import 'benefit_drafts.dart';
 import 'perk_providers.dart';
 import 'perk_widgets.dart';
 import 'platform_picker.dart';
@@ -23,6 +24,7 @@ import 'platform_picker.dart';
 /// 新建 / 编辑会员卡（spec §5「表单」）。只必填平台和名称；到期日可以留空（长期有效）；
 /// 其余收进「更多」。日期都能选将来（[pickAnyDay]）。新建可选「同时记一笔支出」，默认不记。
 /// 「更多」里的扣费特征（商户关键词 + 金额范围）给扣费线索用（P6）：到期前后看到对得上的支出，「要处理」里问要不要续上。
+/// 新建时权益就在这张表单里一起加（[BenefitDraftList]，点开是同一张权益表单的草稿模式），存卡时同一个请求建好。
 class MembershipFormPage extends ConsumerStatefulWidget {
   const MembershipFormPage({
     super.key,
@@ -80,7 +82,10 @@ class _MembershipFormPageState extends ConsumerState<MembershipFormPage> {
   bool _busy = false;
   String? _error;
 
-  /// 幂等键：这张表单的每次重试都沿用它，回应丢了再点保存也只建一张卡、只记一笔。
+  /// 新建时一起加的权益（还没存）。
+  List<BenefitDraft> _benefits = [];
+
+  /// 幂等键：这张表单的每次重试都沿用它，回应丢了再点保存也只建一张卡、只记一笔、权益只建一份。
   final String _clientId = newClientId();
 
   bool get _editing => widget.id != null;
@@ -255,6 +260,7 @@ class _MembershipFormPageState extends ConsumerState<MembershipFormPage> {
       putIfNotNull(body, 'sourceBenefitId', _sourceBenefitId);
       if (note.isNotEmpty) body['note'] = note;
       putIfNotNull(body, 'payPattern', pay.value);
+      if (_benefits.isNotEmpty) body['benefits'] = [for (final b in _benefits) b.toJson()];
       if (record) {
         body['recordTransaction'] = AssetRecord(
           accountId: _recordAccountId,
@@ -262,13 +268,18 @@ class _MembershipFormPageState extends ConsumerState<MembershipFormPage> {
           categoryId: _categoryId,
         ).toJson();
       }
-      final made = await repo.createMembership(body);
+      final res = await repo.createMembershipWithBenefits(body);
+      final made = res.membership;
       if (record) refreshMoneyViews(ref);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(record ? '记好了，也记了一笔支出' : '记好了，接着加权益吧')),
-      );
-      // 建完直接到详情：下一步就是往卡里加权益。宽屏的详情在会员权益 tab 的右栏：选中新卡、回到 tab。
+      // 按服务端真建好的数说（顶层，不算选项）：回应丢了再点是原样重放，后来又加的草稿不算。
+      final n = res.benefits.where((b) => b.parentId == null).length;
+      final done = [
+        n > 0 ? '记好了，带上 $n 项权益' : (record ? '记好了' : '记好了，接着加权益吧'),
+        if (record) '也记了一笔支出',
+      ].join('，');
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(done)));
+      // 建完直接到详情：看一眼建好的权益，没加的话接着加。宽屏的详情在会员权益 tab 的右栏：选中新卡、回到 tab。
       if (widthClassOf(context) == WidthClass.expanded) {
         ref.read(selectedMembershipProvider.notifier).state = made.id;
         context.canPop() ? context.pop() : context.go('/assets?tab=perks');
@@ -300,7 +311,12 @@ class _MembershipFormPageState extends ConsumerState<MembershipFormPage> {
         if (!b.isChoice && b.membershipId != widget.id && ledger.membership(b.membershipId) != null) b,
     ];
 
-    return Scaffold(
+    return DiscardGuard(
+      // 新加的权益还没存：误点返回别一下子全丢了。
+      canPop: _benefits.isEmpty || _busy,
+      title: '权益还没存',
+      message: '退出去，刚加的 ${_benefits.length} 项权益就没了。',
+      child: Scaffold(
       appBar: AppBar(title: Text(title)),
       // 宽屏两列：左边三样必填 + 「同时记一笔」+ 提交，右边把「更多」直接摊开。
       body: FormColumns(
@@ -335,6 +351,22 @@ class _MembershipFormPageState extends ConsumerState<MembershipFormPage> {
                 onClear: () => setState(() => _expiresOn = null),
               ),
             ),
+            if (!_editing)
+              PickerField(
+                label: '权益（选填）',
+                trailing: Text('存卡时一起建好', style: theme.textTheme.bodySmall),
+                child: BenefitDraftList(
+                  key: const ValueKey('membership-benefits'),
+                  drafts: _benefits,
+                  enabled: !_busy,
+                  onChanged: (v) => setState(() => _benefits = v),
+                  scope: () {
+                    final name = _name.text.trim();
+                    return BenefitDraftScope(cardTitle: name.isEmpty ? '这张卡' : name, homePlatformId: _platformId);
+                  },
+                  keyPrefix: 'membership-benefit',
+                ),
+              ),
         ],
         side: [
             const SizedBox(height: LedgerLayout.itemGap),
@@ -388,6 +420,7 @@ class _MembershipFormPageState extends ConsumerState<MembershipFormPage> {
             ),
         ],
       ),
+    ),
     );
   }
 

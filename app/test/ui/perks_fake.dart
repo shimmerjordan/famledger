@@ -307,11 +307,16 @@ class PerksFake {
     if (method == 'POST' && seg.length == 1) {
       final row = membershipJson(_id('m'), platformId: body['platformId'] as String, name: body['name'] as String, sort: memberships.length);
       for (final e in body.entries) {
-        if (e.key != 'clientId' && e.key != 'recordTransaction') row[e.key] = e.value;
+        if (e.key != 'clientId' && e.key != 'recordTransaction' && e.key != 'benefits') row[e.key] = e.value;
       }
       if (body['recordTransaction'] != null) row['lastChargeTxId'] = 'tx-perk';
       memberships[row['id'] as String] = row;
-      return ok({'membership': row}, 201);
+      // 顺带的权益（「N 选 1」再带选项）：照 memberships.js 一起建、回应带上。
+      final made = <Map<String, dynamic>>[
+        for (final b in (body['benefits'] as List? ?? const []).cast<Map<String, dynamic>>())
+          ..._createBenefit({...b, 'membershipId': row['id']}),
+      ];
+      return ok({'membership': row, if (made.isNotEmpty) 'benefits': made}, 201);
     }
     final row = memberships[seg[1]];
     if (row == null) return error(404, 'not_found', '会员不存在');
@@ -362,16 +367,26 @@ class PerksFake {
     return error(404, 'not_found', '没有这个接口');
   }
 
+  /// 建一条权益；「N 选 1」带的 options 跟着建（照 benefits.js）。回 [它, ...选项]。
+  List<Map<String, dynamic>> _createBenefit(Map<String, dynamic> body) {
+    final row = benefitJson(_id('b'), membershipId: body['membershipId'] as String, name: body['name'] as String, sort: benefits.length);
+    for (final e in body.entries) {
+      if (e.key != 'clientId' && e.key != 'options') row[e.key] = e.value;
+    }
+    final parent = benefits[body['parentId']];
+    if (parent != null) row['flow'] = parent['flow'];
+    benefits[row['id'] as String] = row;
+    return [
+      row,
+      for (final o in (body['options'] as List? ?? const []).cast<Map<String, dynamic>>())
+        ..._createBenefit({...o, 'membershipId': row['membershipId'], 'parentId': row['id']}),
+    ];
+  }
+
   http.Response _benefits(String method, List<String> seg, Map<String, dynamic> body, bool cascade) {
     if (method == 'POST' && seg.length == 1) {
-      final row = benefitJson(_id('b'), membershipId: body['membershipId'] as String, name: body['name'] as String, sort: benefits.length);
-      for (final e in body.entries) {
-        if (e.key != 'clientId') row[e.key] = e.value;
-      }
-      final parent = benefits[body['parentId']];
-      if (parent != null) row['flow'] = parent['flow'];
-      benefits[row['id'] as String] = row;
-      return ok({'benefit': row}, 201);
+      final made = _createBenefit(body);
+      return ok({'benefit': made.first, if (made.length > 1) 'options': made.sublist(1)}, 201);
     }
     final row = benefits[seg[1]];
     if (row == null) return error(404, 'not_found', '权益不存在');

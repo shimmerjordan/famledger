@@ -7,6 +7,8 @@
 // 指向这些权益的派生会员把 source_benefit_id 置空（lib/crud.js 的 onDelete + benefits.js 的 removeBenefits）。
 // 续费 POST /memberships/:id/renew：到期日往后推一个周期（或给定的日子），本期开始和本期实付跟着换；
 // 带 chargeTransactionId 只关联那笔已有流水、不另记账；收 clientId 做幂等（「续了」回应丢了再点，不会续两期）。
+// 新建可以顺带 benefits:[{…权益字段, options?:[…]}]（最多 50 项，「N 选 1」带选项见 benefits.js），和卡同一个事务：
+// 哪一项不对整张卡都不建（报错说清是第几项、哪一栏），重发按卡的 clientId 原样回、不会多建；回应多一个 benefits。
 // 扣费线索 GET /memberships/charge-hints（P6）：设了扣费特征（payPattern）、到期日在 [今天 − 15, 今天 + 7] 的卡，
 // 找到期日前后没被关联过的对得上的确认支出（lib/charge_hints.js）。同一笔流水只能挂在一张卡上：续费关联、
 // PATCH lastChargeTxId（撤销续费时改回去）都查，挂在别的卡上 409 charge_linked；PATCH 给的那笔已经删了、
@@ -150,12 +152,28 @@ module.exports = (ctx) => {
         const pruned = perks.pruneUnverified(body, row);
         if (pruned) out.origin = pruned;
       }
+      // 「同时记一笔」的形状先查：别等几十项权益都建完了才因为它回滚。
+      if (!isPatch && !v.isMissing(body.recordTransaction) && body.recordTransaction !== false && !v.isObject(body.recordTransaction)) {
+        v.bad('recordTransaction', 'recordTransaction 必须是对象');
+      }
+      // 顺带的权益只在新建时收；已有的卡在详情里一项项加。每项自己的校验在 onWrite 里（要先有卡的 id）。null 当没给。
+      if (!v.isMissing(body.benefits)) {
+        if (isPatch) v.bad('benefits', '已有的卡在会员详情里加权益');
+        perks.childList(body.benefits, 'benefits');
+      }
       return out;
     },
 
-    /** 新建时「同时记一笔支出」：金额 = 本期实付（没填按续费价）；0 或没有就不记。 */
+    /**
+     * 新建时：顺带的权益一项项建（挂在这张卡下，只建顶层，「N 选 1」的选项由 benefits.js 接着建）；
+     * 「同时记一笔支出」：金额 = 本期实付（没填按续费价）；0 或没有就不记。
+     */
     onWrite(row, { isPatch, body, reqCtx }) {
       if (isPatch) return;
+      if (Array.isArray(body.benefits)) {
+        body.benefits.forEach((b, i) => perks.asChild('benefits', i, b, () =>
+          ctx.perks.insertBenefit({ ...b, membershipId: row.id, parentId: null }, reqCtx)));
+      }
       const rec = recordFrom(body.recordTransaction, row);
       const amount = row.term_paid_cents ?? row.fee_cents;
       if (!rec || !amount) return;
@@ -171,6 +189,12 @@ module.exports = (ctx) => {
         source: 'manual',
       }, reqCtx);
       db.run('UPDATE memberships SET last_charge_tx_id = ? WHERE id = ?', tx.id, row.id);
+    },
+
+    /** 顺带建了权益的，回应里一并带上（含选项）：App 落本地，不用等下一次同步。 */
+    createExtra(row, body) {
+      if (!Array.isArray(body.benefits) || body.benefits.length === 0) return {};
+      return { benefits: ctx.perks.benefitsOf(row.id) };
     },
 
     canDelete(row, reqCtx) {
@@ -298,7 +322,8 @@ module.exports = (ctx) => {
   return {
     name: 'memberships',
     routes: [
-      ...crud.routes,
+      // 建卡带 50 项权益（各自带选项、限制、备注）可能超过默认的 64KB。
+      ...crud.routes.map((r) => (r.method === 'POST' && r.pattern === '/memberships' ? { ...r, maxBody: 512 * 1024 } : r)),
       { method: 'GET', pattern: '/memberships/charge-hints', handler: chargeHints, maxBody: 0 },
       { method: 'POST', pattern: '/memberships/:id/renew', handler: renew },
     ],

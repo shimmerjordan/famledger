@@ -19,6 +19,7 @@ import 'debt_widgets.dart';
 ///
 /// 新建时默认「同时记一笔」：借款记成真账户和这笔债务之间的转账（不算支出），人情记成一笔
 /// 支出 / 收入（类别「人情」）。编辑只改基本信息；金额经详情页的「收回 / 再借」改。
+/// 新建时能顺带填「已经收回 / 已经还了」多少（以前的账收回过一部分），存的时候一起记，不用建完再去点「收回」。
 class DebtFormPage extends ConsumerStatefulWidget {
   const DebtFormPage({super.key, this.id});
 
@@ -31,6 +32,7 @@ class DebtFormPage extends ConsumerStatefulWidget {
 class _DebtFormPageState extends ConsumerState<DebtFormPage> {
   final TextEditingController _counterparty = TextEditingController();
   final TextEditingController _amount = TextEditingController();
+  final TextEditingController _settled = TextEditingController();
   final TextEditingController _note = TextEditingController();
 
   String _direction = Debt.lend;
@@ -60,6 +62,7 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
   void dispose() {
     _counterparty.dispose();
     _amount.dispose();
+    _settled.dispose();
     _note.dispose();
     super.dispose();
   }
@@ -83,6 +86,14 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
     if (!_countedTouched) _counted = kind != Debt.kindFavor;
     _accountId = null;
   });
+
+  /// 「已经收回」那一栏怎么叫：借出是收回，借入是还；人情是收回 / 还的人情。
+  String get _settledLabel => switch ((_direction == Debt.lend, _favor)) {
+    (true, false) => '已经收回（选填）',
+    (false, false) => '已经还了（选填）',
+    (true, true) => '已经收回的人情（选填）',
+    (false, true) => '已经还的人情（选填）',
+  };
 
   String get _accountLabel {
     if (_favor) return _direction == Debt.lend ? '礼金从哪个账户出（记一笔人情支出）' : '收的礼进了哪个账户（记一笔人情收入）';
@@ -116,6 +127,20 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
       setState(() => _error = '多少钱？例如 5000');
       return;
     }
+    final settled = parseMoneyField(_settled.text);
+    if (settled == -1) {
+      setState(() => _error = '「${_settledLabel.replaceAll('（选填）', '')}」填得不对，例如 2000');
+      return;
+    }
+    if (settled != null && settled > amount) {
+      setState(() => _error = switch ((_direction == Debt.lend, _favor)) {
+        (true, false) => '收回的不能比借出去的还多',
+        (false, false) => '还掉的不能比借来的还多',
+        (true, true) => '收回的人情不能比随出去的还多',
+        (false, true) => '还的人情不能比收下的还多',
+      });
+      return;
+    }
     if (_record && _accountId == null) {
       setState(() => _error = '选一个账户，或关掉「同时记一笔」');
       return;
@@ -132,10 +157,16 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
         memberId: ref.read(sessionProvider)?.me.id,
         note: _note.text.trim(),
         accountId: _record ? _accountId : null,
+        settledCents: settled,
         clientId: _clientId,
       );
       refreshMoneyViews(ref);
-      return _record ? '记好了，也记了一笔 ${Money.format(amount)}' : '记好了';
+      final back = settled ?? 0;
+      return [
+        '记好了',
+        if (_record) back > 0 ? '记了 ${Money.format(amount)} 和 ${Money.format(back)} 两笔流水' : '也记了一笔 ${Money.format(amount)}',
+        if (back > 0) back == amount ? '已结清' : '还剩 ${Money.format(amount - back)}',
+      ].join('，');
     });
   }
 
@@ -248,6 +279,21 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
                 controller: _amount,
                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
                 decoration: const InputDecoration(prefixText: '¥ ', hintText: '5000'),
+              ),
+            ),
+          if (!_editing)
+            PickerField(
+              label: _settledLabel,
+              // 钱怎么走跟着「同时记一笔」：记了借出那笔，收回的也经同一个账户记，账户才对得上。
+              trailing: Text(_record ? '也经选的账户记一笔' : '只调还剩多少，不记账', style: theme.textTheme.bodySmall),
+              child: TextField(
+                key: const ValueKey('debt-settled'),
+                controller: _settled,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: InputDecoration(
+                  prefixText: '¥ ',
+                  hintText: _direction == Debt.lend ? '以前收回过一部分就填' : '以前还过一部分就填',
+                ),
               ),
             ),
           PickerField(

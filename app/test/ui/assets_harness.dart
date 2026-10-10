@@ -485,7 +485,7 @@ class AssetsBackend {
         accountId: body['accountId'] as String?,
         sort: holdings.length,
       );
-      for (final k in ['kind', 'institution', 'rateE6', 'rateMaxE6', 'maturesOn', 'valueCents']) {
+      for (final k in ['kind', 'institution', 'rateE6', 'rateMaxE6', 'maturesOn', 'valueCents', 'realizedCents']) {
         if (body.containsKey(k)) row[k] = body[k];
       }
       holdings[row['id'] as String] = row;
@@ -579,6 +579,7 @@ class AssetsBackend {
       final amount = body['amountCents'] as int;
       final cp = body['counterparty'] as String;
       final via = (body['recordTransaction'] as Map?)?['accountId'] as String?;
+      final settled = body['settledCents'] as int? ?? 0;
       final sign = lend ? 1 : -1;
       accounts.add({
         'id': accountId,
@@ -586,7 +587,8 @@ class AssetsBackend {
         'kind': 'debt',
         'sortOrder': 99,
       });
-      accountBalances[accountId] = sign * amount;
+      // 记账前已经收回 / 还掉的部分：按不记流水收回一次（debts.js）。
+      accountBalances[accountId] = sign * (amount - settled);
       if (via != null) accountBalances[via] = (accountBalances[via] ?? 0) - sign * amount;
       final row = <String, dynamic>{
         'id': id,
@@ -600,11 +602,12 @@ class AssetsBackend {
         'counted': body['counted'] ?? kind != 'favor',
         'memberId': body['memberId'],
         'note': body['note'],
-        'memoLog': via != null && kind != 'favor'
-            ? <Object>[]
-            : [
-                {'on': body['startedOn'], 'amountCents': sign * amount, 'note': '起始', 'recorded': via != null},
-              ],
+        'memoLog': [
+          if (via == null || kind == 'favor')
+            {'on': body['startedOn'], 'amountCents': sign * amount, 'note': '起始', 'recorded': via != null},
+          if (settled > 0)
+            {'on': '2026-09-23', 'amountCents': -sign * settled, 'note': lend ? '之前已收回' : '之前已还', 'recorded': false, 'action': 'settle'},
+        ],
         'sortOrder': debts.length,
         'archived': false,
       };

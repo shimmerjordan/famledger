@@ -21,6 +21,7 @@ class DebtsRepo {
   final LedgerRepo _ledger;
 
   /// [accountId] 非空 = 钱经这个账户走：借款类记一笔转账，人情记一笔支出 / 收入（类别「人情」）。
+  /// [settledCents]：记账前已经收回 / 还掉的部分，服务端同一个事务里按不记流水收回一次（不用建完再点「收回」）。
   /// [clientId] 是幂等键，同一张表单重试时沿用。
   Future<Debt> create({
     required String direction,
@@ -33,6 +34,7 @@ class DebtsRepo {
     String? memberId,
     String? note,
     String? accountId,
+    int? settledCents,
     String? clientId,
   }) async {
     final body = <String, dynamic>{
@@ -47,6 +49,7 @@ class DebtsRepo {
     putIfNotNull(body, 'memberId', memberId);
     if (note != null && note.isNotEmpty) body['note'] = note;
     if (accountId != null) body['recordTransaction'] = {'accountId': accountId};
+    if (settledCents != null && settledCents > 0) body['settledCents'] = settledCents;
     putIfNotNull(body, 'clientId', clientId);
     return _apply(await _api.post('/debts', body));
   }

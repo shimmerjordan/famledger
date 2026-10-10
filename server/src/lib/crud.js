@@ -28,6 +28,14 @@
 // `idempotency: '<scope>'` makes POST honour a `clientId` in the body (lib/idempotency.js):
 // a create whose onWrite also books money must not run twice when the client retries
 // after losing the response. A replay answers 200 with the row as it is now.
+//
+//   createExtra(row, body) → extra keys merged into the POST response (and its replay),
+//                            e.g. the child rows a create wrote alongside the parent
+//
+// `insert(body, reqCtx)` (returned) is the create minus HTTP and idempotency: validate,
+// insert, run onWrite, all inside a re-entrant db.tx. A parent's onWrite uses it to write
+// child rows (a card's benefits) in the parent's transaction, so one bad child rolls the
+// whole create back.
 
 const crypto = require('node:crypto');
 
@@ -119,6 +127,7 @@ function makeCrud(opts) {
     canDelete = null,
     onWrite = null,
     onDelete = null,
+    createExtra = null,
     idempotency = null,
     auth = 'member',
   } = opts;
@@ -168,16 +177,10 @@ function makeCrud(opts) {
     sendJson(res, 200, { items: rows.map(toJson) });
   }
 
-  function create(req, res, reqCtx) {
-    const body = v.body(reqCtx.body);
-    const clientId = idempotency ? idem.clientIdOf(body) : null;
-    // Checked before validation: the retry must still succeed if, say, the account it
-    // named has been deleted since the first attempt went through.
-    const hit = idem.lookup(db, idempotency, clientId);
-    const prev = hit && reread(hit.refId);
-    if (prev) return sendJson(res, 200, { [singular]: toJson(prev), replayed: true });
+  /** Validate, insert, run onWrite — one (re-entrant) transaction; `after(id)` runs last inside it. */
+  function insert(body, reqCtx, after = null) {
     const cols = columnsFrom(body, false, null);
-    const row = db.tx(() => {
+    return db.tx(() => {
       if (sortColumn && cols[sortColumn] === undefined) cols[sortColumn] = nextSort();
       const now = db.now();
       const all = { id: crypto.randomUUID(), ...cols, created_at: now, updated_at: now, seq: db.nextSeq() };
@@ -187,10 +190,21 @@ function makeCrud(opts) {
         ...keys.map((k) => all[k]),
       );
       onWrite?.(reread(all.id), { isPatch: false, body, reqCtx });
-      idem.remember(db, idempotency, clientId, all.id);
+      after?.(all.id);
       return reread(all.id);
     });
-    sendJson(res, 201, { [singular]: toJson(row) });
+  }
+
+  function create(req, res, reqCtx) {
+    const body = v.body(reqCtx.body);
+    const clientId = idempotency ? idem.clientIdOf(body) : null;
+    // Checked before validation: the retry must still succeed if, say, the account it
+    // named has been deleted since the first attempt went through.
+    const hit = idem.lookup(db, idempotency, clientId);
+    const prev = hit && reread(hit.refId);
+    if (prev) return sendJson(res, 200, { [singular]: toJson(prev), ...createExtra?.(prev, body), replayed: true });
+    const row = insert(body, reqCtx, (id) => idem.remember(db, idempotency, clientId, id));
+    sendJson(res, 201, { [singular]: toJson(row), ...createExtra?.(row, body) });
   }
 
   function patch(req, res, reqCtx) {
@@ -248,7 +262,7 @@ function makeCrud(opts) {
   if (sortColumn) routes.push({ method: 'PUT', pattern: `/${resource}/reorder`, handler: reorder, auth });
 
   // Modules that add their own routes (funds/templates) reuse these.
-  return { routes, toJson, byId, mustExist };
+  return { routes, toJson, byId, mustExist, insert };
 }
 
 module.exports = { makeCrud, coerceFields };

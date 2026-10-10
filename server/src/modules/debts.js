@@ -12,6 +12,9 @@
 //   4. 人情：钱那一边是真花出去 / 收进来的（随礼、收礼），记成普通支出 / 收入（类别「人情」），
 //      内部账户只记个数（改期初），所以人情不会把月支出漏掉。
 //   5. 新建和收回 / 追加都收 clientId 做幂等：回应丢了 App 重发，钱不能记两遍。
+//   6. 新建可以带 settledCents（已经收回 / 还掉的部分，0..总数）：同一个事务里收回一次，省得建完再去详情里点「收回」。
+//      钱怎么走跟着「同时记账」：记了借出那笔，收回的也经同一个账户记（不然那个账户多出一截、净资产凭空变了）；
+//      没记就只改期初、memo_log 留一行「之前已收回 / 之前已还」。日子记在起始日（哪天收回的不知道，排在起始后面）。
 
 const crypto = require('node:crypto');
 
@@ -166,6 +169,7 @@ module.exports = (ctx) => {
       if (isPatch) {
         if (given('direction')) v.bad('direction', '方向不能改，删了重记');
         if (given('amountCents')) v.bad('amountCents', '金额经「收回 / 追加」改');
+        if (!v.isMissing(body.settledCents)) v.bad('settledCents', '收回的钱经「收回」记');
       } else {
         out.direction = v.enumOf(body.direction, 'direction', DIRECTIONS);
         out.amount_cents = v.int(body.amountCents, 'amountCents', { min: 1, max: MAX_AMOUNT });
@@ -183,7 +187,11 @@ module.exports = (ctx) => {
       }
       if (!isPatch) {
         const rt = recordSpec(body.recordTransaction);
-        pendingCreate.set(body, rt ? moneyAccount(rt.accountId, 'accountId') : null);
+        const settled = v.isMissing(body.settledCents)
+          ? 0
+          : v.int(body.settledCents, 'settledCents', { min: 0, max: MAX_AMOUNT });
+        if (settled > out.amount_cents) v.bad('settledCents', '已经收回的不能比总数还多');
+        pendingCreate.set(body, { accountId: rt ? moneyAccount(rt.accountId, 'accountId') : null, settled });
       }
       return out;
     },
@@ -202,7 +210,7 @@ module.exports = (ctx) => {
         }
         return;
       }
-      const accountId = pendingCreate.get(body) || null;
+      const { accountId = null, settled = 0 } = pendingCreate.get(body) || {};
       const sign = row.direction === 'lend' ? 1 : -1;
       const now = db.now();
       const id = crypto.randomUUID();
@@ -223,6 +231,17 @@ module.exports = (ctx) => {
         note: row.note || '',
       }, reqCtx);
       if (memo) db.run('UPDATE debts SET memo_log = ? WHERE id = ?', appendMemo(row.id, { ...memo, note: '起始' }), row.id);
+      if (settled > 0) {
+        const note = row.direction === 'lend' ? '之前已收回' : '之前已还';
+        const backMerchant = row.kind === 'favor'
+          ? `${row.direction === 'lend' ? '收回人情' : '还人情'} ${row.counterparty}`
+          : `${row.direction === 'lend' ? '收回' : '还'} ${row.counterparty}`;
+        const back = move(row, account, {
+          effect: -sign, amount: settled, accountId, occurredOn: row.started_on, merchant: backMerchant, note,
+        }, reqCtx).memo;
+        if (back) db.run('UPDATE debts SET memo_log = ? WHERE id = ?', appendMemo(row.id, { ...back, note, action: 'settle' }), row.id);
+        logActivity(db, { memberId: reqCtx.member.id, action: 'settle', entity: 'debt', entityId: row.id });
+      }
     },
 
     canDelete(row) {

@@ -45,9 +45,21 @@ class PerksRepo {
 
   // —— 会员 ——
 
-  /// [body] 里可以带 `clientId`（幂等）和 `recordTransaction`（同时记一笔支出）。
-  Future<Membership> createMembership(Map<String, dynamic> body) async =>
-      _putMembership(await _api.post('/memberships', body));
+  /// [body] 里可以带 `clientId`（幂等）、`recordTransaction`（同时记一笔支出）和 `benefits`（顺带的权益，
+  /// 「N 选 1」再带 `options`）：服务端同一个事务里建好。
+  Future<Membership> createMembership(Map<String, dynamic> body) async => (await createMembershipWithBenefits(body)).membership;
+
+  /// 同 [createMembership]，另外交回服务端真建好的权益（含选项）：重发时服务端原样回第一次建的，
+  /// 这里的条数才是实情（表单上后来又加的草稿不算）。先落卡、再落权益，最后同步一次。
+  Future<({Membership membership, List<Benefit> benefits})> createMembershipWithBenefits(Map<String, dynamic> body) async {
+    final res = await _api.post('/memberships', body);
+    final item = Membership.fromJson(unwrap(res, 'membership'));
+    final children = jsonList(res['benefits'], Benefit.fromJson);
+    await _ledger.putMembership(item);
+    await _ledger.putBenefits(children);
+    await _syncQuietly();
+    return (membership: item, benefits: children);
+  }
 
   Future<Membership> updateMembership(String id, Map<String, dynamic> patch) async =>
       _putMembership(await _api.patch('/memberships/$id', patch));
@@ -71,8 +83,18 @@ class PerksRepo {
 
   // —— 权益 ——
 
-  Future<Benefit> createBenefit(Map<String, dynamic> body) async =>
-      _putBenefit(await _api.post('/benefits', body));
+  /// 新建「N 选 1」时 [body] 可以带 `options`（顺带的选项）。
+  Future<Benefit> createBenefit(Map<String, dynamic> body) async => (await createBenefitWithOptions(body)).benefit;
+
+  /// 同 [createBenefit]，另外交回服务端真建好的选项（先落它、再落选项，最后同步一次）。
+  Future<({Benefit benefit, List<Benefit> options})> createBenefitWithOptions(Map<String, dynamic> body) async {
+    final res = await _api.post('/benefits', body);
+    final item = Benefit.fromJson(unwrap(res, 'benefit'));
+    final options = jsonList(res['options'], Benefit.fromJson);
+    await _ledger.putBenefits([item, ...options]);
+    await _syncQuietly();
+    return (benefit: item, options: options);
+  }
 
   Future<Benefit> updateBenefit(String id, Map<String, dynamic> patch) async =>
       _putBenefit(await _api.patch('/benefits/$id', patch));
