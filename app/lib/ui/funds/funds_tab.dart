@@ -18,9 +18,10 @@ import 'fund_detail_page.dart';
 import 'fund_providers.dart';
 import 'fund_template_sheet.dart';
 
-/// 资产 tab 的第一段「基金」：每个模块还剩多少、这个月花了多少、离目标还有多远。
+/// 基金（钱袋子）的列表：每个模块还剩多少、这个月花了多少、离目标还有多远。
 ///
-/// 只是一段内容，顶栏归资产页（它的「+」调 [startNewFund]）。首页的基金卡片是它的缩略。
+/// 只是内容，顶栏归「我的 › 基金」那一页（funds_page.dart，它的「新建基金」调 [startNewFund]）。
+/// 首页的基金卡片是它的缩略。
 class FundsTab extends ConsumerStatefulWidget {
   const FundsTab({super.key});
 

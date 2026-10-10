@@ -12,6 +12,10 @@
 //      记转账；事后挂上要说清成本从哪个账户转进来；换账户自动补一笔移仓转账；不许直接解绑。
 //   5. 开仓、加减仓收 clientId 做幂等（lib/idempotency.js）：回应丢了 App 重发，份额、
 //      移动平均成本和已实现盈亏不能被改第二遍 —— 它们只能经交易改，改错了没法手工改回来。
+//   6. 品类（lib/invest.js）决定怎么记：基金/股票/黄金按「份额 × 价格」；定期、结构性存款、国债、
+//      逆回购按「本金 + 年化 + 到期日」按天计息；活期、银行理财、保险存单、其他按「手动更新的当前金额」。
+//      非份额类的 quantity_e4 恒为 1 份（持有中），清仓置 0；它们没有行情、没有单价。
+//      交易多一种 income：分红、付息，记进已实现收益（定期的估值会扣掉已经付出来的利息）。
 
 const crypto = require('node:crypto');
 
@@ -21,6 +25,7 @@ const { rowToJson } = require('../lib/db');
 const { logActivity } = require('../lib/activity');
 const idem = require('../lib/idempotency');
 const quotes = require('../lib/quotes');
+const invest = require('../lib/invest');
 const v = require('../lib/validate');
 
 const MARKETS = ['fund', 'sh', 'sz', 'bj', 'other'];
@@ -139,6 +144,7 @@ module.exports = (ctx) => {
       name: { type: 'string', max: NAME_MAX, default: '' },
       market: { type: 'enum', values: MARKETS, default: 'other' },
       priceSource: { type: 'enum', values: ['auto', 'manual'], default: 'manual' },
+      institution: { type: 'string', max: 40 },
       note: { type: 'string', max: 500 },
     },
 
@@ -146,13 +152,51 @@ module.exports = (ctx) => {
       const out = {};
       const given = (name) => body[name] !== undefined;
 
+      // 品类：新建没给就按 market 推（老 App 只发 market）；改品类只能在同一种记法里换，
+      // 份额类改成定期类，份额、成本、已实现盈亏全都对不上了。
+      let kind;
+      if (given('kind')) {
+        kind = v.enumOf(body.kind, 'kind', invest.KINDS);
+        if (isPatch && invest.modeOf(kind) !== invest.modeOf(invest.kindOf(row))) {
+          v.bad('kind', '只能换成同一种记法的品类（基金↔股票、定期↔国债、活期↔银行理财）；换记法请另记一笔');
+        }
+      } else {
+        kind = isPatch ? invest.kindOf(row) : body.market === 'fund' ? 'fund' : 'stock';
+      }
+      out.kind = kind;
+      const mode = invest.modeOf(kind);
+
       if (isPatch) {
         for (const f of ['quantityE4', 'costCents']) {
           if (given(f)) v.bad(f, `${f} 只能通过加仓/减仓修改`);
         }
-      } else {
+      } else if (mode === 'unit') {
         out.quantity_e4 = v.int(body.quantityE4, 'quantityE4', { min: 1, max: MAX_QTY_E4 });
         out.cost_cents = v.int(body.costCents, 'costCents', { min: 0, max: MAX_AMOUNT });
+      } else {
+        // 定期没有本金就没有利息可算；活期、保险允许先记个 0，回头再存。
+        out.quantity_e4 = invest.HELD_E4;
+        out.cost_cents = v.int(body.costCents, 'costCents', { min: mode === 'deposit' ? 1 : 0, max: MAX_AMOUNT });
+      }
+
+      if (!isPatch || given('rateE6')) {
+        out.rate_e6 = mode === 'unit' ? null : v.optInt(body.rateE6, 'rateE6', { min: 0, max: invest.MAX_RATE_E6 });
+      }
+      if (!isPatch || given('rateMaxE6')) {
+        out.rate_max_e6 = kind === 'structured'
+          ? v.optInt(body.rateMaxE6, 'rateMaxE6', { min: 0, max: invest.MAX_RATE_E6 })
+          : null;
+      }
+      if (!isPatch || given('maturesOn')) {
+        out.matures_on = mode === 'unit' || v.isMissing(body.maturesOn) ? null : day(body.maturesOn, 'maturesOn');
+      }
+      if (given('valueCents')) {
+        if (mode !== 'balance') v.bad('valueCents', '只有活期、银行理财、保险这类按金额记的能直接改当前金额');
+        out.value_cents = v.optInt(body.valueCents, 'valueCents', { min: 0, max: MAX_AMOUNT });
+        out.value_on = out.value_cents === null ? null : today();
+      } else if (!isPatch) {
+        out.value_cents = null;
+        out.value_on = null;
       }
 
       if (!isPatch || given('code')) {
@@ -170,6 +214,7 @@ module.exports = (ctx) => {
         out.account_id = id;
       }
       if (given('priceE4')) {
+        if (mode !== 'unit') v.bad('priceE4', '这类理财不按单价记');
         out.price_e4 = v.optInt(body.priceE4, 'priceE4', { min: 0, max: MAX_PRICE_E4 });
         out.price_at = out.price_e4 === null ? null : db.now();
         // 手填的价没有「昨收」可比，留着旧的会让今日涨跌拿两个不相干的价相减。
@@ -181,17 +226,38 @@ module.exports = (ctx) => {
       const code = 'code' in out ? out.code : row?.code;
       const name = given('name') ? String(body.name ?? '').trim() : (row ? row.name : '');
       if (!name && !code) v.bad('name', '名称和代码至少填一个');
-      const market = pick('market', 'market', 'other');
-      if (pick('priceSource', 'price_source', 'manual') === 'auto' && (!AUTO_MARKETS.includes(market) || !code)) {
-        v.bad('priceSource', '自动行情要填代码，并选场外基金或沪/深/北市场');
-      }
-      // 价格跟着具体那只证券走：换了代码或市场还留着旧价，净资产就是拿别的证券的价乘这边的份额，
-      // price_at 还会让它看着像新鲜价。宁可先没价格、退出统计，等刷新或手填；同一次给了新价的以新价为准。
-      if (isPatch && !given('priceE4')
-        && quotes.quoteKey(market, code || '') !== quotes.quoteKey(row.market, row.code || '')) {
-        out.price_e4 = null;
-        out.prev_close_e4 = null;
-        out.price_at = null;
+      if (mode !== 'unit') {
+        // 没有行情、没有单价：定期、活期这些按本金/金额记。
+        if (given('priceSource') && body.priceSource === 'auto') v.bad('priceSource', '这类理财没有行情可拉');
+        out.market = 'other';
+        out.price_source = 'manual';
+        if (!isPatch) {
+          out.price_e4 = null;
+          out.prev_close_e4 = null;
+          out.price_at = null;
+        }
+        if (mode === 'deposit') {
+          const merged = (col) => (col in out ? out[col] : row ? row[col] : null);
+          const matures = merged('matures_on');
+          if (!matures) v.bad('maturesOn', '定期类要填到期日');
+          if (matures < merged('opened_on')) v.bad('maturesOn', '到期日不能早于起息日');
+          const lo = merged('rate_e6');
+          const hi = merged('rate_max_e6');
+          if (kind === 'structured' && lo !== null && hi !== null && hi < lo) v.bad('rateMaxE6', '最高年化不能低于保底年化');
+        }
+      } else {
+        const market = pick('market', 'market', 'other');
+        if (pick('priceSource', 'price_source', 'manual') === 'auto' && (!AUTO_MARKETS.includes(market) || !code)) {
+          v.bad('priceSource', '自动行情要填代码，并选场外基金或沪/深/北市场');
+        }
+        // 价格跟着具体那只证券走：换了代码或市场还留着旧价，净资产就是拿别的证券的价乘这边的份额，
+        // price_at 还会让它看着像新鲜价。宁可先没价格、退出统计，等刷新或手填；同一次给了新价的以新价为准。
+        if (isPatch && !given('priceE4')
+          && quotes.quoteKey(market, code || '') !== quotes.quoteKey(row.market, row.code || '')) {
+          out.price_e4 = null;
+          out.prev_close_e4 = null;
+          out.price_at = null;
+        }
       }
 
       if (!isPatch) {
@@ -252,9 +318,8 @@ module.exports = (ctx) => {
 
   function trade(req, res, reqCtx) {
     const b = v.body(reqCtx.body);
-    const side = v.enumOf(b.side, 'side', ['buy', 'sell']);
-    const q = v.int(b.quantityE4, 'quantityE4', { min: 1, max: MAX_QTY_E4 });
-    const amount = v.int(b.amountCents, 'amountCents', { min: 0, max: MAX_AMOUNT });
+    const side = v.enumOf(b.side, 'side', ['buy', 'sell', 'income']);
+    const amount = v.int(b.amountCents, 'amountCents', { min: side === 'income' ? 1 : 0, max: MAX_AMOUNT });
     const occurredOn = v.isMissing(b.occurredOn) ? today() : day(b.occurredOn, 'occurredOn');
     const rt = recordSpec(b.recordTransaction);
     const clientId = idem.clientIdOf(b);
@@ -269,8 +334,16 @@ module.exports = (ctx) => {
 
     const out = db.tx(() => {
       const h = crud.mustExist(reqCtx.params.id);
+      const mode = invest.modeOf(invest.kindOf(h));
+      const label = labelOf(h);
+
+      // 分红、付息：钱落到哪个账户都行（证券户、银行卡），记成一笔收入；不挂账户也能记。
+      let into = null;
       let counter = null;
-      if (rt) {
+      if (rt && side === 'income') {
+        into = v.str(rt.accountId, 'accountId', { max: 64 });
+        if (!accountExists(into)) v.bad('accountId', '账户不存在');
+      } else if (rt) {
         if (!h.account_id) throw needsAccount();
         // 挂的账户被删了，下面记转账会报成请求里的账户字段不存在，用户会以为是自己选错了卡。
         if (!accountExists(h.account_id)) {
@@ -281,44 +354,81 @@ module.exports = (ctx) => {
 
       let qty = h.quantity_e4;
       let cost = h.cost_cents;
+      let value = h.value_cents;
       let realized = 0;
-      if (side === 'buy') {
-        qty += q;
-        cost += amount;
-        if (qty > MAX_QTY_E4) v.bad('quantityE4', '持有份额太大了');
-        if (cost > MAX_AMOUNT) v.bad('amountCents', '持仓成本太大了');
+      if (side === 'income') {
+        realized = amount;
+      } else if (mode === 'unit') {
+        const q = v.int(b.quantityE4, 'quantityE4', { min: 1, max: MAX_QTY_E4 });
+        if (side === 'buy') {
+          qty += q;
+          cost += amount;
+          if (qty > MAX_QTY_E4) v.bad('quantityE4', '持有份额太大了');
+        } else {
+          if (q > qty) throw new HttpError(400, 'insufficient_quantity', '卖出份额超过了持有份额');
+          const propCost = proportionalCost(cost, q, qty);
+          realized = amount - propCost;
+          qty -= q;
+          cost -= propCost;
+        }
+      } else if (mode === 'balance') {
+        // 金额类：存入加本金、加金额；取出按「取出 / 当前金额」的比例摊本金，差额是这次的收益。
+        // value_cents 为空 = 一直等于本金（没手动更新过），存取后照样空着。
+        const current = value === null ? cost : value;
+        if (side === 'buy') {
+          cost += amount;
+          if (value !== null) value += amount;
+          qty = invest.HELD_E4;
+        } else {
+          if (qty <= 0 || amount > current) {
+            throw new HttpError(400, 'insufficient_value', '取出的金额超过了当前金额');
+          }
+          const propCost = amount === current ? cost : proportionalCost(cost, amount, current);
+          realized = amount - propCost;
+          cost -= propCost;
+          if (value !== null) value -= amount;
+          if (current - amount === 0) qty = 0;
+        }
       } else {
-        if (q > qty) throw new HttpError(400, 'insufficient_quantity', '卖出份额超过了持有份额');
-        const propCost = proportionalCost(cost, q, qty);
-        realized = amount - propCost;
-        qty -= q;
-        cost -= propCost;
-        // 累计值没有单笔金额那道闸：越过 2^53 后 node:sqlite 回读这一行直接抛错，接口只剩 500。
-        if (Math.abs(h.realized_cents + realized) > MAX_AMOUNT) v.bad('amountCents', '累计已实现盈亏太大了');
+        // 定期类：不能追加（另开一笔），取出就是到期或提前支取，一次结清；收到的本息减本金是收益。
+        if (side === 'buy') throw new HttpError(400, 'deposit_no_topup', '定期类不能追加本金，另记一笔');
+        if (qty <= 0) throw new HttpError(400, 'insufficient_value', '这笔已经结清了');
+        realized = amount - cost;
+        cost = 0;
+        qty = 0;
       }
+      if (cost > MAX_AMOUNT) v.bad('amountCents', '持仓成本太大了');
+      // 累计值没有单笔金额那道闸：越过 2^53 后 node:sqlite 回读这一行直接抛错，接口只剩 500。
+      if (Math.abs(h.realized_cents + realized) > MAX_AMOUNT) v.bad('amountCents', '累计已实现盈亏太大了');
 
       db.run(
-        'UPDATE holdings SET quantity_e4 = ?, cost_cents = ?, realized_cents = realized_cents + ?, updated_at = ?, seq = ? WHERE id = ?',
-        qty, cost, realized, db.now(), db.nextSeq(), h.id,
+        'UPDATE holdings SET quantity_e4 = ?, cost_cents = ?, value_cents = ?, realized_cents = realized_cents + ?,' +
+          ' updated_at = ?, seq = ? WHERE id = ?',
+        qty, cost, value, realized, db.now(), db.nextSeq(), h.id,
       );
       logActivity(db, { memberId: reqCtx.member.id, action: side, entity: 'holding', entityId: h.id });
 
       const txs = [];
-      if (counter) {
-        const label = labelOf(h);
-        const at = noonOf(occurredOn);
+      const at = noonOf(occurredOn);
+      if (into) {
+        txs.push(record({
+          type: 'income', amountCents: amount, occurredAt: at, accountId: into,
+          categoryId: pnlCategoryId('income'), merchant: `${mode === 'unit' ? '分红' : '利息'} ${label}`,
+        }, reqCtx));
+      } else if (counter) {
+        const verbs = mode === 'unit' ? ['买入', '卖出'] : mode === 'balance' ? ['存入', '取出'] : ['存入', '到期'];
         if (amount > 0) {
           const [from, to] = side === 'buy' ? [counter, h.account_id] : [h.account_id, counter];
           txs.push(record({
             type: 'transfer', amountCents: amount, occurredAt: at, accountId: from, toAccountId: to,
-            merchant: `${side === 'buy' ? '买入' : '卖出'} ${label}`,
+            merchant: `${side === 'buy' ? verbs[0] : verbs[1]} ${label}`,
           }, reqCtx));
         }
         if (realized !== 0) {
           const kind = realized > 0 ? 'income' : 'expense';
           txs.push(record({
             type: kind, amountCents: Math.abs(realized), occurredAt: at, accountId: h.account_id,
-            categoryId: pnlCategoryId(kind), merchant: `卖出 ${label}`,
+            categoryId: pnlCategoryId(kind), merchant: `${verbs[1]} ${label}`,
             note: realized > 0 ? '已实现盈利' : '已实现亏损',
           }, reqCtx));
         }

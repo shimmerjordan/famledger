@@ -1,6 +1,8 @@
 import 'dart:convert';
 
 import 'package:famledger/app/providers.dart';
+import 'package:famledger/ui/assets/assets_page.dart';
+import 'package:famledger/ui/funds/funds_page.dart';
 import 'package:famledger/ui/settings/members_page.dart';
 import 'package:famledger/ui/settings/categories_page.dart';
 import 'package:famledger/app/theme_mode.dart';
@@ -180,28 +182,33 @@ void main() {
     expect(await readThemeMode(container.read(localStoreProvider)), ThemeMode.dark);
   });
 
-  testWidgets('底部「资产」：基金、物品、理财、会员权益四段，默认在基金，还在外壳里', (tester) async {
+  testWidgets('底部「资产」：理财、债务、物品、会员权益四段，没有单独的基金段，默认在理财，还在外壳里', (tester) async {
     await pumpApp(
       tester,
       await boot(baseUrl: 'https://ledger.example.com', loggedIn: true),
     );
     await tester.tap(find.descendant(of: find.byType(NavigationBar), matching: find.text('资产')));
     await tester.pumpAndSettle();
-    for (final label in ['基金', '物品', '理财', '会员权益']) {
+    for (final label in ['理财', '债务', '物品', '会员权益']) {
       expect(find.widgetWithText(Tab, label), findsOneWidget);
     }
-    expect(tester.widget<TabBar>(find.byType(TabBar)).controller!.index, 0);
+    expect(find.widgetWithText(Tab, '基金'), findsNothing);
+    expect(tester.widget<TabBar>(find.byType(TabBar)).controller!.index, AssetsPage.investTab);
     expect(find.byType(NavigationBar), findsOneWidget);
   });
 
-  testWidgets('老地址 /funds 转到资产 › 基金', (tester) async {
+  testWidgets('/funds 是「我的 › 基金」那一页；老地址 /assets?tab=funds 也转过去；「我的」里有入口', (tester) async {
     final container = await boot(baseUrl: 'https://ledger.example.com', loggedIn: true);
     await pumpApp(tester, container);
-    container.read(routerProvider).go('/funds');
+    container.read(routerProvider).go('/assets?tab=funds');
     await tester.pumpAndSettle();
-    expect(find.widgetWithText(Tab, '基金'), findsOneWidget);
-    expect(tester.widget<TabBar>(find.byType(TabBar)).controller!.index, 0);
-    expect(find.byType(NavigationBar), findsOneWidget);
+    expect(find.byType(FundsPage), findsOneWidget);
+
+    container.read(routerProvider).go('/settings');
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('settings-entry-/funds')));
+    await tester.pumpAndSettle();
+    expect(find.byType(FundsPage), findsOneWidget);
   });
 
   testWidgets('资产的子页整屏盖住外壳（底部导航不露），返回回到资产 tab', (tester) async {
@@ -248,7 +255,7 @@ void main() {
 
     await tester.tap(find.byType(BackButton));
     await tester.pumpAndSettle();
-    expect(tabIndex(tester), 3);
+    expect(tabIndex(tester), AssetsPage.perksTab);
     expect(router.state.uri.toString(), '/assets?tab=perks');
   });
 
@@ -265,21 +272,21 @@ void main() {
     expect(find.byType(NavigationBar), findsNothing);
   });
 
-  testWidgets('已经在资产 tab 时再点一次底部「资产」：段不变，地址补回当前段（刷新不会落到基金）', (tester) async {
+  testWidgets('已经在资产 tab 时再点一次底部「资产」：段不变，地址补回当前段（刷新不会落回第一段）', (tester) async {
     final container = await boot(baseUrl: 'https://ledger.example.com', loggedIn: true);
     await pumpApp(tester, container);
     final router = container.read(routerProvider);
     final bottomAssets = find.descendant(of: find.byType(NavigationBar), matching: find.text('资产'));
     await tester.tap(bottomAssets);
     await tester.pumpAndSettle();
-    await tester.tap(find.widgetWithText(Tab, '理财'));
+    await tester.tap(find.widgetWithText(Tab, '物品'));
     await tester.pumpAndSettle();
-    expect(router.state.uri.toString(), '/assets?tab=invest');
+    expect(router.state.uri.toString(), '/assets?tab=items');
 
     await tester.tap(bottomAssets);
     await tester.pumpAndSettle();
-    expect(tabIndex(tester), 2);
-    expect(router.state.uri.toString(), '/assets?tab=invest');
+    expect(tabIndex(tester), AssetsPage.itemsTab);
+    expect(router.state.uri.toString(), '/assets?tab=items');
   });
 
   testWidgets('资产 tab 里的底部弹层盖在外壳上面（不被「记一笔」挡住、底栏点不到）', (tester) async {

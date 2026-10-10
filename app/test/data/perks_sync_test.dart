@@ -91,6 +91,8 @@ void main() {
         'memberships': <Object>[],
         'benefits': <Object>[],
         'benefit_events': <Object>[],
+        // 债务（10-09）也是后加的。
+        'debts': <Object>[],
         'seq': 42,
       });
       await rig.ledger.load();

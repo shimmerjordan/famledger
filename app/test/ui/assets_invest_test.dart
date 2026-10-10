@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:famledger/data/local/local_store.dart';
 import 'package:famledger/data/repos/holdings_repo.dart';
+import 'package:famledger/ui/assets/invest_tab.dart' show holdingSubtitle, keepTogether;
 import 'package:famledger/ui/assets/trade_sheet.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -64,7 +65,7 @@ void main() {
         '/assets?tab=invest',
       );
 
-      expect(find.text('总市值'), findsOneWidget);
+      expect(find.text('理财估值'), findsOneWidget);
       expect(find.text('¥156,300.00'), findsOneWidget);
       expect(find.text('+¥300.00'), findsOneWidget);
       expect(find.text('+0.19%'), findsOneWidget);
@@ -80,8 +81,13 @@ void main() {
       );
 
       expect(find.text('招商中证白酒'), findsOneWidget);
-      expect(find.text('161725 · 持有\u00A010\u00A0天 · 日均\u00A0+¥20.00'), findsOneWidget, reason: '标签和数字之间是不换行空格');
-      expect(find.text('¥1,200.00'), findsOneWidget);
+      expect(find.text(holdingSubtitle(['161725', '持有 10 天', '日均 +¥20.00'])), findsOneWidget);
+      expect(
+        keepTogether('日均 +¥20.00'),
+        '日\u2060均\u2060\u00A0\u2060+\u2060¥\u20602\u20600\u2060.\u20600\u20600',
+        reason: '中文两字之间也能折行：每段整段不折，窄屏放不下只在「·」处折',
+      );
+      expect(find.descendant(of: find.byKey(const ValueKey('holding-h1')), matching: find.text('¥1,200.00')), findsOneWidget);
       expect(find.text('+20.00%'), findsOneWidget);
 
       expect(find.text('银行理财'), findsOneWidget);
@@ -96,17 +102,17 @@ void main() {
         '/assets?tab=invest',
       );
 
-      expect(find.text('已清仓'), findsOneWidget);
-      expect(find.text('005827 · 已清仓'), findsOneWidget);
-      expect(find.text('+¥123.45'), findsOneWidget);
+      expect(find.text('已结清'), findsOneWidget);
+      expect(find.text(holdingSubtitle(['005827', '已清仓'])), findsOneWidget);
+      expect(find.descendant(of: find.byKey(const ValueKey('holding-h4')), matching: find.text('+¥123.45')), findsOneWidget);
       expect(topOf(tester, '易方达蓝筹'), greaterThan(topOf(tester, '贵州茅台')));
     });
 
-    testWidgets('一只都没有：说一句并给「添加持仓」', (tester) async {
+    testWidgets('一笔都没有：说一句并给「添加理财」', (tester) async {
       await pumpAssetsAt(tester, bootAssets(AssetsBackend()), '/assets?tab=invest');
 
-      expect(find.text('还没有持仓'), findsOneWidget);
-      expect(find.widgetWithText(FilledButton, '添加持仓'), findsOneWidget);
+      expect(find.text('还没有理财'), findsOneWidget);
+      expect(find.widgetWithText(FilledButton, '添加理财'), findsOneWidget);
     });
   });
 
@@ -244,9 +250,9 @@ void main() {
       final backend = AssetsBackend();
       await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=invest');
 
-      await tester.tap(find.byTooltip('添加持仓'));
+      await tester.tap(find.byTooltip('添加理财'));
       await settle(tester);
-      expect(find.text('添加持仓'), findsWidgets);
+      expect(find.text('添加理财'), findsWidgets);
       final record = tester.widget<SwitchListTile>(
         find.byKey(const ValueKey('holding-record')),
       );
@@ -297,7 +303,7 @@ void main() {
         'refreshedAt': testNow.toUtc().toIso8601String(),
         'throttled': true,
       };
-      await tester.tap(find.byTooltip('添加持仓'));
+      await tester.tap(find.byTooltip('添加理财'));
       await settle(tester);
       await tester.enterText(find.byKey(const ValueKey('holding-name')), '沪深300ETF');
       await tester.enterText(find.byKey(const ValueKey('holding-code')), '510300');
@@ -312,7 +318,7 @@ void main() {
       expect(backend.requests('POST', '/holdings/refresh'), hasLength(2));
       expect(find.text('沪深300ETF'), findsOneWidget);
       expect(find.text('没有价格'), findsOneWidget);
-      expect(find.text('1 只还没有价格，没算进市值；行情刚刷过，几分钟后再点「刷新行情」'), findsOneWidget);
+      expect(find.text('1 只还没有价格，没算进估值；行情刚刷过，几分钟后再点「刷新行情」'), findsOneWidget);
     });
 
     testWidgets('手动价：没代码就开不了自动行情，现价照填', (tester) async {
@@ -320,6 +326,8 @@ void main() {
       await pumpAssetsAt(tester, bootAssets(backend), '/assets/holdings/new');
 
       await tester.enterText(find.byKey(const ValueKey('holding-name')), '银行理财');
+      // 「其他」市场（港美股、没有行情的）在股票里。
+      await tapVisible(tester, find.byKey(const ValueKey('holding-kind-stock')));
       await tester.tap(find.byKey(const ValueKey('holding-market-other')));
       await tester.pump();
       final auto = tester.widget<SwitchListTile>(
@@ -367,6 +375,8 @@ void main() {
       await pumpAssetsAt(tester, bootAssets(backend), '/assets/holdings/new');
 
       await tester.enterText(find.byKey(const ValueKey('holding-name')), '老仓位');
+      // 「其他」市场（港美股、没有行情的）在股票里。
+      await tapVisible(tester, find.byKey(const ValueKey('holding-kind-stock')));
       await tester.tap(find.byKey(const ValueKey('holding-market-other')));
       await tester.pump();
       await tester.enterText(find.byKey(const ValueKey('holding-quantity')), '100');
@@ -518,7 +528,7 @@ void main() {
       );
       expect(record.value, isFalse);
       expect(record.onChanged, isNull);
-      expect(find.text('这笔持仓没挂投资账户，编辑挂上才能记'), findsOneWidget);
+      expect(find.text('这笔没挂投资账户，编辑挂上才能记'), findsOneWidget);
     });
 
     testWidgets('编辑没挂账户、有成本的持仓：挂上要选成本从哪转进来，请求带 recordTransaction', (tester) async {
@@ -637,7 +647,7 @@ void main() {
       expect(backend.requests('DELETE', '/holdings/h1'), hasLength(1));
       expect(flashed, isFalse);
       expect(find.text('招商中证白酒'), findsNothing);
-      expect(find.text('总市值'), findsOneWidget);
+      expect(find.text('理财估值'), findsOneWidget);
     });
 
     testWidgets('已清仓：只看已实现盈亏，减仓按钮灰掉', (tester) async {
@@ -667,7 +677,7 @@ void main() {
           '/assets?tab=invest',
           size: size,
         );
-        expect(find.text('总市值'), findsOneWidget);
+        expect(find.text('理财估值'), findsOneWidget);
         expect(tester.takeException(), isNull);
       });
 

@@ -10,9 +10,9 @@ import '../../data/api/api_client.dart';
 import '../../data/models/models.dart';
 import '../widgets/widgets.dart';
 
-/// 「现金流」：账户净额——现金、银行卡、支付宝这些账户的余额合计，信用卡欠款（负余额）已经减掉。
-/// 就是服务端 overview 里 accounts 的和，这里只是给它一个说得出口的名字。
-int cashFlowCents(StatsOverview o) => o.accountsNetCents;
+/// 「现金流」：现金、银行卡、支付宝这些账户的余额合计（信用卡欠款已减），不含投资账户和债务。
+/// 老服务端不分项时就是全部账户的合计（见 [StatsOverview.cashFlowCents]）。
+int cashFlowCents(StatsOverview o) => o.cashFlowCents;
 
 /// 目标、储备两类基金（旅行、应急、养老这种专款）里攒着的钱：正余额之和。
 /// 超支（负余额）的钱早从账户里花出去、账户净额里已经减掉，这里不再减一次。
@@ -32,24 +32,28 @@ int reservedCents(StatsOverview o, Iterable<Fund> funds) {
 int disposableCents(StatsOverview o, Iterable<Fund> funds) =>
     cashFlowCents(o) - reservedCents(o, funds);
 
-/// 折叠时那行小字：「现金流 ¥… · 可支配 ¥… · 投资（账户外）¥… · 实物计入 ¥…」，
+/// 有没有债务这一段：服务端给了汇总、而且记过债务。
+bool _hasDebts(StatsOverview o) => (o.debts?.count ?? 0) > 0;
+
+/// 有没有理财这一段：理财对净资产有贡献，或者有估值。
+bool _hasInvest(StatsOverview o) => o.investTotalCents != 0 || (o.investMarketCents ?? 0) > 0;
+
+/// 折叠时那行小字：「现金流 ¥… · 可支配 ¥… · 理财 ¥… · 债务 ¥… · 实物计入 ¥…」，
 /// 总开关关着时末段写「不含实物」。
 ///
-/// 现金流、投资、实物计入加起来就是净资产（可支配是现金流的一部分，不另外加）。
-/// 「投资（账户外）」是账户余额以外的那部分：挂了账户的持仓成本早就以转账进了账户余额，
-/// 只补浮盈；没挂账户的整份市值（口径在 stats.js）。所以它不是持仓市值，明细里另外说。
-/// 「实物计入」是计入额，不是物品页的估值合计。
+/// 现金流、理财、债务、实物计入加起来就是净资产（可支配是现金流的一部分，不另外加）。
+/// 「理财」= 投资账户里的钱 + 持仓相对成本的补差（口径在 stats.js），也就是各品类估值加上投资账户里的闲钱。
+/// 「债务」只算计入净资产的（人情默认不算）。「实物计入」是计入额，不是物品页的估值合计。
 ///
-/// 没有专款攒着钱时可支配就等于现金流，不重复写；没有持仓影响时不写投资；
-/// 没有在用的物品（或老服务端没给 physical）时不写实物。
+/// 没有专款攒着钱时可支配就等于现金流，不重复写；没有理财、没有债务、没有在用的物品时那一段不写。
 String netWorthBreakdown(StatsOverview o, {int reservedCents = 0}) {
   final p = o.physical;
-  final invest = o.investNetCents;
   final cash = cashFlowCents(o);
   return [
     '现金流 ${Money.format(cash)}',
     if (reservedCents > 0) '可支配 ${Money.format(cash - reservedCents)}',
-    if (invest != 0) '投资（账户外）${Money.format(invest)}',
+    if (_hasInvest(o)) '理财 ${Money.format(o.investTotalCents)}',
+    if (_hasDebts(o)) '债务 ${Money.format(o.debtsNetCents, signed: true)}',
     if (p != null && p.count > 0)
       p.counted ? '实物计入 ${Money.format(p.includedCents)}' : '不含实物',
   ].join(' · ');
@@ -62,41 +66,54 @@ class _Figure {
     required this.label,
     required this.cents,
     required this.note,
+    this.signed = false,
   });
 
   final String key;
   final String label;
   final int cents;
   final String note;
+  final bool signed;
 }
 
-/// 净资产的几段，按「现金流 → 可支配 → 投资 → 实物」排：先说手头有多少钱、多少能动，再说别的。
+/// 净资产的几段，按「现金流 → 可支配 → 理财 → 债务 → 实物」排：先说手头有多少钱、多少能动，再说别的。
 List<_Figure> _figures(StatsOverview o, int reserved) {
   final cash = cashFlowCents(o);
-  final invest = o.investNetCents;
   final market = o.investMarketCents;
-  // 市值 − 账户外那部分 = 挂了账户的持仓成本（已经在账户余额里）。
-  final costInAccounts = market == null ? 0 : market - invest;
+  final invest = o.investTotalCents;
   final p = o.physical;
+  final d = o.debts;
+  String investNote() {
+    if (o.investAccountsCents == null) return '账户余额以外的那部分';
+    if (market == null) return '各品类估值合计';
+    final idle = invest - market;
+    return idle == 0
+        ? '各品类估值合计 ${Money.format(market)}'
+        : '估值 ${Money.format(market)}，投资账户里另有 ${Money.format(idle)}';
+  }
+
+  String debtNote() {
+    if (d == null) return '';
+    final skipped = d.receivableCents != d.countedReceivableCents || d.payableCents != d.countedPayableCents;
+    return '别人欠 ${Money.format(d.countedReceivableCents)} · 欠别人 ${Money.format(d.countedPayableCents)}'
+        '${skipped ? '（人情不计）' : ''}';
+  }
+
   return [
-    _Figure(key: 'cash', label: '现金流', cents: cash, note: '账户余额合计，已减信用卡欠款'),
+    _Figure(
+      key: 'cash',
+      label: '现金流',
+      cents: cash,
+      note: o.cashCents == null ? '账户余额合计，已减信用卡欠款' : '现金、银行卡、支付宝……已减信用卡欠款',
+    ),
     _Figure(
       key: 'disposable',
       label: '可支配现金流',
       cents: cash - reserved,
       note: reserved > 0 ? '已扣目标、储备基金攒着的 ${Money.format(reserved)}' : '目标、储备基金没攒着钱，和现金流一样',
     ),
-    if (invest != 0 || (market ?? 0) > 0)
-      _Figure(
-        key: 'invest',
-        label: '投资（账户外）',
-        cents: invest,
-        note: market == null
-            ? '账户余额以外的那部分'
-            : costInAccounts > 0
-            ? '市值 ${Money.format(market)}，成本 ${Money.format(costInAccounts)} 已在账户里'
-            : '持仓没挂账户，整份市值都算',
-      ),
+    if (_hasInvest(o)) _Figure(key: 'invest', label: '理财', cents: invest, note: investNote()),
+    if (_hasDebts(o)) _Figure(key: 'debts', label: '债务', cents: o.debtsNetCents, note: debtNote(), signed: true),
     if (p != null && p.count > 0)
       p.counted
           ? _Figure(
@@ -119,7 +136,8 @@ String _netWorthNote(List<_Figure> figures) {
   final parts = [
     for (final f in figures)
       if (f.key == 'cash') '现金流'
-      else if (f.key == 'invest') '投资'
+      else if (f.key == 'invest') '理财'
+      else if (f.key == 'debts') '债务'
       else if (f.key == 'physical' && f.label == '实物计入') '实物计入',
   ];
   return parts.length == 1 ? '只有账户里的钱' : parts.join(' + ');
@@ -346,7 +364,7 @@ class _NetWorthStripState extends ConsumerState<NetWorthStrip> {
           child: _Cell(
             key: ValueKey('net-worth-figure-${f.key}'),
             label: f.label,
-            value: MoneyText(f.cents),
+            value: MoneyText(f.cents, signed: f.signed),
             note: f.note,
           ),
         ),
@@ -519,7 +537,7 @@ class _FigureRow extends StatelessWidget {
             ),
           ),
           const SizedBox(width: LedgerLayout.pagePadding),
-          MoneyText(figure.cents),
+          MoneyText(figure.cents, signed: figure.signed),
         ],
       ),
     );

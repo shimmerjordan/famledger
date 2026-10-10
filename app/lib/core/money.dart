@@ -24,6 +24,12 @@ class Money {
   /// 只要「1,234.56」这一段，用于输入框回显。
   static String plain(int cents) => format(cents, showSymbol: false);
 
+  /// 预填进输入框的「1234.56」：不带千分位，用户接着改不用先删逗号。
+  static String input(int cents) {
+    final abs = cents.abs();
+    return '${cents < 0 ? '-' : ''}${abs ~/ 100}.${(abs % 100).toString().padLeft(2, '0')}';
+  }
+
   /// `'1,234.5'` → `123450`。认 `¥`/`￥`/千分位/空格/U+2212；超过两位小数四舍五入到分。
   ///
   /// 解析不出数字时抛 [FormatException]。

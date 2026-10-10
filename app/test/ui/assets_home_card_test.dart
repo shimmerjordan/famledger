@@ -29,17 +29,43 @@ class FakeLedger extends LedgerController {
 }
 
 class FakeStats extends StatsController {
+  FakeStats(this.overview, {this.fail = false});
+
+  final StatsOverview overview;
+  final bool fail;
+
   @override
-  Future<StatsOverview> build(String month) async => const StatsOverview(
-    netWorthCents: 0,
-    assetsCents: 0,
-    liabilitiesCents: 0,
-    month: MonthStats(expenseCents: 0),
-  );
+  Future<StatsOverview> build(String month) async {
+    if (fail) throw Exception('服务器开小差了');
+    return overview;
+  }
 
   @override
   Future<void> refresh() async {}
 }
+
+/// 净资产 1.5 万：现金流 1 万、理财补差、债务净额 +3000（别人欠 5000、欠别人 2000）。
+const StatsOverview baseOverview = StatsOverview(
+  netWorthCents: 1500000,
+  assetsCents: 1700000,
+  liabilitiesCents: 200000,
+  month: MonthStats(expenseCents: 0),
+  cashCents: 1000000,
+  investAccountsCents: 0,
+  serverInvestNetCents: 200000,
+  debts: DebtSummary(
+    receivableCents: 500000,
+    payableCents: 200000,
+    countedReceivableCents: 500000,
+    countedPayableCents: 200000,
+    count: 2,
+  ),
+);
+
+final List<Debt> someDebts = [
+  const Debt(id: 'd1', accountId: 'da1', direction: Debt.lend, counterparty: '张三', amountCents: 500000, startedOn: '2026-09-01'),
+  const Debt(id: 'd2', accountId: 'da2', direction: Debt.borrow, counterparty: '李四', amountCents: 200000, startedOn: '2026-09-01'),
+];
 
 final List<Asset> someAssets = [
   Asset.fromJson(assetJson('a1', expectedDays: 1095)),
@@ -74,6 +100,8 @@ Future<void> pumpHome(
   WidgetTester tester,
   LedgerData data, {
   Size size = const Size(400, 900),
+  StatsOverview overview = baseOverview,
+  bool statsFail = false,
 }) async {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1.0;
@@ -96,7 +124,7 @@ Future<void> pumpHome(
           SessionRepo(secure: MemorySecureStore()),
         ),
         ledgerProvider.overrideWith(() => FakeLedger(data)),
-        statsProvider.overrideWith(FakeStats.new),
+        statsProvider.overrideWith(() => FakeStats(overview, fail: statsFail)),
         pendingTxProvider.overrideWith((ref) async => const []),
         recentTxProvider.overrideWith((ref) async => const []),
         assetClockProvider.overrideWithValue(() => testNow),
@@ -111,190 +139,77 @@ Future<void> pumpHome(
 }
 
 void main() {
-  testWidgets('物品每天花多少 + 理财市值与今日涨跌', (tester) async {
-    await pumpHome(
-      tester,
-      LedgerData(assets: someAssets, holdings: someHoldings),
-    );
+  Finder inTile(String key, Finder f) => find.descendant(of: find.byKey(ValueKey(key)), matching: f);
+
+  testWidgets('净资产一行 + 五格：现金流、理财、债务、物品、会员权益，各写一句', (tester) async {
+    await pumpHome(tester, LedgerData(assets: someAssets, holdings: someHoldings, debts: someDebts));
 
     expect(find.byKey(const ValueKey('assets-card')), findsOneWidget);
-    expect(find.text('物品每天'), findsOneWidget);
-    expect(find.text('¥272.86/天', findRichText: true), findsOneWidget);
-    // 副标题是估值合计：iPhone ¥5,895.88 + 洗衣机（数码，闲置也算）¥2,596.82。
-    expect(find.text('估值 ¥8,492.70'), findsOneWidget);
-    expect(find.text('理财市值'), findsOneWidget);
-    expect(find.text('¥151,200.00'), findsOneWidget);
-    expect(find.text('+¥1,100.00'), findsOneWidget);
-    expect(find.byKey(const ValueKey('assets-entry')), findsNothing);
+    expect(find.descendant(of: find.byKey(const ValueKey('home-net-worth')), matching: find.text('¥15,000.00')), findsOneWidget);
+    expect(inTile('home-asset-cash', find.text('¥10,000.00')), findsOneWidget);
+    expect(inTile('home-asset-cash', find.text('可支配 ¥10,000.00')), findsOneWidget);
+    // 理财：白酒 ¥1,200（成本 1000）+ 茅台 ¥150,000（平价）；基金、股票两类。
+    expect(inTile('home-asset-invest', find.text('¥151,200.00')), findsOneWidget);
+    expect(inTile('home-asset-invest', find.text('浮动 +¥200.00 · 2 类')), findsOneWidget);
+    expect(inTile('home-asset-debts', find.text('+¥3,000.00')), findsOneWidget);
+    expect(inTile('home-asset-debts', find.text('别人欠 ¥5,000.00 · 欠别人 ¥2,000.00')), findsOneWidget);
+    // 物品：估值 iPhone ¥5,895.88 + 洗衣机（闲置也算）¥2,596.82；每天 ¥272.86。
+    expect(inTile('home-asset-items', find.text('¥8,492.70')), findsOneWidget);
+    expect(inTile('home-asset-items', find.text('每天 ¥272.86')), findsOneWidget);
+    expect(inTile('home-asset-perks', find.text('还没记')), findsOneWidget);
   });
 
-  testWidgets('两边都空：只留一行「记录资产」，点进去是资产页', (tester) async {
-    await pumpHome(tester, const LedgerData());
-
-    expect(find.byKey(const ValueKey('assets-card')), findsNothing);
-    expect(find.text('记录资产'), findsOneWidget);
-    final entry = tester.getSize(find.byKey(const ValueKey('assets-entry')));
-    expect(entry.height, lessThan(90));
-
-    await tester.ensureVisible(find.text('记录资产'));
-    await tester.tap(find.text('记录资产'));
-    await settle(tester);
-    expect(find.text('还没记物品'), findsOneWidget);
+  testWidgets('什么都没记：净资产、现金流照写，其余几格「还没记」并说能记什么；点理财进理财段', (tester) async {
+    await pumpHome(tester, const LedgerData(), overview: const StatsOverview(
+      netWorthCents: 1000000,
+      assetsCents: 1000000,
+      liabilitiesCents: 0,
+      month: MonthStats(),
+      cashCents: 1000000,
+    ));
+    for (final key in ['home-asset-invest', 'home-asset-debts', 'home-asset-items', 'home-asset-perks']) {
+      expect(inTile(key, find.text('还没记')), findsOneWidget, reason: key);
+    }
+    expect(inTile('home-asset-invest', find.text('基金、定期、活期……')), findsOneWidget);
+    expect(inTile('home-asset-debts', find.text('借出、借入、人情')), findsOneWidget);
+    await tapVisible(tester, find.byKey(const ValueKey('home-asset-invest')));
+    expect(find.text('还没有理财'), findsOneWidget);
   });
 
-  testWidgets('只有持仓：物品那半边给入口', (tester) async {
-    await pumpHome(tester, LedgerData(holdings: someHoldings));
-
-    expect(find.text('还没记'), findsOneWidget);
-    expect(find.text('点这里记一件'), findsOneWidget);
-    expect(find.text('¥151,200.00'), findsOneWidget);
+  testWidgets('总览取不到：净资产、现金流写一道杠，不一直闪骨架', (tester) async {
+    await pumpHome(tester, LedgerData(assets: someAssets), statsFail: true);
+    expect(inTile('home-net-worth', find.text('—')), findsOneWidget);
+    expect(inTile('home-asset-cash', find.text('—')), findsOneWidget);
+    expect(inTile('home-asset-items', find.text('¥8,492.70')), findsOneWidget, reason: '物品是本地算的，照样有');
   });
 
-  testWidgets('副标题是估值合计：闲置的也算进去，不再数几件在用', (tester) async {
-    await pumpHome(tester, LedgerData(assets: [someAssets[1]]));
-
-    expect(find.text('估值 ¥2,596.82'), findsOneWidget);
-    expect(find.textContaining('在用'), findsNothing);
-  });
-
-  testWidgets('物品全退役了、有持仓：物品那半边说都退役了，不再引导「记一件」', (tester) async {
-    await pumpHome(
-      tester,
-      LedgerData(
-        assets: [
-          Asset.fromJson(
-            assetJson('a1', status: 'retired', endedOn: '2026-09-20'),
-          ),
-        ],
-        holdings: someHoldings,
-      ),
-    );
-
-    expect(find.text('还没记'), findsNothing);
-    expect(find.text('点这里记一件'), findsNothing);
-    expect(find.text('都退役或卖掉了'), findsOneWidget);
-    expect(find.text('¥151,200.00'), findsOneWidget);
-  });
-
-  testWidgets('物品全卖掉了、没有持仓：照样是资产块，不退化成「记录资产」入口', (tester) async {
-    await pumpHome(
-      tester,
-      LedgerData(
-        assets: [
-          Asset.fromJson(
-            assetJson('a1', status: 'sold', endedOn: '2026-09-20', saleCents: 100000),
-          ),
-        ],
-      ),
-    );
-
-    expect(find.text('记录资产'), findsNothing);
-    expect(find.byKey(const ValueKey('assets-card')), findsOneWidget);
-    expect(find.text('都退役或卖掉了'), findsOneWidget);
-    expect(find.text('点这里添加'), findsOneWidget);
+  testWidgets('物品全卖掉了：物品那格说都退役或卖掉了', (tester) async {
+    await pumpHome(tester, LedgerData(assets: [Asset.fromJson(assetJson('a1', status: 'sold', endedOn: '2026-09-01', saleCents: 100000))]));
+    expect(inTile('home-asset-items', find.text('都退役或卖掉了')), findsOneWidget);
   });
 
   testWidgets('不用 Card：卡片只留给基金横滑和待确认（DESIGN.md）', (tester) async {
-    await pumpHome(
-      tester,
-      LedgerData(assets: someAssets, holdings: someHoldings),
-    );
-
-    expect(find.byKey(const ValueKey('assets-card')), findsOneWidget);
-    expect(find.byType(Card), findsNothing);
+    await pumpHome(tester, LedgerData(assets: someAssets, holdings: someHoldings));
+    expect(find.descendant(of: find.byKey(const ValueKey('assets-card')), matching: find.byType(Card)), findsNothing);
   });
 
-  testWidgets('持仓全清了：说「都清仓了」，不显示今日涨跌', (tester) async {
-    await pumpHome(
-      tester,
-      LedgerData(
-        assets: someAssets,
-        holdings: [Holding.fromJson(holdingJson('h9', qty: 0, cost: 0))],
-      ),
-    );
-
-    expect(find.text('都清仓了'), findsOneWidget);
-    expect(find.text('今日 '), findsNothing);
-  });
-
-  testWidgets('持仓都还没价格：写「还没有价格」而不是 ¥0.00，也不摆今日涨跌', (tester) async {
-    await pumpHome(
-      tester,
-      LedgerData(
-        holdings: [
-          Holding.fromJson(
-            holdingJson('h9', price: null, prev: null, source: 'manual', cost: 1000000),
-          ),
-        ],
-      ),
-    );
-
-    expect(find.text('还没有价格'), findsOneWidget);
-    expect(find.text('1 只还没有价格'), findsOneWidget);
-    // 首页别处（本月合计）的 ¥0.00 不算，只看资产这一块。
-    expect(
-      find.descendant(
-        of: find.byKey(const ValueKey('assets-card')),
-        matching: find.text('¥0.00'),
-      ),
-      findsNothing,
-    );
-    expect(find.text('今日 '), findsNothing);
-  });
-
-  testWidgets('一部分没价格：市值照写有价的那些，并说另有几只没算进来', (tester) async {
-    await pumpHome(
-      tester,
-      LedgerData(
-        holdings: [
-          ...someHoldings,
-          Holding.fromJson(
-            holdingJson('h9', price: null, prev: null, source: 'manual', cost: 1000000),
-          ),
-        ],
-      ),
-    );
-
-    expect(find.text('¥151,200.00'), findsOneWidget);
-    expect(find.text('+¥1,100.00'), findsOneWidget);
-    expect(find.text('另有 1 只没价格，没算进来'), findsOneWidget);
+  testWidgets('宽屏：资产概览在主栏本月合计下面，五格一行', (tester) async {
+    await pumpHome(tester, LedgerData(assets: someAssets, holdings: someHoldings, debts: someDebts), size: const Size(1400, 1000));
+    final cash = tester.getTopLeft(find.byKey(const ValueKey('home-asset-cash')));
+    final perks = tester.getTopLeft(find.byKey(const ValueKey('home-asset-perks')));
+    expect(perks.dy, cash.dy, reason: '一行排完');
+    expect(cash.dx, lessThan(800), reason: '在主栏，不在右栏');
   });
 
   group('三种宽度都不溢出', () {
     for (final size in kWidths) {
       testWidgets('@${size.width.toInt()}', (tester) async {
-        await pumpHome(
-          tester,
-          LedgerData(assets: someAssets, holdings: someHoldings),
-          size: size,
-        );
-        await tester.ensureVisible(find.byKey(const ValueKey('assets-card')));
-        await tester.pump();
-        expect(find.text('¥272.86/天', findRichText: true), findsOneWidget);
+        await pumpHome(tester, LedgerData(assets: someAssets, holdings: someHoldings, debts: someDebts), size: size);
         expect(tester.takeException(), isNull);
       });
 
-      testWidgets('有没价格的持仓 @${size.width.toInt()}', (tester) async {
-        await pumpHome(
-          tester,
-          LedgerData(
-            assets: someAssets,
-            holdings: [
-              ...someHoldings,
-              Holding.fromJson(holdingJson('h9', price: null, prev: null)),
-            ],
-          ),
-          size: size,
-        );
-        await tester.ensureVisible(find.byKey(const ValueKey('assets-card')));
-        await tester.pump();
-        expect(find.byKey(const ValueKey('assets-invest-unpriced')), findsOneWidget);
-        expect(tester.takeException(), isNull);
-      });
-
-      testWidgets('空入口 @${size.width.toInt()}', (tester) async {
+      testWidgets('什么都没记 @${size.width.toInt()}', (tester) async {
         await pumpHome(tester, const LedgerData(), size: size);
-        expect(find.text('记录资产'), findsOneWidget);
         expect(tester.takeException(), isNull);
       });
     }

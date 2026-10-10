@@ -15,7 +15,7 @@ import 'asset_providers.dart';
 import 'asset_widgets.dart';
 import 'holding_detail_page.dart';
 
-/// 投资：总市值、收益、今日涨跌，下面一只一只列；清了仓的收在最后。
+/// 理财：估值合计、收益，下面按品类分组（基金、股票、活期、定期……），每组一个小计；结清的收在最后。
 class InvestTab extends ConsumerStatefulWidget {
   const InvestTab({super.key});
 
@@ -105,10 +105,10 @@ class _InvestTabState extends ConsumerState<InvestTab> {
                   banner,
                   const SizedBox(height: 40),
                   EmptyState(
-                    title: '还没有持仓',
-                    message: '基金、股票记进来，市值和收益自动算。',
-                    icon: Icons.show_chart,
-                    actionLabel: '添加持仓',
+                    title: '还没有理财',
+                    message: '基金、股票、定期、活期、保险存单都能记，估值和收益自动算。',
+                    icon: Icons.savings_outlined,
+                    actionLabel: '添加理财',
                     onAction: () => context.push('/assets/holdings/new'),
                   ),
                 ],
@@ -116,12 +116,15 @@ class _InvestTabState extends ConsumerState<InvestTab> {
             }
             final held = holdings.where((h) => !h.isCleared).toList();
             final cleared = holdings.where((h) => h.isCleared).toList();
+            final summary = summarizeHoldings(holdings, now);
+            // 只有一个品类时不出组头：小计和顶上的合计是同一个数。
+            final grouped = summary.byKind.length > 1;
             return ListView(
               padding: (twoPane ? EdgeInsets.zero : readableInsets(box.maxWidth)).copyWith(bottom: 96),
               children: [
                 banner,
                 _Header(
-                  summary: summarizeHoldings(holdings, now),
+                  summary: summary,
                   priceAt: _latestPriceAt(held),
                   refreshing: _refreshing,
                   refreshError: _refreshError,
@@ -130,10 +133,15 @@ class _InvestTabState extends ConsumerState<InvestTab> {
                   holdings: holdings,
                   onRefresh: _refreshQuotes,
                 ),
-                for (final h in held) HoldingTile(holding: h, now: now, selected: h.id == shown, onTap: () => open(h)),
+                for (final kind in summary.byKind) ...[
+                  if (grouped) _KindHeader(total: kind),
+                  for (final h in held)
+                    if (h.kind == kind.kind)
+                      HoldingTile(holding: h, now: now, selected: h.id == shown, onTap: () => open(h)),
+                ],
                 if (cleared.isNotEmpty) ...[
                   const SizedBox(height: LedgerLayout.groupGap),
-                  const SectionHeader('已清仓'),
+                  const SectionHeader('已结清'),
                   for (final h in cleared) HoldingTile(holding: h, now: now, selected: h.id == shown, onTap: () => open(h)),
                 ],
               ],
@@ -147,7 +155,7 @@ class _InvestTabState extends ConsumerState<InvestTab> {
       main: list,
       sideWidth: LedgerLayout.detailPaneWidth,
       side: shown == null
-          ? const EmptyState(title: '选一只持仓看详情', compact: true)
+          ? const EmptyState(title: '选一笔理财看详情', compact: true)
           : DetailPane(key: ValueKey('holding-pane-$shown'), child: HoldingDetailPage(shown)),
     );
   }
@@ -192,22 +200,26 @@ class _Header extends StatelessWidget {
     );
     final failed = lastRefresh?.failed ?? const <QuoteFailure>[];
     final rate = summary.gainRate;
+    final hasUnits = holdings.any((h) => !h.archived && !h.isCleared && h.isUnit);
+    final canRefresh = wantsAutoQuotes(holdings);
     return SegmentSummary(
-      label: '总市值',
+      label: '理财估值',
       value: MoneyText(summary.marketCents, size: MoneySize.title),
-      trailing: TextButton.icon(
-        onPressed: refreshing ? null : onRefresh,
-        icon: refreshing
-            ? const SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : const Icon(Icons.refresh, size: 18),
-        label: const Text('刷新行情'),
-      ),
+      trailing: canRefresh
+          ? TextButton.icon(
+              onPressed: refreshing ? null : onRefresh,
+              icon: refreshing
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.refresh, size: 18),
+              label: const Text('刷新行情'),
+            )
+          : null,
       lines: [
-        // 收益、涨跌、价格时间挤在一两行小字里：这一段的主角是下面一只只持仓。
+        // 收益、涨跌、价格时间挤在一两行小字里：这一段的主角是下面一笔笔理财。
         Wrap(
           spacing: LedgerLayout.itemGap,
           runSpacing: 2,
@@ -216,29 +228,39 @@ class _Header extends StatelessWidget {
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text('总收益 ', style: theme.textTheme.bodySmall),
+                Text('浮动收益 ', style: theme.textTheme.bodySmall),
                 MoneyText(summary.gainCents, signed: true, size: MoneySize.small),
                 const SizedBox(width: 4),
                 RateText(rate, small: true),
               ],
             ),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text('今日涨跌 ', style: theme.textTheme.bodySmall),
-                MoneyText(summary.todayChangeCents, signed: true, size: MoneySize.small),
-              ],
-            ),
+            if (summary.realizedCents != 0)
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('已实现 ', style: theme.textTheme.bodySmall),
+                  MoneyText(summary.realizedCents, signed: true, size: MoneySize.small),
+                ],
+              ),
+            if (hasUnits)
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('今日涨跌 ', style: theme.textTheme.bodySmall),
+                  MoneyText(summary.todayChangeCents, signed: true, size: MoneySize.small),
+                ],
+              ),
           ],
         ),
-        Text(
-          priceAt == null
-              ? '还没有价格'
-              : '价格更新于 ${Dates.dateTimeLabel(priceAt!)}',
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: theme.textTheme.bodySmall,
-        ),
+        if (hasUnits)
+          Text(
+            priceAt == null
+                ? '基金股票还没有价格'
+                : '价格更新于 ${Dates.dateTimeLabel(priceAt!)}',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.bodySmall,
+          ),
       ],
       children: [
         if (refreshError != null)
@@ -249,7 +271,7 @@ class _Header extends StatelessWidget {
           Text(_failedLine(failed), style: errorStyle),
         if (summary.unpricedCount > 0)
           Text(
-            '${summary.unpricedCount} 只还没有价格，没算进市值'
+            '${summary.unpricedCount} 只还没有价格，没算进估值'
             '${_waitingForQuotes ? '；行情刚刷过，几分钟后再点「刷新行情」' : ''}',
             style: theme.textTheme.bodySmall,
           ),
@@ -305,11 +327,29 @@ class RateText extends StatelessWidget {
   }
 }
 
-IconData holdingIcon(String market) => switch (market) {
-  'fund' => Icons.pie_chart_outline,
-  'other' => Icons.savings_outlined,
-  _ => Icons.show_chart,
+/// 品类的图标。
+IconData holdingIcon(String kind) => switch (kind) {
+  Holding.kindFund => Icons.pie_chart_outline,
+  Holding.kindStock => Icons.show_chart,
+  Holding.kindDemand => Icons.account_balance_wallet_outlined,
+  Holding.kindFixed => Icons.lock_clock_outlined,
+  Holding.kindStructured => Icons.stacked_line_chart,
+  Holding.kindWealth => Icons.account_balance_outlined,
+  Holding.kindBond => Icons.receipt_long_outlined,
+  Holding.kindRepo => Icons.swap_horiz,
+  Holding.kindInsurance => Icons.health_and_safety_outlined,
+  Holding.kindGold => Icons.diamond_outlined,
+  _ => Icons.savings_outlined,
 };
+
+/// `2026-10-01` → `10月1日`：列表行里不要「周三」这种尾巴。
+String _md(String day) {
+  final d = parseDay(day);
+  return d == null ? day : '${d.month}月${d.day}日';
+}
+
+/// 要提醒的状态标签（黄底）。
+const Set<String> warningTags = {'行情过期', '没有价格', '已到期', '该更新了'};
 
 /// 价格要紧的两种情况要标出来：手填的、好久没更新的。
 String? priceTag(Holding h, HoldingMetrics m) {
@@ -319,7 +359,61 @@ String? priceTag(Holding h, HoldingMetrics m) {
   return null;
 }
 
-/// 一只持仓：市值、收益与收益率、持有天数、日均收益。
+/// 列表行、详情页名字后面的小标：份额类说价格，定期类说到期，金额类说该更新了。
+String? investTag(Holding h, HoldingMetrics m) => switch (h.mode) {
+  InvestMode.unit => priceTag(h, m),
+  InvestMode.deposit => m.matured ? '已到期' : null,
+  InvestMode.balance => m.stale ? '该更新了' : null,
+};
+
+/// 「还有 120 天」「今天到期」「已到期 3 天」；不是定期类是 null。
+String? maturityLabel(HoldingMetrics m) {
+  final d = m.daysToMaturity;
+  if (d == null) return null;
+  if (d > 0) return '还有\u00A0$d\u00A0天到期';
+  if (d == 0) return '今天到期';
+  return '已到期\u00A0${-d}\u00A0天';
+}
+
+/// 一个品类的组头：名字、笔数，右边小计。
+class _KindHeader extends StatelessWidget {
+  const _KindHeader({required this.total});
+
+  final KindTotal total;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      key: ValueKey('invest-kind-${total.kind}'),
+      padding: const EdgeInsets.fromLTRB(
+        LedgerLayout.pagePadding,
+        LedgerLayout.itemGap,
+        LedgerLayout.pagePadding,
+        0,
+      ),
+      child: Row(
+        children: [
+          Text(Holding.kindLabels[total.kind] ?? '其他', style: theme.textTheme.titleSmall),
+          const SizedBox(width: 6),
+          Text('${total.heldCount} 笔', style: theme.textTheme.bodySmall),
+          const Spacer(),
+          MoneyText(total.valueCents, size: MoneySize.small),
+        ],
+      ),
+    );
+  }
+}
+
+/// 一段文字整段不折：空格换成不换行空格，字与字之间塞零宽的 U+2060。
+/// 中文任意两个字之间都能折行，光换空格挡不住「日均」折成「日」「均」、「+¥」折成两行。
+String keepTogether(String s) =>
+    s.replaceAll(' ', '\u00A0').runes.map(String.fromCharCode).join('\u2060');
+
+/// 理财行的副标题：每段整段不折，段与段之间用「 · 」，窄屏放不下只在这里折。
+String holdingSubtitle(Iterable<String> parts) => parts.map(keepTogether).join(' · ');
+
+/// 一笔理财：估值、收益与收益率；副标题按记法说持有天数、利率与到期、金额什么时候更新的。
 class HoldingTile extends StatelessWidget {
   const HoldingTile({super.key, required this.holding, required this.now, this.onTap, this.selected = false});
 
@@ -337,15 +431,33 @@ class HoldingTile extends StatelessWidget {
     final m = holdingMetrics(h, now);
     final code = h.code != null && h.code != h.label ? h.code : null;
     final daily = m.dailyGainCents;
-    final sub = m.cleared
-        ? [if (code != null) code, '已清仓'].join(' · ')
-        // 不换行空格：副标题放不下折成两行时在「·」处折，别把「日均 +¥2,681.25」折成两截。
-        : [
-            if (code != null) code,
-            '持有\u00A0${m.days}\u00A0天',
-            if (daily != null) '日均\u00A0${Money.format(daily.round(), signed: true)}',
-          ].join(' · ');
-    final tag = m.cleared ? null : priceTag(h, m);
+    final inst = h.institution != null && h.institution!.isNotEmpty ? h.institution : null;
+    // 每段整段不折（keepTogether）：放不下折成两行时只在「·」处折。
+    final sub = holdingSubtitle(
+      m.cleared
+          ? [if (code != null) code, if (inst != null) inst, h.mode == InvestMode.unit ? '已清仓' : '已结清']
+          : switch (h.mode) {
+              InvestMode.unit => [
+                if (code != null) code,
+                '持有 ${m.days} 天',
+                if (daily != null) '日均 ${Money.format(daily.round(), signed: true)}',
+              ],
+              InvestMode.deposit => [
+                if (inst != null) inst,
+                if (h.rateE6 != null)
+                  h.rateMaxE6 != null
+                      ? '${formatRateE6(h.rateE6!)}~${formatRateE6(h.rateMaxE6!)}'
+                      : formatRateE6(h.rateE6!),
+                if (maturityLabel(m) case final due?) due,
+              ],
+              InvestMode.balance => [
+                if (inst != null) inst,
+                if (h.rateE6 != null) '年化 ${formatRateE6(h.rateE6!)}',
+                h.valueOn == null ? '按本金' : '${_md(h.valueOn!)} 更新',
+              ],
+            },
+    );
+    final tag = m.cleared ? null : investTag(h, m);
 
     return ListTile(
       key: ValueKey('holding-${h.id}'),
@@ -355,7 +467,7 @@ class HoldingTile extends StatelessWidget {
         horizontal: LedgerLayout.pagePadding,
         vertical: 4,
       ),
-      leading: AssetAvatar(holdingIcon(h.market), muted: m.cleared),
+      leading: AssetAvatar(holdingIcon(h.kind), muted: m.cleared),
       // 「手动价 / 行情过期」挂在名字后面：副标题只有一行，塞标签进去会把「持有 N 天 · 日均」截掉。
       title: Row(
         children: [
@@ -371,7 +483,7 @@ class HoldingTile extends StatelessWidget {
             const SizedBox(width: 6),
             TagLabel(
               tag,
-              tone: tag == '手动价' ? TagTone.neutral : TagTone.warning,
+              tone: warningTags.contains(tag) ? TagTone.warning : TagTone.neutral,
             ),
           ],
         ],

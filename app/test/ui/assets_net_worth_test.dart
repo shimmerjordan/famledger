@@ -35,7 +35,7 @@ void main() {
       expect(find.text('净资产'), findsOneWidget);
       expect(find.text('¥16,215.88'), findsOneWidget);
       // 没有目标/储备基金攒着钱：可支配就是现金流，折叠行不重复写。
-      expect(breakdownText(tester), '现金流 ¥9,800.00 · 投资（账户外）¥520.00 · 实物计入 ¥5,895.88');
+      expect(breakdownText(tester), '现金流 ¥9,800.00 · 理财 ¥520.00 · 实物计入 ¥5,895.88');
       expect(find.byKey(const ValueKey('net-worth-details')), findsNothing);
       expect(
         tester.getBottomLeft(find.byKey(const ValueKey('net-worth-strip'))).dy,
@@ -46,13 +46,13 @@ void main() {
       await expand(tester);
       expect(find.byKey(const ValueKey('net-worth-details')), findsOneWidget);
       expect(find.text('现金流'), findsOneWidget);
-      expect(find.text('账户余额合计，已减信用卡欠款'), findsOneWidget);
+      expect(find.text('现金、银行卡、支付宝……已减信用卡欠款'), findsOneWidget);
       expect(find.text('可支配现金流'), findsOneWidget);
       expect(find.text('目标、储备基金没攒着钱，和现金流一样'), findsOneWidget);
       expect(find.text('¥9,800.00'), findsNWidgets(2), reason: '现金流、可支配各一个');
-      expect(find.text('投资（账户外）'), findsOneWidget);
+      expect(find.text('理财'), findsWidgets);
       expect(find.text('¥520.00'), findsOneWidget);
-      expect(find.text('持仓没挂账户，整份市值都算'), findsOneWidget, reason: '没挂账户：市值就是这个数');
+      expect(find.text('各品类估值合计 ¥520.00'), findsOneWidget, reason: '没挂账户：估值就是这个数');
       expect(find.text('实物计入'), findsOneWidget);
       expect(find.text('¥5,895.88'), findsOneWidget);
       expect(find.text('估值 ¥8,819.99，按类别计入'), findsOneWidget);
@@ -71,7 +71,7 @@ void main() {
 
       expect(
         breakdownText(tester),
-        '现金流 ¥9,800.00 · 可支配 ¥6,800.00 · 投资（账户外）¥520.00 · 实物计入 ¥5,895.88',
+        '现金流 ¥9,800.00 · 可支配 ¥6,800.00 · 理财 ¥520.00 · 实物计入 ¥5,895.88',
       );
       await expand(tester);
       expect(find.text('¥6,800.00'), findsOneWidget);
@@ -81,7 +81,12 @@ void main() {
     testWidgets('宽屏（≥ 840）：总览和下面的四段一样宽，分项排成一行格子带口径，不用展开；展开只剩动作', (tester) async {
       await pumpAssetsAt(
         tester,
-        bootAssets(worthBackend()..investMarketCents = 1512000, session: await sessionAs('admin')),
+        bootAssets(
+          worthBackend()
+            ..investMarketCents = 1512000
+            ..accountBalances['inv'] = 1460000,
+          session: await sessionAs('admin'),
+        ),
         '/assets?tab=items',
         size: const Size(1400, 900),
       );
@@ -90,9 +95,9 @@ void main() {
         expect(find.byKey(ValueKey('net-worth-figure-$key')), findsOneWidget, reason: key);
       }
       expect(find.byKey(const ValueKey('net-worth-breakdown')), findsNothing, reason: '格子代替了那一行小字');
-      expect(find.text('现金流 + 投资 + 实物计入'), findsOneWidget);
-      expect(find.text('账户余额合计，已减信用卡欠款'), findsOneWidget);
-      expect(find.text('市值 ¥15,120.00，成本 ¥14,600.00 已在账户里'), findsOneWidget);
+      expect(find.text('现金流 + 理财 + 实物计入'), findsOneWidget);
+      expect(find.text('现金、银行卡、支付宝……已减信用卡欠款'), findsOneWidget);
+      expect(find.text('各品类估值合计 ¥15,120.00'), findsOneWidget);
       expect(find.text('估值 ¥8,819.99，按类别计入'), findsOneWidget);
       expect(find.byKey(const ValueKey('net-worth-details')), findsNothing);
       // 整行：第一格和 Tab 一样靠左，箭头顶在右边，不是收窄居中。
@@ -133,15 +138,26 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('持仓挂了账户：分项只算账户外的浮盈，明细写出市值和已在账户里的成本', (tester) async {
+    testWidgets('持仓挂了账户：成本在投资账户里，理财 = 投资账户 + 浮盈 = 估值；现金流不含投资账户', (tester) async {
       // 市值 15120、成本 14600 早以转账进了证券户（账户余额里），净资产只补浮盈 520。
-      final backend = worthBackend()..investMarketCents = 1512000;
+      final backend = worthBackend()
+        ..investMarketCents = 1512000
+        ..accountBalances['inv'] = 1460000;
       await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=items');
 
-      expect(breakdownText(tester), contains('投资（账户外）¥520.00'));
-      expect(find.text('¥16,215.88'), findsOneWidget);
+      expect(breakdownText(tester), '现金流 ¥9,800.00 · 理财 ¥15,120.00 · 实物计入 ¥5,895.88');
+      expect(find.text('¥30,815.88'), findsOneWidget, reason: '9800 + 15120 + 5895.88');
       await expand(tester);
-      expect(find.text('市值 ¥15,120.00，成本 ¥14,600.00 已在账户里'), findsOneWidget);
+      expect(find.text('各品类估值合计 ¥15,120.00'), findsOneWidget);
+    });
+
+    testWidgets('老服务端没有分项：现金流是全部账户、理财只剩补差，照样能看', (tester) async {
+      final backend = worthBackend()..legacyOverview = true;
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=items');
+      expect(breakdownText(tester), '现金流 ¥9,800.00 · 理财 ¥520.00 · 实物计入 ¥5,895.88');
+      await expand(tester);
+      expect(find.text('账户余额合计，已减信用卡欠款'), findsOneWidget);
+      expect(find.text('账户余额以外的那部分'), findsOneWidget);
     });
 
     testWidgets('管理员关掉「实物计入净资产」：开关先翻、等总览回来才放开；净资产和分项跟着变', (tester) async {
@@ -168,7 +184,7 @@ void main() {
       await tester.pump(const Duration(seconds: 2));
       await settle(tester);
       expect(find.text('¥10,320.00'), findsOneWidget);
-      expect(breakdownText(tester), '现金流 ¥9,800.00 · 投资（账户外）¥520.00 · 不含实物');
+      expect(breakdownText(tester), '现金流 ¥9,800.00 · 理财 ¥520.00 · 不含实物');
       expect(find.text('实物估值'), findsOneWidget);
       expect(find.text('不计入净资产，打开开关后计入 ¥5,895.88'), findsOneWidget);
       expect(switchTile(tester).value, isFalse);
@@ -205,7 +221,7 @@ void main() {
       await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=items');
 
       expect(find.text('¥10,320.00'), findsOneWidget);
-      expect(breakdownText(tester), '现金流 ¥9,800.00 · 投资（账户外）¥520.00');
+      expect(breakdownText(tester), '现金流 ¥9,800.00 · 理财 ¥520.00');
       await expand(tester);
       expect(find.byKey(const ValueKey('net-worth-switch')), findsNothing);
     });

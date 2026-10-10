@@ -34,7 +34,8 @@ void main() {
     expect(shellIndexFor('/import/paste'), 1);
     expect(shellIndexFor('/assets/items/new'), 2);
     expect(shellIndexFor('/assets?tab=perks'), 2);
-    expect(shellIndexFor('/funds/f1/edit'), 2);
+    expect(shellIndexFor('/funds/f1/edit'), 4, reason: '基金（钱袋子）在「我的」里管');
+    expect(shellIndexFor('/funds'), 4);
     expect(shellIndexFor('/analysis'), 3);
     expect(shellIndexFor('/ai/chat'), 3);
     expect(shellIndexFor('/settings/members'), 4);

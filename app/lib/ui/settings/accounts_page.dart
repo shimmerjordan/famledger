@@ -63,7 +63,7 @@ class _AccountsPageState extends ConsumerState<AccountsPage> {
     final ids = [
       for (final account in ordered) account.id,
       for (final account in data.accounts)
-        if (account.archived) account.id,
+        if (account.archived && !account.isDebt) account.id,
     ];
     try {
       await ref.read(ledgerRepoProvider).reorder('accounts', ids);
@@ -108,7 +108,8 @@ class _AccountsPageState extends ConsumerState<AccountsPage> {
         value: ledger,
         onRetry: () => ref.read(ledgerProvider.notifier).sync(),
         data: (data) {
-          if (data.accounts.isEmpty) {
+          // 债务的内部账户不在这页（「资产 › 债务」里管）。
+          if (!data.accounts.any((a) => !a.isDebt)) {
             return EmptyState(
               title: '还没有账户',
               message: '先把常用的那张卡、支付宝和微信加进来，记账时才好选。',
@@ -159,7 +160,7 @@ class _AccountsPageState extends ConsumerState<AccountsPage> {
   }
 
   Widget _groupedList(LedgerData data, StatsOverview? stats, String? error) {
-    final archived = data.accounts.where((a) => a.archived).toList();
+    final archived = data.accounts.where((a) => a.archived && !a.isDebt).toList();
     final ordered = _orderedActive(data);
     final indexOf = {
       for (var i = 0; i < data.accounts.length; i++) data.accounts[i].id: i,
@@ -168,7 +169,7 @@ class _AccountsPageState extends ConsumerState<AccountsPage> {
     // 那就平铺，类型写在行的副标题里；有一种类型两个起才按类型分。
     final grouped = Account.kinds.any((k) => ordered.where((a) => a.kind == k).length > 1);
     // 全家都没有「谁的」账户时，行行都写「家庭共用」等于没写。
-    final anyOwned = data.accounts.any((a) => a.ownerMemberId != null);
+    final anyOwned = data.accounts.any((a) => !a.isDebt && a.ownerMemberId != null);
 
     return ReadableListView(
       padding: const EdgeInsets.only(bottom: 96),

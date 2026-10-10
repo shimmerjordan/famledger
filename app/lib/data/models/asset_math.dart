@@ -161,6 +161,46 @@ int marketCentsOf(int quantityE4, int priceE4) =>
 /// 价格多久没更新算过期。
 const Duration priceStaleAfter = Duration(days: 1);
 
+/// 金额类（活期、银行理财、保险）的当前金额多久没更新算该更新了。
+const Duration valueStaleAfter = Duration(days: 31);
+
+/// 按天单利：round(本金 × 年化 × 天数 / 365)，天数 = [endOn] − [startOn]（起息当天不算）。
+/// 与服务端 lib/invest.js 的 accruedCents 逐位一致。
+int accruedCents(int principalCents, int? rateE6, String? startOn, String? endOn) {
+  if (rateE6 == null || rateE6 <= 0 || principalCents <= 0) return 0;
+  final start = parseDay(startOn);
+  final end = parseDay(endOn);
+  if (start == null || end == null) return 0;
+  final days = end.difference(start).inDays;
+  if (days <= 0) return 0;
+  final den = BigInt.from(365) * _e6;
+  final num = BigInt.from(principalCents) * BigInt.from(rateE6) * BigInt.from(days);
+  return ((num * BigInt.two + den) ~/ (BigInt.two * den)).toInt();
+}
+
+String _ymd(DateTime day) =>
+    '${day.year.toString().padLeft(4, '0')}-${day.month.toString().padLeft(2, '0')}-${day.day.toString().padLeft(2, '0')}';
+
+/// 这笔理财今天值多少（分），同服务端 lib/invest.js 的 valueOf：清仓 0；份额类没价格是 null；
+/// 定期类 = 本金 + 按天计息（到期停）− 已经付出来的利息；金额类 = 当前金额（没更新过按本金）。
+int? holdingValueCents(Holding h, DateTime now) {
+  if (h.isCleared) return 0;
+  switch (h.mode) {
+    case InvestMode.unit:
+      final price = h.priceE4;
+      return price == null ? null : marketCentsOf(h.quantityE4, price);
+    case InvestMode.deposit:
+      final today = _ymd(localDay(now));
+      final due = h.maturesOn;
+      final end = due != null && due.compareTo(today) < 0 ? due : today;
+      final accrued = accruedCents(h.costCents, h.rateE6, h.openedOn, end);
+      final paid = math.max(0, h.realizedCents);
+      return h.costCents + math.max(0, accrued - paid);
+    case InvestMode.balance:
+      return h.valueCents ?? h.costCents;
+  }
+}
+
 class HoldingMetrics {
   const HoldingMetrics({
     required this.days,
@@ -172,56 +212,93 @@ class HoldingMetrics {
     this.gainRate,
     this.dailyGainCents,
     this.todayChangeCents,
+    this.daysToMaturity,
   });
 
-  /// 没有价格时都是 null。
+  /// 估值（份额类是市值）；份额类没有价格时都是 null。
   final int? marketCents;
   final int? gainCents;
 
   /// 成本为 0 时说不出比例，也是 null。
   final double? gainRate;
 
-  /// 持有天数（今天 − 开仓日 + 1），至少 1。
+  /// 持有天数（今天 − 开始日 + 1），至少 1。
   final int days;
   final double? dailyGainCents;
 
-  /// 没有昨收（手动价）时为 null。
+  /// 没有昨收（手动价、非份额类）时为 null。
   final int? todayChangeCents;
 
-  /// 份额为 0：全卖光了，只剩已实现盈亏。
+  /// 定期类：离到期还有几天（今天到期是 0，过了是负数）；没到期日是 null。
+  final int? daysToMaturity;
+
+  /// 清仓 / 结清了，只剩已实现收益。
   final bool cleared;
 
-  /// 有价格但超过 [priceStaleAfter] 没更新。
+  /// 份额类：有价格但超过 [priceStaleAfter] 没更新；金额类：当前金额超过 [valueStaleAfter] 没更新。
   final bool stale;
   final bool manual;
 
   bool get hasPrice => marketCents != null;
+
+  /// 定期类到期了还没转回来。
+  bool get matured => !cleared && daysToMaturity != null && daysToMaturity! <= 0;
 }
 
 HoldingMetrics holdingMetrics(Holding h, DateTime now) {
   final today = localDay(now);
   final days = math.max(1, daysInclusive(parseDay(h.openedOn) ?? today, today));
-  final price = h.priceE4;
-  final prev = h.prevCloseE4;
-  final market = price == null ? null : marketCentsOf(h.quantityE4, price);
-  final gain = market == null ? null : market - h.costCents;
-  final at = h.priceAt;
+  final value = holdingValueCents(h, now);
+  final gain = value == null || h.isCleared ? null : value - h.costCents;
+  final bool stale;
+  int? todayChange;
+  switch (h.mode) {
+    case InvestMode.unit:
+      final price = h.priceE4;
+      final prev = h.prevCloseE4;
+      final at = h.priceAt;
+      stale = price != null && (at == null || now.difference(at) > priceStaleAfter);
+      todayChange = price == null || prev == null
+          ? null
+          : _roundDiv(BigInt.from(h.quantityE4) * BigInt.from(price - prev), _e6).toInt();
+    case InvestMode.balance:
+      final on = parseDay(h.valueOn) ?? parseDay(h.openedOn);
+      stale = !h.isCleared && on != null && today.difference(on) > valueStaleAfter;
+    case InvestMode.deposit:
+      stale = false;
+  }
+  final due = parseDay(h.maturesOn);
   return HoldingMetrics(
     days: days,
     cleared: h.isCleared,
     manual: !h.isAuto,
-    stale: price != null && (at == null || now.difference(at) > priceStaleAfter),
-    marketCents: market,
+    stale: stale,
+    marketCents: value,
     gainCents: gain,
     gainRate: gain == null || h.costCents <= 0 ? null : gain / h.costCents,
     dailyGainCents: gain == null ? null : gain / days,
-    todayChangeCents: price == null || prev == null
-        ? null
-        : _roundDiv(
-            BigInt.from(h.quantityE4) * BigInt.from(price - prev),
-            _e6,
-          ).toInt(),
+    todayChangeCents: todayChange,
+    daysToMaturity: h.mode == InvestMode.deposit && due != null ? due.difference(today).inDays : null,
   );
+}
+
+/// 一个品类的合计（只算估值算得出来的那些）。
+class KindTotal {
+  const KindTotal({
+    required this.kind,
+    this.valueCents = 0,
+    this.costCents = 0,
+    this.heldCount = 0,
+    this.unpricedCount = 0,
+  });
+
+  final String kind;
+  final int valueCents;
+  final int costCents;
+  final int heldCount;
+  final int unpricedCount;
+
+  int get gainCents => valueCents - costCents;
 }
 
 class PortfolioSummary {
@@ -232,25 +309,34 @@ class PortfolioSummary {
     this.heldCount = 0,
     this.unpricedCount = 0,
     this.clearedCount = 0,
+    this.realizedCents = 0,
+    this.byKind = const [],
   });
 
+  /// 估值合计（份额类是市值）。
   final int marketCents;
 
-  /// 只含有价格的持仓，和 [marketCents] 同一批（与服务端 overview 同口径）。
+  /// 只含估值算得出来的那些，和 [marketCents] 同一批（与服务端 overview 同口径）。
   final int costCents;
   final int todayChangeCents;
 
-  /// 份额 > 0 的只数（含没价格的）。
+  /// 还持有着的笔数（含没价格的）。
   final int heldCount;
   final int unpricedCount;
   final int clearedCount;
+
+  /// 已实现收益合计（卖出盈亏、分红、付息；含清了仓的）。
+  final int realizedCents;
+
+  /// 按 [Holding.kinds] 的顺序，只列有持有中的品类。
+  final List<KindTotal> byKind;
 
   int get gainCents => marketCents - costCents;
   double? get gainRate => costCents > 0 ? gainCents / costCents : null;
   bool get isEmpty => heldCount == 0 && clearedCount == 0;
 }
 
-/// 没价格的、清了仓的都不进市值：前者不知道值多少，后者已经不值钱了。
+/// 没价格的、清了仓的都不进估值：前者不知道值多少，后者已经不值钱了。
 PortfolioSummary summarizeHoldings(Iterable<Holding> holdings, DateTime now) {
   var market = 0;
   var cost = 0;
@@ -258,21 +344,27 @@ PortfolioSummary summarizeHoldings(Iterable<Holding> holdings, DateTime now) {
   var held = 0;
   var unpriced = 0;
   var cleared = 0;
+  var realized = 0;
+  final kinds = <String, ({int value, int cost, int held, int unpriced})>{};
   for (final h in holdings) {
     if (h.archived) continue;
+    realized += h.realizedCents;
     if (h.isCleared) {
       cleared++;
       continue;
     }
     held++;
+    final k = kinds[h.kind] ?? (value: 0, cost: 0, held: 0, unpriced: 0);
     final m = holdingMetrics(h, now);
     if (!m.hasPrice) {
       unpriced++;
+      kinds[h.kind] = (value: k.value, cost: k.cost, held: k.held + 1, unpriced: k.unpriced + 1);
       continue;
     }
     market += m.marketCents!;
     cost += h.costCents;
     todayChange += m.todayChangeCents ?? 0;
+    kinds[h.kind] = (value: k.value + m.marketCents!, cost: k.cost + h.costCents, held: k.held + 1, unpriced: k.unpriced);
   }
   return PortfolioSummary(
     marketCents: market,
@@ -281,6 +373,12 @@ PortfolioSummary summarizeHoldings(Iterable<Holding> holdings, DateTime now) {
     heldCount: held,
     unpricedCount: unpriced,
     clearedCount: cleared,
+    realizedCents: realized,
+    byKind: [
+      for (final kind in Holding.kinds)
+        if (kinds[kind] case final k?)
+          KindTotal(kind: kind, valueCents: k.value, costCents: k.cost, heldCount: k.held, unpricedCount: k.unpriced),
+    ],
   );
 }
 
@@ -318,6 +416,45 @@ SellPreview? previewSell(Holding h, int quantityE4, int amountCents) {
     remainingQuantityE4: h.quantityE4 - quantityE4,
     remainingCostCents: h.costCents - cost,
   );
+}
+
+/// 金额类（活期、银行理财……）取出的预计收益：按「取出 / 当前金额」的比例摊本金，与服务端 holdings.js 一致。
+/// 金额填错（≤0 或超过当前金额）返回 null。
+SellPreview? previewWithdraw(Holding h, int amountCents) {
+  final current = h.valueCents ?? h.costCents;
+  if (h.isCleared || amountCents <= 0 || amountCents > current) return null;
+  final int cost;
+  if (amountCents == current) {
+    cost = h.costCents;
+  } else {
+    final cur = BigInt.from(current);
+    cost = ((BigInt.from(h.costCents) * BigInt.from(amountCents) * BigInt.two + cur) ~/ (BigInt.two * cur)).toInt();
+  }
+  return SellPreview(
+    costCents: cost,
+    realizedCents: amountCents - cost,
+    remainingQuantityE4: amountCents == current ? 0 : h.quantityE4,
+    remainingCostCents: h.costCents - cost,
+  );
+}
+
+/// 年化 ×1e6 → `2.15%`；末尾的 0 去掉，至少两位小数。
+String formatRateE6(int rateE6) {
+  final pct = rateE6 / 10000; // ×1e6 → 百分数
+  var text = pct.toStringAsFixed(3);
+  while (text.endsWith('0') && text.split('.').last.length > 2) {
+    text = text.substring(0, text.length - 1);
+  }
+  return '$text%';
+}
+
+/// `'2.15'`（百分数）→ 21500；认不出、负数返回 null；最多三位小数。
+int? parseRateE6(String raw) {
+  final t = raw.trim().replaceAll('%', '').replaceAll('％', '');
+  final m = RegExp(r'^(\d{1,3})(?:\.(\d{0,4}))?$').firstMatch(t);
+  if (m == null) return null;
+  final frac = (m[2] ?? '').padRight(4, '0');
+  return int.parse(m[1]!) * 10000 + int.parse(frac);
 }
 
 // —— 格式 ——

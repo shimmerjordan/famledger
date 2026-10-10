@@ -8,6 +8,7 @@ import 'package:famledger/data/local/secure_store.dart';
 import 'package:famledger/data/repos/session_repo.dart';
 import 'package:famledger/ui/assets/asset_providers.dart';
 import 'package:famledger/ui/assets/asset_routes.dart';
+import 'package:famledger/ui/funds/funds_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -151,6 +152,9 @@ class AssetsBackend {
 
   final Map<String, Map<String, dynamic>> assets = {};
   final Map<String, Map<String, dynamic>> holdings = {};
+
+  /// 债务（modules/debts.js）：每笔背后一个 kind = 'debt' 的内部账户，余额记在 [accountBalances] 里。
+  final Map<String, Map<String, dynamic>> debts = {};
   final List<Map<String, dynamic>> accounts;
 
   /// `/changes` 里的家庭成员（会员卡的持有人 chip 用）。
@@ -195,6 +199,9 @@ class AssetsBackend {
 
   /// 同步给客户端的基金，默认只有家庭公共和个人零花两只；要试目标/储备基金就往这里加。
   List<Map<String, dynamic>> extraFunds = [];
+
+  /// 老服务端：总览里没有 cashCents / investAccountsCents / investNetCents 这些分项。
+  bool legacyOverview = false;
 
   /// 持仓总市值；null = 不回这个键。比 [investNetCents] 大出来的就是挂了账户的持仓成本。
   int? investMarketCents;
@@ -262,6 +269,11 @@ class AssetsBackend {
       res = _assets(req.method, seg, body);
     } else if (seg.isNotEmpty && seg.first == 'holdings') {
       res = _holdings(req.method, seg, body);
+    } else if (seg.isNotEmpty && seg.first == 'debts') {
+      res = _debts(req.method, seg, body);
+    } else if (req.method == 'GET' && path == '/transactions') {
+      // 债务详情的「往来」按账户查流水；这个假服务端不记流水，回空。
+      res = _ok({'items': <Object>[]});
     } else if (seg.isNotEmpty && PerksFake.resources.contains(seg.first)) {
       res = perks.handle(req.method, seg, body, req.url.queryParameters);
     } else if (seg.isNotEmpty && ImportFake.resources.contains(seg.first)) {
@@ -300,6 +312,10 @@ class AssetsBackend {
       {'id': 'c2', 'name': '二手', 'kind': 'income', 'sortOrder': 1},
     ],
     'assets': [...assets.values, ..._tombstones.where((t) => t['kind'] == 'asset')],
+    'debts': [
+      ...debts.values,
+      ..._tombstones.where((t) => t['kind'] == 'debtRow'),
+    ],
     'holdings': [
       ...holdings.values,
       ..._tombstones.where((t) => t['kind'] == 'holding'),
@@ -309,7 +325,33 @@ class AssetsBackend {
 
   Map<String, dynamic> overview() {
     final accountsNet = accountBalances.values.fold<int>(0, (sum, v) => sum + v);
-    final exPhysical = accountsNet + investNetCents;
+    // 分项照 stats.js：现金流 = 非投资账户，投资账户单列（这个假服务端还没有债务账户）。
+    final kindOf = {for (final a in accounts) a['id']: a['kind']};
+    var cash = 0;
+    var investAccounts = 0;
+    accountBalances.forEach((id, v) {
+      if (kindOf[id] == 'debt') return;
+      if (kindOf[id] == 'invest') {
+        investAccounts += v;
+      } else {
+        cash += v;
+      }
+    });
+    // 债务：按方向分应收应付，只有计入净资产的进净资产（stats.js 第 6 条）。
+    var receivable = 0, payable = 0, countedReceivable = 0, countedPayable = 0;
+    for (final d in debts.values) {
+      final bal = accountBalances[d['accountId']] ?? 0;
+      final r = bal > 0 ? bal : 0;
+      final pay = bal < 0 ? -bal : 0;
+      receivable += r;
+      payable += pay;
+      if (d['counted'] == true) {
+        countedReceivable += r;
+        countedPayable += pay;
+      }
+    }
+    final uncountedDebts = (receivable - countedReceivable) - (payable - countedPayable);
+    final exPhysical = accountsNet - uncountedDebts + investNetCents;
     final counted = (settings['assets'] as Map)['netWorthIncludesPhysical'] == true;
     final p = physical;
     final included = p == null || !counted ? 0 : p['includedCents'] as int;
@@ -335,6 +377,19 @@ class AssetsBackend {
           {'accountId': e.key, 'balanceCents': e.value},
       ],
       if (investMarketCents != null) 'investMarketCents': investMarketCents,
+      if (!legacyOverview) ...{
+        'cashCents': cash,
+        'investAccountsCents': investAccounts,
+        'investNetCents': investNetCents,
+        if (debts.isNotEmpty)
+          'debts': {
+            'receivableCents': receivable,
+            'payableCents': payable,
+            'countedReceivableCents': countedReceivable,
+            'countedPayableCents': countedPayable,
+            'count': debts.length,
+          },
+      },
       if (p != null) 'netWorthExPhysicalCents': exPhysical,
       if (p != null) 'physical': {...p, 'counted': counted},
     };
@@ -355,6 +410,9 @@ class AssetsBackend {
   }
 
   String _id(String prefix) => '$prefix-new${++_ids}';
+
+  /// 债务按 d1、d2…… 编号，测试里好指。
+  int _debtIds = 0;
 
   http.Response _assets(String method, List<String> seg, Map<String, dynamic> body) {
     if (method == 'POST' && seg.length == 1) {
@@ -417,7 +475,8 @@ class AssetsBackend {
         name: body['name'] as String? ?? '',
         code: body['code'] as String?,
         market: body['market'] as String? ?? 'other',
-        qty: body['quantityE4'] as int,
+        // 非份额类（定期、活期……）不发份额：服务端记一份（invest.js 的 HELD_E4）。
+        qty: body['quantityE4'] as int? ?? 10000,
         cost: body['costCents'] as int,
         price: body['priceE4'] as int?,
         prev: null,
@@ -426,6 +485,9 @@ class AssetsBackend {
         accountId: body['accountId'] as String?,
         sort: holdings.length,
       );
+      for (final k in ['kind', 'institution', 'rateE6', 'rateMaxE6', 'maturesOn', 'valueCents']) {
+        if (body.containsKey(k)) row[k] = body[k];
+      }
       holdings[row['id'] as String] = row;
       return _ok({'holding': row}, 201);
     }
@@ -433,6 +495,7 @@ class AssetsBackend {
     if (row == null) return _error(404, 'not_found', '持仓不存在');
     if (method == 'PATCH') {
       row.addAll(body);
+      if (body.containsKey('valueCents')) row['valueOn'] = '2026-09-23';
       if (body.containsKey('priceE4')) {
         row['prevCloseE4'] = null;
         row['priceAt'] = testNow.toUtc().toIso8601String();
@@ -440,15 +503,39 @@ class AssetsBackend {
       return _ok({'holding': row});
     }
     if (method == 'POST' && seg.length == 3 && seg[2] == 'trade') {
-      final q = body['quantityE4'] as int;
       final amount = body['amountCents'] as int;
       var qty = row['quantityE4'] as int;
       var cost = row['costCents'] as int;
       var realized = 0;
-      if (body['side'] == 'buy') {
+      final kind = row['kind'] as String? ?? (row['market'] == 'fund' ? 'fund' : 'stock');
+      final unit = const {'fund', 'stock', 'gold'}.contains(kind);
+      final deposit = const {'fixed', 'structured', 'bond', 'repo'}.contains(kind);
+      if (body['side'] == 'income') {
+        realized = amount;
+      } else if (deposit) {
+        // 定期：取出就是结清（holdings.js）。
+        realized = amount - cost;
+        cost = 0;
+        qty = 0;
+      } else if (!unit) {
+        final value = row['valueCents'] as int?;
+        final current = value ?? cost;
+        if (body['side'] == 'buy') {
+          cost += amount;
+          if (value != null) row['valueCents'] = value + amount;
+        } else {
+          final prop = amount == current ? cost : (cost * amount * 2 + current) ~/ (2 * current);
+          realized = amount - prop;
+          cost -= prop;
+          if (value != null) row['valueCents'] = value - amount;
+          if (amount == current) qty = 0;
+        }
+      } else if (body['side'] == 'buy') {
+        final q = body['quantityE4'] as int;
         qty += q;
         cost += amount;
       } else {
+        final q = body['quantityE4'] as int;
         if (q > qty) {
           return _error(400, 'insufficient_quantity', '卖出份额超过了持有份额');
         }
@@ -479,6 +566,88 @@ class AssetsBackend {
       final gone = {...row, 'deletedAt': testNow.toUtc().toIso8601String(), 'kind': 'holding'};
       _tombstones.add(gone);
       return _ok({'holding': gone});
+    }
+    return _error(404, 'not_found', '没有这个接口');
+  }
+
+  http.Response _debts(String method, List<String> seg, Map<String, dynamic> body) {
+    if (method == 'POST' && seg.length == 1) {
+      final id = 'd${++_debtIds}';
+      final accountId = 'acct-$id';
+      final lend = body['direction'] == 'lend';
+      final kind = body['kind'] as String? ?? 'loan';
+      final amount = body['amountCents'] as int;
+      final cp = body['counterparty'] as String;
+      final via = (body['recordTransaction'] as Map?)?['accountId'] as String?;
+      final sign = lend ? 1 : -1;
+      accounts.add({
+        'id': accountId,
+        'name': kind == 'favor' ? '人情 $cp' : (lend ? '借给 $cp' : '欠 $cp'),
+        'kind': 'debt',
+        'sortOrder': 99,
+      });
+      accountBalances[accountId] = sign * amount;
+      if (via != null) accountBalances[via] = (accountBalances[via] ?? 0) - sign * amount;
+      final row = <String, dynamic>{
+        'id': id,
+        'accountId': accountId,
+        'direction': body['direction'],
+        'kind': kind,
+        'counterparty': cp,
+        'amountCents': amount,
+        'startedOn': body['startedOn'],
+        'dueOn': body['dueOn'],
+        'counted': body['counted'] ?? kind != 'favor',
+        'memberId': body['memberId'],
+        'note': body['note'],
+        'memoLog': via != null && kind != 'favor'
+            ? <Object>[]
+            : [
+                {'on': body['startedOn'], 'amountCents': sign * amount, 'note': '起始', 'recorded': via != null},
+              ],
+        'sortOrder': debts.length,
+        'archived': false,
+      };
+      debts[id] = row;
+      return _ok({'debt': row}, 201);
+    }
+    final row = debts[seg[1]];
+    if (row == null) return _error(404, 'not_found', '债务不存在');
+    if (method == 'PATCH') {
+      row.addAll(body);
+      return _ok({'debt': row});
+    }
+    if (method == 'POST' && seg.length == 3 && seg[2] == 'settle') {
+      final add = body['action'] == 'add';
+      final amount = body['amountCents'] as int;
+      final sign = row['direction'] == 'lend' ? 1 : -1;
+      final accountId = row['accountId'] as String;
+      final outstanding = sign * (accountBalances[accountId] ?? 0);
+      if (!add && amount > outstanding) return _error(400, 'over_settle', '比还剩的多了');
+      final effect = add ? sign : -sign;
+      accountBalances[accountId] = (accountBalances[accountId] ?? 0) + effect * amount;
+      final via = body['accountId'] as String?;
+      if (via != null) accountBalances[via] = (accountBalances[via] ?? 0) - effect * amount;
+      if (add) row['amountCents'] = (row['amountCents'] as int) + amount;
+      if (via == null || row['kind'] == 'favor') {
+        row['memoLog'] = [
+          ...(row['memoLog'] as List),
+          {
+            'on': body['occurredOn'],
+            'amountCents': effect * amount,
+            'note': body['note'] ?? '',
+            'recorded': via != null,
+            'action': add ? 'add' : 'settle',
+          },
+        ];
+      }
+      return _ok({'debt': row, 'transactions': <Object>[]});
+    }
+    if (method == 'DELETE') {
+      debts.remove(seg[1]);
+      final gone = {...row, 'deletedAt': testNow.toUtc().toIso8601String()};
+      _tombstones.add({...gone, 'kind': 'debtRow', 'debtKind': row['kind']});
+      return _ok({'debt': gone});
     }
     return _error(404, 'not_found', '没有这个接口');
   }
@@ -559,6 +728,8 @@ Future<void> pumpAssetsAt(
         path: '/settings/accounts',
         builder: (context, state) => const Scaffold(body: Text('账户管理页')),
       ),
+      // 基金（钱袋子）的页：资产页的老地址 `?tab=funds` 转到这里。
+      GoRoute(path: '/funds', builder: (context, state) => const FundsPage()),
     ],
   );
   addTearDown(router.dispose);

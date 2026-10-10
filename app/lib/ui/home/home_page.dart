@@ -84,6 +84,8 @@ class _HomePageState extends ConsumerState<HomePage> {
                 errorPadding: const EdgeInsets.all(LedgerLayout.pagePadding),
                 data: (value) => MonthSummary(stats: value.month),
               ),
+              // 宽屏主栏够宽，资产概览五格一行排在本月合计下面；手机放在待确认、会员提醒后面。
+              if (wide) const AssetsHomeCard(),
               if (!wide) ..._funds(context, data, stats.valueOrNull),
               ..._budgetAlerts(context, data, stats.valueOrNull),
               if (!wide) ..._pending(context, data, month),
@@ -107,7 +109,7 @@ class _HomePageState extends ConsumerState<HomePage> {
                     '基金余额',
                     padding: const EdgeInsets.only(bottom: 8),
                     actionLabel: '全部',
-                    onAction: () => context.go('/assets?tab=funds'),
+                    onAction: () => context.push('/funds'),
                   ),
                   if (data == null)
                     const SkeletonList(rows: 4, padding: EdgeInsets.zero)
@@ -121,7 +123,6 @@ class _HomePageState extends ConsumerState<HomePage> {
                     ),
                   const SizedBox(height: LedgerLayout.groupGap),
                   ..._pending(context, data, month, padding: EdgeInsets.zero),
-                  const AssetsHomeCard(padding: EdgeInsets.zero),
                 ],
               )
             : null,
@@ -154,7 +155,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     SectionHeader(
       '基金',
       actionLabel: '全部',
-      onAction: () => context.go('/assets?tab=funds'),
+      onAction: () => context.push('/funds'),
     ),
     if (data == null)
       const Padding(

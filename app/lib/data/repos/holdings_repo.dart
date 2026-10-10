@@ -3,6 +3,9 @@ import '../local/local_store.dart';
 import '../models/models.dart';
 import 'ledger_repo.dart';
 
+/// 交易方向：加仓 / 存入、减仓 / 取出 / 到期、分红 / 付息（服务端 holdings.js 的 side）。
+enum TradeSide { buy, sell, income }
+
 /// 有没有要拉行情的持仓：开了自动行情、有代码、还没清仓。
 bool wantsAutoQuotes(Iterable<Holding> holdings) => holdings.any(
   (h) => !h.archived && !h.isCleared && h.isAuto && (h.code?.isNotEmpty ?? false),
@@ -89,29 +92,46 @@ class HoldingsRepo {
   /// [clientId] 是幂等键：同一张表单重试时沿用同一个，回应丢了再发也只开一次仓、只记一笔。
   Future<Holding> create({
     required String name,
+    String? kind,
     String? code,
-    required String market,
-    required int quantityE4,
+    String market = 'other',
+    int quantityE4 = Holding.heldE4,
     required int costCents,
     required String openedOn,
     bool autoPrice = false,
     int? priceE4,
     String? accountId,
+    String? institution,
+    int? rateE6,
+    int? rateMaxE6,
+    String? maturesOn,
+    int? valueCents,
     String? note,
     String? fromAccountId,
     String? clientId,
   }) async {
+    // 没说品类就按市场推（同服务端）：场外基金是基金，其余是股票。
+    final resolved = kind ?? (market == 'fund' ? Holding.kindFund : Holding.kindStock);
+    final unit = Holding.modeOf(resolved) == InvestMode.unit;
     final body = <String, dynamic>{
       'name': name,
-      'market': market,
-      'quantityE4': quantityE4,
+      'kind': resolved,
+      'market': unit ? market : 'other',
       'costCents': costCents,
       'openedOn': openedOn,
-      'priceSource': autoPrice ? Holding.sourceAuto : Holding.sourceManual,
+      'priceSource': unit && autoPrice ? Holding.sourceAuto : Holding.sourceManual,
     };
+    if (unit) body['quantityE4'] = quantityE4;
     if (code != null && code.isNotEmpty) body['code'] = code;
-    putIfNotNull(body, 'priceE4', priceE4);
+    if (unit) putIfNotNull(body, 'priceE4', priceE4);
     putIfNotNull(body, 'accountId', accountId);
+    if (institution != null && institution.isNotEmpty) body['institution'] = institution;
+    if (!unit) {
+      putIfNotNull(body, 'rateE6', rateE6);
+      putIfNotNull(body, 'rateMaxE6', rateMaxE6);
+      putIfNotNull(body, 'maturesOn', maturesOn);
+      putIfNotNull(body, 'valueCents', valueCents);
+    }
     if (note != null && note.isNotEmpty) body['note'] = note;
     if (fromAccountId != null) {
       body['recordTransaction'] = {'fromAccountId': fromAccountId};
@@ -128,27 +148,44 @@ class HoldingsRepo {
   Future<Holding> edit(
     String id, {
     required String name,
+    String? kind,
     String? code,
-    required String market,
-    required bool autoPrice,
+    String market = 'other',
+    bool autoPrice = false,
     required String openedOn,
     String? accountId,
+    String? institution,
+    int? rateE6,
+    int? rateMaxE6,
+    String? maturesOn,
     String? note,
     String? fromAccountId,
-  }) => _patch(id, {
-    'name': name,
-    'code': code == null || code.isEmpty ? null : code,
-    'market': market,
-    'priceSource': autoPrice ? Holding.sourceAuto : Holding.sourceManual,
-    'openedOn': openedOn,
-    'accountId': accountId,
-    'note': note == null || note.isEmpty ? null : note,
-    if (fromAccountId != null) 'recordTransaction': {'fromAccountId': fromAccountId},
-  });
+  }) {
+    final unit = kind == null || Holding.modeOf(kind) == InvestMode.unit;
+    return _patch(id, {
+      'name': name,
+      if (kind != null) 'kind': kind,
+      'code': code == null || code.isEmpty ? null : code,
+      if (unit) 'market': market,
+      if (unit) 'priceSource': autoPrice ? Holding.sourceAuto : Holding.sourceManual,
+      'openedOn': openedOn,
+      'accountId': accountId,
+      'institution': institution == null || institution.isEmpty ? null : institution,
+      if (!unit) 'rateE6': rateE6,
+      if (!unit) 'rateMaxE6': rateMaxE6,
+      if (!unit) 'maturesOn': maturesOn,
+      'note': note == null || note.isEmpty ? null : note,
+      if (fromAccountId != null) 'recordTransaction': {'fromAccountId': fromAccountId},
+    });
+  }
 
   /// 手动改价。服务端会顺手清掉昨收（手填的价没有可比的昨收）。
   Future<Holding> setPrice(String id, int priceE4) =>
       _patch(id, {'priceE4': priceE4});
+
+  /// 金额类（活期、银行理财、保险……）更新当前金额。
+  Future<Holding> setValue(String id, int valueCents) =>
+      _patch(id, {'valueCents': valueCents});
 
   Future<void> delete(String id) async {
     await _api.delete('/holdings/$id');
@@ -163,19 +200,19 @@ class HoldingsRepo {
   /// 只能经交易改，重复一次就没法手工改回来。
   Future<TradeResult> trade(
     String id, {
-    required bool buy,
-    required int quantityE4,
+    required TradeSide side,
+    int? quantityE4,
     required int amountCents,
     required String occurredOn,
     String? accountId,
     String? clientId,
   }) async {
     final body = <String, dynamic>{
-      'side': buy ? 'buy' : 'sell',
-      'quantityE4': quantityE4,
+      'side': side.name,
       'amountCents': amountCents,
       'occurredOn': occurredOn,
     };
+    putIfNotNull(body, 'quantityE4', quantityE4);
     if (accountId != null) body['recordTransaction'] = {'accountId': accountId};
     putIfNotNull(body, 'clientId', clientId);
     final res = await _api.post('/holdings/$id/trade', body);

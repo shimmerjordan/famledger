@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/providers.dart';
 import '../../data/repos/assets_repo.dart';
+import '../../data/repos/debts_repo.dart';
 import '../../data/repos/holdings_repo.dart';
 import '../transactions/tx_providers.dart';
 
@@ -19,6 +20,16 @@ final holdingsRepoProvider = Provider<HoldingsRepo>(
     store: ref.watch(localStoreProvider),
   ),
 );
+
+final debtsRepoProvider = Provider<DebtsRepo>(
+  (ref) => DebtsRepo(
+    api: ref.watch(apiProvider),
+    ledger: ref.watch(ledgerRepoProvider),
+  ),
+);
+
+/// 宽屏「债务」段右栏选中的那一笔。
+final selectedDebtProvider = StateProvider<String?>((ref) => null);
 
 /// 天数、日均、价格过期都跟「现在」有关；测试里换成固定时刻。
 final assetClockProvider = Provider<DateTime Function()>((ref) => DateTime.now);

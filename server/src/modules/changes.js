@@ -32,6 +32,7 @@ const SYNCED = [
   ['memberships', { bools: ['archived', 'is_trial'], json: ['pay_pattern', 'origin'] }],
   ['benefits', { bools: ['archived', 'remind'], json: ['quota', 'limits', 'origin'] }],
   ['benefit_events', {}],
+  ['debts', { bools: ['archived', 'counted'], json: ['memo_log'] }],
 ];
 
 module.exports = (ctx) => {

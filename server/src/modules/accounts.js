@@ -40,6 +40,10 @@ module.exports = (ctx) => {
     },
 
     canDelete(row) {
+      // 债务的内部账户（modules/debts.js）跟着债务删，从这里删掉债务就没了余额。
+      if (row.kind === 'debt') {
+        throw new HttpError(409, 'account_is_debt', '这是一笔债务的账户，到「资产 › 债务」里删');
+      }
       const used = db.get(
         "SELECT 1 AS ok FROM transactions WHERE deleted_at IS NULL AND status = 'confirmed'" +
           ' AND (account_id = ? OR to_account_id = ?) LIMIT 1',

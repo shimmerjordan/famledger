@@ -5,7 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../../app/providers.dart';
 import '../../data/models/models.dart';
 import '../../data/repos/holdings_repo.dart';
-import '../funds/funds_tab.dart';
+import '../debts/debts_tab.dart';
 import '../perk_import/perk_import_providers.dart';
 import 'asset_providers.dart';
 import 'asset_routes.dart';
@@ -27,7 +27,7 @@ import '../widgets/widgets.dart';
 class AssetsPage extends ConsumerStatefulWidget {
   const AssetsPage({super.key, this.initialTab, this.perksView, this.perksScope});
 
-  /// 地址点名要哪一段（[fundsTab]、[itemsTab]、[investTab]、[perksTab]，见 requestedAssetsTab）；
+  /// 地址点名要哪一段（[investTab]、[debtsTab]、[itemsTab]、[perksTab]，见 requestedAssetsTab）；
   /// null = 没点名：头一次打开是第一段「基金」，之后保持用户当前所在的段。
   final int? initialTab;
 
@@ -35,11 +35,16 @@ class AssetsPage extends ConsumerStatefulWidget {
   final PerkView? perksView;
   final PerkScope? perksScope;
 
-  static const int fundsTab = 0;
-  static const int itemsTab = 1;
-  static const int investTab = 2;
+  // 基金（家庭公共、育儿……这些钱袋子）不在这里：它不是一类资产，挪到了「我的 › 基金」（/funds）；
+  // 公募基金是理财里的一个品类，和股票、定期平级。
+  static const int investTab = 0;
+  static const int debtsTab = 1;
+  static const int itemsTab = 2;
   static const int perksTab = 3;
   static const int tabCount = 4;
+
+  /// 不带 tab 打开时的那一段。
+  static const int defaultTab = investTab;
 
   @override
   ConsumerState<AssetsPage> createState() => _AssetsPageState();
@@ -83,7 +88,7 @@ class _AssetsPageState extends ConsumerState<AssetsPage>
   late final TabController _tabs = TabController(
     length: AssetsPage.tabCount,
     vsync: this,
-    initialIndex: (widget.initialTab ?? AssetsPage.fundsTab).clamp(0, AssetsPage.tabCount - 1),
+    initialIndex: (widget.initialTab ?? AssetsPage.defaultTab).clamp(0, AssetsPage.tabCount - 1),
   );
   late int _index = _tabs.index;
 
@@ -162,7 +167,7 @@ class _AssetsPageState extends ConsumerState<AssetsPage>
     final uri = router.state.uri;
     if (uri.path != '/assets') return;
     final named = uri.queryParameters['tab'];
-    if (named != null ? assetsTabIndexOf(named) == _index : _index == AssetsPage.fundsTab) return;
+    if (named != null ? assetsTabIndexOf(named) == _index : _index == AssetsPage.defaultTab) return;
     final location = assetsLocation(_index);
     Router.neglect(context, () => context.go(location));
   }
@@ -192,15 +197,15 @@ class _AssetsPageState extends ConsumerState<AssetsPage>
 
   /// 顶栏「新建」的全称（tooltip、无障碍）和按钮上的短字。
   String get _addLabel => switch (_index) {
-    AssetsPage.fundsTab => '新建基金',
-    AssetsPage.investTab => '添加持仓',
+    AssetsPage.investTab => '添加理财',
+    AssetsPage.debtsTab => '记一笔债务',
     AssetsPage.perksTab => '记一张会员卡',
     _ => '记一件物品',
   };
 
   String get _addShortLabel => switch (_index) {
-    AssetsPage.fundsTab => '新建基金',
-    AssetsPage.investTab => '添加持仓',
+    AssetsPage.investTab => '添加理财',
+    AssetsPage.debtsTab => '记一笔',
     AssetsPage.perksTab => '记一张',
     _ => '记一件',
   };
@@ -228,9 +233,9 @@ class _AssetsPageState extends ConsumerState<AssetsPage>
             child: TextButton.icon(
               key: const ValueKey('assets-add'),
               onPressed: () => switch (_index) {
-                AssetsPage.fundsTab => startNewFund(context, ref),
                 AssetsPage.perksTab => showPerkAddSheet(context),
                 AssetsPage.investTab => context.push('/assets/holdings/new'),
+                AssetsPage.debtsTab => context.push('/assets/debts/new'),
                 _ => context.push('/assets/items/new'),
               },
               icon: const Icon(Icons.add, size: 20),
@@ -278,9 +283,9 @@ class _AssetsPageState extends ConsumerState<AssetsPage>
             TabBar(
               controller: _tabs,
               tabs: const [
-                Tab(text: '基金'),
-                Tab(text: '物品'),
                 Tab(text: '理财'),
+                Tab(text: '债务'),
+                Tab(text: '物品'),
                 Tab(text: '会员权益'),
               ],
             ),
@@ -288,9 +293,9 @@ class _AssetsPageState extends ConsumerState<AssetsPage>
               child: TabBarView(
                 controller: _tabs,
                 children: [
-                  const FundsTab(),
-                  const ItemsTab(),
                   const InvestTab(),
+                  const DebtsTab(),
+                  const ItemsTab(),
                   PerksTab(
                     view: _perksView,
                     scope: _perksScope,

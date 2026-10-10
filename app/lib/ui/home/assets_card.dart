@@ -4,78 +4,149 @@ import 'package:go_router/go_router.dart';
 
 import '../../app/providers.dart';
 import '../../app/theme.dart';
+import '../../core/dates.dart';
 import '../../core/money.dart';
 import '../../data/models/models.dart';
 import '../assets/asset_providers.dart';
-import '../assets/asset_widgets.dart';
+import '../assets/net_worth_strip.dart';
 import '../widgets/widgets.dart';
 
-/// 首页的「资产」：物品每天花多少（副标题是估值合计）、投资值多少今天涨跌多少。
-/// 不加第三格、不放净资产的大数字：净资产只在资产页顶上（spec §5）。
+/// 首页的「资产」概览：净资产一行，下面现金流 / 理财 / 债务 / 物品 / 会员权益各一格，点哪格进哪段。
 ///
-/// 两边都还没记时只留一行入口，不占首页的地方。不套 Card：DESIGN.md 只把卡片留给
-/// 基金横滑和待确认，这里跟本月合计一样用并排的两格。
+/// 首页的英雄数字仍是本月支出：净资产这里只用 titleLarge 一行，不抢（DESIGN.md「一屏一个英雄指标」）。
+/// 不套卡片：格子是并排的几块字，和本月合计一个样子。没记过的那类写「还没记」，点进去就能加。
 class AssetsHomeCard extends ConsumerWidget {
-  const AssetsHomeCard({super.key, this.padding});
+  const AssetsHomeCard({super.key, this.padding, this.columns});
 
   final EdgeInsetsGeometry? padding;
+
+  /// 一行几格；不给就按宽度定（手机 3 格，很窄 2 格，宽屏 5 格一行排完）。
+  final int? columns;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final ledger = ref.watch(ledgerProvider).valueOrNull;
     if (ledger == null) return const SizedBox.shrink();
+    final stats = ref.watch(statsProvider(Dates.currentMonth()));
+    final overview = stats.valueOrNull;
     final now = ref.watch(assetClockProvider)();
-    // 记过但都退役/卖掉了也算记过：summarizeAssets 只数还在家里的。
-    final recorded = ledger.activeAssets.isNotEmpty;
-    final items = summarizeAssets(ledger.assets, now);
-    final invest = summarizeHoldings(ledger.holdings, now);
-
-    if (!recorded && invest.isEmpty) {
-      return Padding(
-        padding: const EdgeInsets.only(bottom: LedgerLayout.groupGap),
-        child: ListTile(
-          key: const ValueKey('assets-entry'),
-          onTap: () => context.go('/assets?tab=items'),
-          contentPadding: padding ??
-              const EdgeInsets.symmetric(horizontal: LedgerLayout.pagePadding),
-          leading: const Icon(Icons.inventory_2_outlined),
-          title: const Text('记录资产'),
-          subtitle: const Text('东西每天花多少、理财赚了多少'),
-          trailing: const Icon(Icons.chevron_right, size: 20),
-        ),
-      );
-    }
-
     final theme = Theme.of(context);
-    final sidePadding = padding ??
-        const EdgeInsets.symmetric(horizontal: LedgerLayout.pagePadding);
+    final sidePadding = padding ?? const EdgeInsets.symmetric(horizontal: LedgerLayout.pagePadding);
+
+    final items = summarizeAssets(ledger.assets, now);
+    final itemsRecorded = ledger.activeAssets.isNotEmpty;
+    final invest = summarizeHoldings(ledger.holdings, now);
+    final debts = ledger.activeDebts;
+    final cards = perkMemberships(ledger.memberships);
+    final toClaim = cards.isEmpty
+        ? 0
+        : currentPerks(
+            memberships: ledger.memberships,
+            benefits: ledger.benefits,
+            events: ledger.benefitEvents,
+            platforms: ledger.platforms,
+            today: localDay(now),
+          ).toClaimCount;
+    final notYet = Text('还没记', style: theme.textTheme.bodyLarge);
+    // 总览还在路上画骨架；取不到（离线、出错）就是一道杠，别让骨架一直闪。
+    Widget pending(double width) =>
+        stats.hasError ? Text('—', style: theme.textTheme.bodyLarge) : Skeleton(width: width, height: 18);
+
+    final tiles = <Widget>[
+      _Tile(
+        key: const ValueKey('home-asset-cash'),
+        label: '现金流',
+        value: overview == null ? pending(96) : MoneyText(cashFlowCents(overview)),
+        note: overview == null ? null : '可支配 ${Money.format(disposableCents(overview, ledger.funds))}',
+        onTap: () => context.push('/settings/accounts'),
+      ),
+      _Tile(
+        key: const ValueKey('home-asset-invest'),
+        label: '理财',
+        value: invest.isEmpty ? notYet : MoneyText(invest.marketCents),
+        note: invest.isEmpty
+            ? '基金、定期、活期……'
+            : '浮动 ${Money.format(invest.gainCents, signed: true)} · ${invest.byKind.length} 类',
+        onTap: () => context.go('/assets?tab=invest'),
+      ),
+      _Tile(
+        key: const ValueKey('home-asset-debts'),
+        label: '债务',
+        value: debts.isEmpty
+            ? notYet
+            : overview?.debts == null
+            ? pending(96)
+            : MoneyText(overview!.debts!.countedNetCents, signed: true),
+        note: debts.isEmpty
+            ? '借出、借入、人情'
+            : overview?.debts == null
+            ? null
+            // 和净资产条同一个口径：只算计入净资产的（人情默认不算）。
+            : '别人欠 ${Money.format(overview!.debts!.countedReceivableCents)} · 欠别人 ${Money.format(overview.debts!.countedPayableCents)}',
+        onTap: () => context.go('/assets?tab=debts'),
+      ),
+      _Tile(
+        key: const ValueKey('home-asset-items'),
+        label: '物品',
+        value: itemsRecorded ? MoneyText(items.valueCents) : notYet,
+        note: !itemsRecorded
+            ? '东西每天花多少'
+            : items.isEmpty
+            ? '都退役或卖掉了'
+            : '每天 ${Money.format(items.dailyCents.round())}',
+        onTap: () => context.go('/assets?tab=items'),
+      ),
+      _Tile(
+        key: const ValueKey('home-asset-perks'),
+        label: '会员权益',
+        value: cards.isEmpty ? notYet : Text('${cards.length} 张卡', style: theme.textTheme.bodyLarge),
+        note: cards.isEmpty ? '88VIP、信用卡权益' : toClaim > 0 ? '本期待领 $toClaim 项' : '本期都领完了',
+        onTap: () => context.go('/assets?tab=perks'),
+      ),
+    ];
+
     return Column(
+      key: const ValueKey('assets-card'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         SectionHeader(
           '资产',
           padding: padding == null ? null : const EdgeInsets.only(bottom: 8),
           actionLabel: '全部',
-          onAction: () => context.go('/assets?tab=items'),
+          onAction: () => context.go('/assets'),
         ),
         Padding(
-          key: const ValueKey('assets-card'),
           padding: sidePadding,
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Expanded(
-                child: _Half(
-                  onTap: () => context.go('/assets?tab=items'),
-                  label: '物品每天',
-                  value: recorded
-                      ? DailyMoney(items.dailyCents)
-                      : Text('还没记', style: theme.textTheme.bodyLarge),
-                  note: _itemsNote(recorded, items),
-                ),
+              Row(
+                key: const ValueKey('home-net-worth'),
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Text('净资产', style: theme.textTheme.bodySmall),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: overview == null
+                        ? pending(140)
+                        : MoneyText(overview.netWorthCents, size: MoneySize.title),
+                  ),
+                ],
               ),
-              const SizedBox(width: LedgerLayout.itemGap),
-              Expanded(child: _investHalf(context, invest)),
+              const SizedBox(height: LedgerLayout.itemGap),
+              LayoutBuilder(
+                builder: (context, box) {
+                  // 手机 3 格一行（两行排完），宽屏主栏 5 格一行。
+                  final cols = columns ?? (box.maxWidth >= 760 ? 5 : box.maxWidth >= 330 ? 3 : 2);
+                  const gap = LedgerLayout.itemGap;
+                  final width = (box.maxWidth - gap * (cols - 1)) / cols;
+                  return Wrap(
+                    spacing: gap,
+                    runSpacing: gap,
+                    children: [for (final t in tiles) SizedBox(width: width, child: t)],
+                  );
+                },
+              ),
             ],
           ),
         ),
@@ -83,93 +154,15 @@ class AssetsHomeCard extends ConsumerWidget {
       ],
     );
   }
-
-  /// 没价格的持仓不进市值（summarizeHoldings 只数它的个数）。一只价都没有时写 ¥0.00 等于说它
-  /// 一分不值；有一部分没价格时不提，就是悄悄少算。两种都照投资页的口径明说。
-  Widget _investHalf(BuildContext context, PortfolioSummary invest) {
-    final theme = Theme.of(context);
-    final priced = invest.heldCount - invest.unpricedCount;
-    final unpricedNote = Text(
-      priced == 0
-          ? '${invest.unpricedCount} 只还没有价格'
-          : '另有 ${invest.unpricedCount} 只没价格，没算进来',
-      key: const ValueKey('assets-invest-unpriced'),
-      maxLines: 1,
-      overflow: TextOverflow.ellipsis,
-      style: theme.textTheme.bodySmall,
-    );
-    final today = Row(
-      children: [
-        Text('今日 ', style: theme.textTheme.bodySmall),
-        Flexible(
-          child: MoneyText(
-            invest.todayChangeCents,
-            signed: true,
-            size: MoneySize.small,
-          ),
-        ),
-      ],
-    );
-    void open() => context.go('/assets?tab=invest');
-
-    if (invest.isEmpty) {
-      return _Half(
-        onTap: open,
-        label: '理财市值',
-        value: Text('还没记', style: theme.textTheme.bodyLarge),
-        note: '点这里添加',
-      );
-    }
-    if (invest.heldCount == 0) {
-      return _Half(
-        onTap: open,
-        label: '理财市值',
-        value: MoneyText(invest.marketCents),
-        note: '都清仓了',
-      );
-    }
-    if (priced == 0) {
-      return _Half(
-        onTap: open,
-        label: '理财市值',
-        value: Text('还没有价格', style: theme.textTheme.bodyLarge),
-        noteWidget: unpricedNote,
-      );
-    }
-    return _Half(
-      onTap: open,
-      label: '理财市值',
-      value: MoneyText(invest.marketCents),
-      noteWidget: invest.unpricedCount == 0
-          ? today
-          : Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [today, unpricedNote],
-            ),
-    );
-  }
-
-  static String _itemsNote(bool recorded, AssetSummary items) {
-    if (!recorded) return '点这里记一件';
-    if (items.isEmpty) return '都退役或卖掉了';
-    return '估值 ${Money.format(items.valueCents)}';
-  }
 }
 
-class _Half extends StatelessWidget {
-  const _Half({
-    required this.onTap,
-    required this.label,
-    required this.value,
-    this.note,
-    this.noteWidget,
-  });
+class _Tile extends StatelessWidget {
+  const _Tile({super.key, required this.label, required this.value, required this.onTap, this.note});
 
-  final VoidCallback onTap;
   final String label;
   final Widget value;
   final String? note;
-  final Widget? noteWidget;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -178,28 +171,18 @@ class _Half extends StatelessWidget {
       onTap: onTap,
       borderRadius: BorderRadius.circular(LedgerShapes.control),
       child: Padding(
-        // 没有卡片边框了，左右不留白，字才跟上面的「资产」标题对齐。
+        // 没有卡片边框，左右不留白，字才跟上面的「资产」标题对齐。
         padding: const EdgeInsets.symmetric(vertical: 4),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(label, style: theme.textTheme.bodySmall),
             const SizedBox(height: 2),
-            FittedBox(
-              fit: BoxFit.scaleDown,
-              alignment: Alignment.centerLeft,
-              child: value,
-            ),
-            const SizedBox(height: 2),
-            if (noteWidget != null)
-              noteWidget!
-            else if (note != null)
-              Text(
-                note!,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.bodySmall,
-              ),
+            FittedBox(fit: BoxFit.scaleDown, alignment: Alignment.centerLeft, child: value),
+            if (note != null) ...[
+              const SizedBox(height: 2),
+              Text(note!, maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodySmall),
+            ],
           ],
         ),
       ),

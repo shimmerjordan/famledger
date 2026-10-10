@@ -16,6 +16,10 @@ class Account {
     this.matchHints = const {},
   });
 
+  /// 债务背后的内部账户（server/src/modules/debts.js）：余额 = 还剩多少，借出为正、借入为负。
+  /// 不在 [kinds] 里：账户页、记账时选账户都看不到它，只在「资产 › 债务」里管。
+  static const String kindDebt = 'debt';
+
   /// cash | bank | alipay | wechat | credit | invest | other
   static const List<String> kinds = [
     'cash',
@@ -35,6 +39,7 @@ class Account {
     'credit': '信用卡',
     'invest': '投资',
     'other': '其他',
+    kindDebt: '债务',
   };
 
   final String id;
@@ -55,6 +60,8 @@ class Account {
 
   /// 信用卡余额为负债，展示时要反过来说。
   bool get isLiability => kind == 'credit';
+
+  bool get isDebt => kind == kindDebt;
 
   factory Account.fromJson(Map<String, dynamic> json) => Account(
     id: jsonString(json['id']),

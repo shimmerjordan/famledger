@@ -14,6 +14,11 @@ class StatsOverview {
     this.investMarketCents,
     this.netWorthExPhysicalCents,
     this.physical,
+    this.cashCents,
+    this.investAccountsCents,
+    this.serverInvestNetCents,
+    this.investByKind = const [],
+    this.debts,
   });
 
   /// 按家庭设置含不含实物，由服务端 stats.js 决定。
@@ -35,11 +40,44 @@ class StatsOverview {
   /// 实物估值汇总；老服务端不给时是 null（净资产条就不写实物那段、也没有开关）。
   final PhysicalSummary? physical;
 
-  /// 账户余额合计（信用卡欠款是负数，已经减掉了）。
+  /// 现金流：非投资、非债务账户的合计（信用卡欠款已减）；老服务端不给时是 null。
+  final int? cashCents;
+
+  /// 投资账户（证券户、理财户）的余额合计：持仓的成本记在这里；老服务端不给时是 null。
+  final int? investAccountsCents;
+
+  /// 投资补差：挂账户持仓的浮盈 + 没挂账户的整份估值（stats.js 第 4 条）。
+  final int? serverInvestNetCents;
+
+  /// 各品类的估值、成本、笔数，估值大的在前。
+  final List<InvestKindTotal> investByKind;
+
+  /// 债务汇总；老服务端不给时是 null。
+  final DebtSummary? debts;
+
+  /// 全部账户余额合计（含投资账户和债务的内部账户）。
   int get accountsNetCents => accounts.fold<int>(0, (sum, a) => sum + a.balanceCents);
 
-  /// 投资对净资产的贡献 = 不含实物的净资产 − 账户合计（挂了账户的持仓只补浮盈，口径在 stats.js）。
-  int get investNetCents => (netWorthExPhysicalCents ?? netWorthCents) - accountsNetCents;
+  /// 投资补差。老服务端没给就倒推：不含实物的净资产 − 账户合计（那时还没有债务）。
+  int get investNetCents => serverInvestNetCents ?? (netWorthExPhysicalCents ?? netWorthCents) - accountsNetCents;
+
+  /// 现金流（净资产的第一项）。老服务端：账户合计。
+  int get cashFlowCents => cashCents ?? accountsNetCents;
+
+  /// 理财对净资产的贡献 = 投资账户里的钱 + 投资补差。老服务端投资账户算在账户合计里，只剩补差。
+  int get investTotalCents => (investAccountsCents ?? 0) + investNetCents;
+
+  /// 计入净资产的债务净额：别人欠我 − 我欠别人。
+  int get debtsNetCents => debts?.countedNetCents ?? 0;
+
+  /// 某个账户的余额；不在列表里（刚建、统计还没刷新）是 null。
+  int? balanceOf(String? accountId) {
+    if (accountId == null) return null;
+    for (final a in accounts) {
+      if (a.accountId == accountId) return a.balanceCents;
+    }
+    return null;
+  }
 
   int fundBalance(String fundId) {
     for (final f in funds) {
@@ -68,6 +106,11 @@ class StatsOverview {
     physical: json['physical'] is Map
         ? PhysicalSummary.fromJson(jsonMap(json['physical']))
         : null,
+    cashCents: jsonIntOrNull(json['cashCents']),
+    investAccountsCents: jsonIntOrNull(json['investAccountsCents']),
+    serverInvestNetCents: jsonIntOrNull(json['investNetCents']),
+    investByKind: jsonList(json['investByKind'], InvestKindTotal.fromJson),
+    debts: json['debts'] is Map ? DebtSummary.fromJson(jsonMap(json['debts'])) : null,
   );
 
   Map<String, dynamic> toJson() => {
@@ -82,6 +125,65 @@ class StatsOverview {
     if (netWorthExPhysicalCents != null)
       'netWorthExPhysicalCents': netWorthExPhysicalCents,
     if (physical != null) 'physical': physical!.toJson(),
+    if (cashCents != null) 'cashCents': cashCents,
+    if (investAccountsCents != null) 'investAccountsCents': investAccountsCents,
+    if (serverInvestNetCents != null) 'investNetCents': serverInvestNetCents,
+    'investByKind': investByKind.map((e) => e.toJson()).toList(),
+    if (debts != null) 'debts': debts!.toJson(),
+  };
+}
+
+/// `investByKind` 的一项。
+class InvestKindTotal {
+  const InvestKindTotal({required this.kind, this.valueCents = 0, this.costCents = 0, this.count = 0});
+
+  final String kind;
+  final int valueCents;
+  final int costCents;
+  final int count;
+
+  factory InvestKindTotal.fromJson(Map<String, dynamic> json) => InvestKindTotal(
+    kind: jsonString(json['kind']),
+    valueCents: jsonInt(json['valueCents']),
+    costCents: jsonInt(json['costCents']),
+    count: jsonInt(json['count']),
+  );
+
+  Map<String, dynamic> toJson() => {'kind': kind, 'valueCents': valueCents, 'costCents': costCents, 'count': count};
+}
+
+/// `debts`：应收、应付（全部 / 计入净资产的部分）、笔数。
+class DebtSummary {
+  const DebtSummary({
+    this.receivableCents = 0,
+    this.payableCents = 0,
+    this.countedReceivableCents = 0,
+    this.countedPayableCents = 0,
+    this.count = 0,
+  });
+
+  final int receivableCents;
+  final int payableCents;
+  final int countedReceivableCents;
+  final int countedPayableCents;
+  final int count;
+
+  int get countedNetCents => countedReceivableCents - countedPayableCents;
+
+  factory DebtSummary.fromJson(Map<String, dynamic> json) => DebtSummary(
+    receivableCents: jsonInt(json['receivableCents']),
+    payableCents: jsonInt(json['payableCents']),
+    countedReceivableCents: jsonInt(json['countedReceivableCents']),
+    countedPayableCents: jsonInt(json['countedPayableCents']),
+    count: jsonInt(json['count']),
+  );
+
+  Map<String, dynamic> toJson() => {
+    'receivableCents': receivableCents,
+    'payableCents': payableCents,
+    'countedReceivableCents': countedReceivableCents,
+    'countedPayableCents': countedPayableCents,
+    'count': count,
   };
 }
 

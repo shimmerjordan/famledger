@@ -3,6 +3,8 @@ import 'package:go_router/go_router.dart';
 
 import '../../app/page_frame.dart';
 import '../../data/models/models.dart';
+import '../debts/debt_detail_page.dart';
+import '../debts/debt_form_page.dart';
 import '../perk_import/perk_import_page.dart';
 import '../perk_import/perk_import_preview_page.dart';
 import '../perk_import/recent_imports_page.dart';
@@ -19,9 +21,9 @@ import 'holding_form_page.dart';
 
 /// 资产 tab 各段在地址里的名字（`/assets?tab=…`）。不带 tab 时：头一次打开是第一段「基金」，
 /// 之后保持当前段（见 [requestedAssetsTab]）。
-const List<String> kAssetsTabNames = ['funds', 'items', 'invest', 'perks'];
+const List<String> kAssetsTabNames = ['invest', 'debts', 'items', 'perks'];
 
-/// `/assets?tab=…` 里的名字对应第几段；不认识、没给都当第一段。
+/// `/assets?tab=…` 里的名字对应第几段；不认识、没给都当第一段（理财）。
 int assetsTabIndexOf(String? name) {
   final index = kAssetsTabNames.indexOf(name ?? '');
   return index < 0 ? 0 : index;
@@ -38,6 +40,7 @@ int? requestedAssetsTab(Uri uri) {
   return switch (segments[1]) {
     'items' => AssetsPage.itemsTab,
     'holdings' => AssetsPage.investTab,
+    'debts' => AssetsPage.debtsTab,
     'memberships' || 'benefits' || 'platforms' => AssetsPage.perksTab,
     'import' => uri.queryParameters['want'] == ImportWant.items.wire ? AssetsPage.itemsTab : AssetsPage.perksTab,
     _ => null,
@@ -68,6 +71,9 @@ GoRoute assetsTabRoute({GlobalKey<NavigatorState>? pagesOn}) {
 
   return GoRoute(
     path: '/assets',
+    // 老地址 `/assets?tab=funds`（首页、书签、旧版通知）：基金段挪到了「我的 › 基金」。
+    redirect: (context, state) =>
+        state.uri.path == '/assets' && state.uri.queryParameters['tab'] == 'funds' ? '/funds' : null,
     builder: (context, state) {
       final q = state.uri.queryParameters;
       return AssetsPage(
@@ -96,6 +102,14 @@ GoRoute assetsTabRoute({GlobalKey<NavigatorState>? pagesOn}) {
         (context, state) => AssetDetailPage(state.pathParameters['id']!),
         routes: [
           page('edit', (context, state) => AssetFormPage(id: state.pathParameters['id'])),
+        ],
+      ),
+      page('debts/new', (context, state) => const DebtFormPage()),
+      page(
+        'debts/:id',
+        (context, state) => DebtDetailPage(state.pathParameters['id']!),
+        routes: [
+          page('edit', (context, state) => DebtFormPage(id: state.pathParameters['id'])),
         ],
       ),
       page('holdings/new', (context, state) => const HoldingFormPage()),

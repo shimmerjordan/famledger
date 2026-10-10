@@ -18,7 +18,8 @@ List<ClassifierCandidate> fundCandidates(Iterable<Fund> funds) => [
 
 List<CaptureAccount> captureAccounts(Iterable<Account> accounts) => [
   for (final a in accounts)
-    if (!a.archived)
+    // 债务的内部账户不是钱待着的地方，自动记账不该认到它。
+    if (!a.archived && !a.isDebt)
       CaptureAccount(id: a.id, name: a.name, kind: a.kind, matchHints: a.matchHints),
 ];
 

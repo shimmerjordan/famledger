@@ -182,7 +182,7 @@ void main() {
     await pumpHomeAt(tester, AssetsBackend(perks: acceptanceFixture()), pending: [pendingTx]);
     final perks = tester.getTopLeft(find.byKey(const ValueKey('home-perks'))).dy;
     expect(tester.getTopLeft(find.text('待确认 1')).dy, lessThan(perks));
-    expect(perks, lessThan(tester.getTopLeft(find.text('记录资产')).dy));
+    expect(perks, lessThan(tester.getTopLeft(find.byKey(const ValueKey('assets-card'))).dy));
   });
 
   testWidgets('位置（宽屏）：在右栏顶部，基金余额上面', (tester) async {

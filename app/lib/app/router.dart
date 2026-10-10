@@ -7,12 +7,12 @@ import '../ui/ai/ai_chat_page.dart';
 import '../ui/ai/ai_report_page.dart';
 import '../ui/analysis/analysis_page.dart';
 import '../ui/assets/asset_routes.dart';
-import '../ui/assets/assets_page.dart';
 import '../ui/auth/connect_page.dart';
 import '../ui/auth/login_page.dart';
 import '../ui/auth/setup_page.dart';
 import '../ui/funds/fund_detail_page.dart';
 import '../ui/funds/fund_form_page.dart';
+import '../ui/funds/funds_page.dart';
 import '../ui/home/home_page.dart';
 import '../ui/import/import_page.dart';
 import '../ui/import/import_preview_page.dart';
@@ -122,8 +122,8 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/transactions/:id',
         builder: (context, state) => _framed(state, TxDetailPage(state.pathParameters['id']!)),
       ),
-      // 基金并进了资产 tab 的第一段：老地址（书签、旧版通知）转过去。
-      GoRoute(path: '/funds', redirect: (context, state) => assetsLocation(AssetsPage.fundsTab)),
+      // 基金（钱袋子）在「我的」里管；资产页不再有这一段（理财里的基金是公募基金，一个品类）。
+      GoRoute(path: '/funds', builder: (context, state) => _framed(state, const FundsPage())),
       GoRoute(
         path: '/funds/new',
         builder: (context, state) => _framed(state, const FundFormPage()),

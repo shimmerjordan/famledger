@@ -243,6 +243,8 @@ void main() {
 
   testWidgets('最近流水为空时教一句并给主操作', (tester) async {
     await pumpHome(tester);
+    // 首页上面还有资产概览，最近流水在下面：滚过去看。
+    await tester.scrollUntilVisible(find.text('这个月还没有流水'), 300, scrollable: find.byType(Scrollable).first);
 
     expect(find.text('这个月还没有流水'), findsOneWidget);
     expect(find.widgetWithText(FilledButton, '记一笔'), findsOneWidget);
@@ -250,6 +252,7 @@ void main() {
 
   testWidgets('最近流水按 TxTile 渲染金额', (tester) async {
     await pumpHome(tester, recent: [recentTx]);
+    await tester.scrollUntilVisible(find.text('菜市场'), 300, scrollable: find.byType(Scrollable).first);
 
     expect(find.text('菜市场'), findsOneWidget);
     expect(find.text('−¥88.00'), findsOneWidget);

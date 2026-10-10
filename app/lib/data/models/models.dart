@@ -11,6 +11,7 @@ export 'asset_valuation.dart';
 export 'backup.dart';
 export 'budget.dart';
 export 'category.dart';
+export 'debt.dart';
 export 'fund.dart';
 export 'holding.dart';
 export 'json_utils.dart';

@@ -14,6 +14,8 @@
 //   · 转账的两头各算各的：`account_id`/`fund_id` 是转出侧，`to_*` 是转入侧。
 //     「拨款」只有基金对 → 账户余额不动；「还信用卡」只有账户对 → 基金余额不动。
 
+const invest = require('./invest');
+
 /** 只有确认且未软删的流水算数。 */
 const CONFIRMED = "deleted_at IS NULL AND status = 'confirmed'";
 
@@ -182,27 +184,25 @@ function dailyTotals(db, month, filter) {
   }));
 }
 
-/**
- * 持仓市值（分）= 份额E4 × 价格E4 / 1e6，四舍五入。两个 ×10000 的数一乘就越过 2^53，
- * 所以走 BigInt；App 端按同一个式子算，两边对得上。
- */
-function marketCents(quantityE4, priceE4) {
-  return Number((BigInt(quantityE4) * BigInt(priceE4) + 500000n) / 1000000n);
-}
+/** 持仓市值（分）= 份额E4 × 价格E4 / 1e6，四舍五入。口径在 lib/invest.js。 */
+const { marketCents } = invest;
 
 /**
- * 计入投资统计的持仓：有价格、未归档未删除、份额 > 0（清了仓的只剩已实现盈亏，不算市值）。
- * @returns {{accountId: string|null, costCents: number, marketCents: number}[]}
+ * 计入投资统计的理财：未归档未删除、还持有着（份额 > 0）、估值算得出来（unit 没价格的跳过）。
+ * 估值按品类算（lib/invest.js 的 valueOf）：定期按天计息、活期按手动更新的金额。
+ * @param {string} today `YYYY-MM-DD`，定期计息算到哪天
+ * @returns {{accountId: string|null, kind: string, costCents: number, marketCents: number}[]}
  */
-function investPositions(db) {
-  return db.all(
-    `SELECT account_id, quantity_e4, cost_cents, price_e4 FROM holdings
-      WHERE deleted_at IS NULL AND archived = 0 AND quantity_e4 > 0 AND price_e4 IS NOT NULL`,
-  ).map((r) => ({
-    accountId: r.account_id,
-    costCents: cents(r.cost_cents),
-    marketCents: marketCents(r.quantity_e4, r.price_e4),
-  }));
+function investPositions(db, today) {
+  const out = [];
+  for (const r of db.all(
+    `SELECT * FROM holdings WHERE deleted_at IS NULL AND archived = 0 AND quantity_e4 > 0`,
+  )) {
+    const value = invest.valueOf(r, today);
+    if (value === null) continue;
+    out.push({ accountId: r.account_id, kind: invest.kindOf(r), costCents: cents(r.cost_cents), marketCents: value });
+  }
+  return out;
 }
 
 module.exports = {

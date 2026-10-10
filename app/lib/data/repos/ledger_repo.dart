@@ -23,6 +23,7 @@ class LedgerData {
     this.memberships = const [],
     this.benefits = const [],
     this.benefitEvents = const [],
+    this.debts = const [],
     this.seq = 0,
     this.index,
   });
@@ -39,6 +40,7 @@ class LedgerData {
   final List<Membership> memberships;
   final List<Benefit> benefits;
   final List<BenefitEvent> benefitEvents;
+  final List<Debt> debts;
 
   /// 已同步到的全局序号。
   final int seq;
@@ -49,13 +51,16 @@ class LedgerData {
   bool get isEmpty => funds.isEmpty && accounts.isEmpty && categories.isEmpty;
 
   List<Fund> get activeFunds => index?.activeFunds ?? funds.where((f) => !f.archived).toList();
-  List<Account> get activeAccounts => index?.activeAccounts ?? accounts.where((a) => !a.archived).toList();
+  /// 在用的账户，不含债务的内部账户（那些只在「资产 › 债务」里出现，记账、筛选、设置都不该挑到）。
+  List<Account> get activeAccounts =>
+      index?.activeAccounts ?? accounts.where((a) => !a.archived && !a.isDebt).toList();
   List<Member> get activeMembers => index?.activeMembers ?? members.where((m) => !m.archived).toList();
   List<Asset> get activeAssets => assets.where((a) => !a.archived).toList();
   List<Holding> get activeHoldings => holdings.where((h) => !h.archived).toList();
   List<PerkPlatform> get activePlatforms => platforms.where((p) => !p.archived).toList();
   List<Membership> get activeMemberships => memberships.where((m) => !m.archived).toList();
   List<Benefit> get activeBenefits => benefits.where((b) => !b.archived).toList();
+  List<Debt> get activeDebts => debts.where((d) => !d.archived).toList();
 
   List<Category> expenseCategories() =>
       index?.expenseCategories ?? categories.where((c) => !c.archived && c.kind == 'expense').toList();
@@ -72,6 +77,7 @@ class LedgerData {
   PerkPlatform? platform(String? id) => _get(index?.platforms, platforms, id, (e) => e.id);
   Membership? membership(String? id) => _get(index?.memberships, memberships, id, (e) => e.id);
   Benefit? benefit(String? id) => _get(index?.benefits, benefits, id, (e) => e.id);
+  Debt? debt(String? id) => _find(debts, id, (e) => e.id);
 
   /// 基金在 12 色盘里的位置（没设颜色时按顺序取色）。
   int fundIndex(String id) => index?.fundOrder[id] ?? funds.indexWhere((f) => f.id == id);
@@ -128,7 +134,7 @@ class LedgerIndex {
     benefits: {for (final e in benefits) e.id: e},
     fundOrder: {for (var i = 0; i < funds.length; i++) funds[i].id: i},
     activeFunds: List.unmodifiable(funds.where((f) => !f.archived)),
-    activeAccounts: List.unmodifiable(accounts.where((a) => !a.archived)),
+    activeAccounts: List.unmodifiable(accounts.where((a) => !a.archived && !a.isDebt)),
     activeMembers: List.unmodifiable(members.where((m) => !m.archived)),
     expenseCategories: List.unmodifiable(categories.where((c) => !c.archived && c.kind == 'expense')),
     incomeCategories: List.unmodifiable(categories.where((c) => !c.archived && c.kind == 'income')),
@@ -179,6 +185,7 @@ class LedgerRepo {
   List<Membership> memberships = [];
   List<Benefit> benefits = [];
   List<BenefitEvent> benefitEvents = [];
+  List<Debt> debts = [];
   int seq = 0;
 
   /// 任何一次本地数据变化都会打一下（UI 重新取 [snapshot]）。
@@ -197,6 +204,7 @@ class LedgerRepo {
     memberships: List.unmodifiable(memberships),
     benefits: List.unmodifiable(benefits),
     benefitEvents: List.unmodifiable(benefitEvents),
+    debts: List.unmodifiable(debts),
     seq: seq,
     index: LedgerIndex.of(
       funds: funds,
@@ -225,6 +233,7 @@ class LedgerRepo {
     memberships = jsonList(cached['memberships'], Membership.fromJson);
     benefits = jsonList(cached['benefits'], Benefit.fromJson);
     benefitEvents = jsonList(cached['benefit_events'], BenefitEvent.fromJson);
+    debts = jsonList(cached['debts'], Debt.fromJson);
     // 老版本不认识的表，服务端早就把它们的行发过、游标也走过去了，接着拉永远补不回来。
     final missesTables = _tablesAddedLater.any((key) => !cached.containsKey(key));
     seq = missesTables ? 0 : jsonInt(cached['seq']);
@@ -239,6 +248,7 @@ class LedgerRepo {
     'memberships',
     'benefits',
     'benefit_events',
+    'debts',
   ];
 
   /// 增量同步：`GET /changes?since=`，按 id 合并，软删的直接删掉。
@@ -259,6 +269,7 @@ class LedgerRepo {
       memberships = [];
       benefits = [];
       benefitEvents = [];
+      debts = [];
     }
     var more = true;
     var guard = 0;
@@ -279,6 +290,7 @@ class LedgerRepo {
       memberships = _merge(memberships, res['memberships'], Membership.fromJson, (e) => e.id);
       benefits = _merge(benefits, res['benefits'], Benefit.fromJson, (e) => e.id);
       benefitEvents = _merge(benefitEvents, res['benefit_events'], BenefitEvent.fromJson, (e) => e.id);
+      debts = _merge(debts, res['debts'], Debt.fromJson, (e) => e.id);
       seq = jsonInt(res['next'], seq);
       more = jsonBool(res['more']);
     }
@@ -417,6 +429,11 @@ class LedgerRepo {
       _put(holdings, item, (e) => e.id);
 
   Future<void> dropHolding(String id) => _drop(holdings, id, (e) => e.id);
+
+  // 债务走 DebtsRepo（新建会连带建内部账户、收回会记转账，不是纯 CRUD）。
+  Future<void> putDebt(Debt item) => _put(debts, item, (e) => e.id);
+
+  Future<void> dropDebt(String id) => _drop(debts, id, (e) => e.id);
 
   // —— 会员权益 ——
   // 增删改走 PerksRepo（删除有级联、平台能合并），拿到服务端回的那一行后交给这里落本地。
@@ -574,6 +591,7 @@ class LedgerRepo {
     benefits.sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
     // 打卡事件新的在前（P3 的历史列表就这么画）。
     benefitEvents.sort((a, b) => b.occurredOn.compareTo(a.occurredOn));
+    debts.sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
   }
 
   Future<void> _persist() async {
@@ -590,6 +608,7 @@ class LedgerRepo {
       'memberships': memberships.map((e) => e.toJson()).toList(),
       'benefits': benefits.map((e) => e.toJson()).toList(),
       'benefit_events': benefitEvents.map((e) => e.toJson()).toList(),
+      'debts': debts.map((e) => e.toJson()).toList(),
       'seq': seq,
     });
   }

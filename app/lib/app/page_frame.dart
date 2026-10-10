@@ -62,9 +62,10 @@ int? shellIndexFor(String location) {
   bool under(String prefix) => path == prefix || path.startsWith('$prefix/');
   if (under('/home')) return 0;
   if (under('/transactions') || under('/import')) return 1;
-  if (under('/assets') || under('/funds')) return 2;
+  if (under('/assets')) return 2;
   if (under('/analysis') || under('/ai')) return 3;
-  if (under('/settings')) return 4;
+  // 基金（钱袋子）在「我的」里管。
+  if (under('/settings') || under('/funds')) return 4;
   return null;
 }
 

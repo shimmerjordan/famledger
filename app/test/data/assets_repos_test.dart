@@ -256,6 +256,8 @@ void main() {
         'memberships': <Object>[],
         'benefits': <Object>[],
         'benefit_events': <Object>[],
+        // 债务（10-09）也是后加的。
+        'debts': <Object>[],
         'seq': 42,
       });
 
@@ -522,6 +524,7 @@ void main() {
       );
       expect(rig.server.bodyOf('POST', '$api/holdings'), {
         'name': '',
+        'kind': 'fund',
         'market': 'fund',
         'quantityE4': 10000000,
         'costCents': 100000,
@@ -553,6 +556,7 @@ void main() {
       );
       expect(rig.server.bodyOf('POST', '$api/holdings'), {
         'name': '银行理财',
+        'kind': 'stock',
         'market': 'other',
         'quantityE4': 10000,
         'costCents': 5000000,
@@ -587,10 +591,59 @@ void main() {
         'priceSource': 'manual',
         'openedOn': '2026-09-10',
         'accountId': null,
+        'institution': null,
         'note': null,
       });
       expect(body.containsKey('quantityE4'), isFalse);
       expect(body.containsKey('costCents'), isFalse);
+    });
+
+    test('新建定期：不带份额、市场恒 other，带年化和到期日；更新金额只发 valueCents；分红带 side income', () async {
+      final rig = Rig({
+        'POST $api/holdings': [
+          {'holding': holdingRow('h1')},
+        ],
+        'PATCH $api/holdings/h1': [
+          {'holding': holdingRow('h1')},
+        ],
+        'POST $api/holdings/h1/trade': [
+          {'holding': holdingRow('h1'), 'transactions': <Object>[]},
+        ],
+        'GET $api/changes': [changes(), changes(), changes()],
+      });
+      await rig.holdings.create(
+        name: '招行三年定期',
+        kind: Holding.kindFixed,
+        code: '',
+        market: 'fund',
+        costCents: 5000000,
+        openedOn: '2026-01-01',
+        autoPrice: true,
+        priceE4: 1,
+        institution: '招商银行',
+        rateE6: 27500,
+        maturesOn: '2029-01-01',
+      );
+      expect(rig.server.bodyOf('POST', '$api/holdings'), {
+        'name': '招行三年定期',
+        'kind': 'fixed',
+        'market': 'other',
+        'costCents': 5000000,
+        'openedOn': '2026-01-01',
+        'priceSource': 'manual',
+        'institution': '招商银行',
+        'rateE6': 27500,
+        'maturesOn': '2029-01-01',
+      });
+      await rig.holdings.setValue('h1', 123456);
+      expect(rig.server.bodyOf('PATCH', '$api/holdings/h1'), {'valueCents': 123456});
+      await rig.holdings.trade('h1', side: TradeSide.income, amountCents: 1200, occurredOn: '2026-06-30', accountId: 'bank');
+      expect(rig.server.bodyOf('POST', '$api/holdings/h1/trade'), {
+        'side': 'income',
+        'amountCents': 1200,
+        'occurredOn': '2026-06-30',
+        'recordTransaction': {'accountId': 'bank'},
+      });
     });
 
     test('编辑时挂上投资账户：带 recordTransaction 说清成本从哪转进来', () async {
@@ -640,7 +693,7 @@ void main() {
       );
       final trade = await rig.holdings.trade(
         'h1',
-        buy: true,
+        side: TradeSide.buy,
         quantityE4: 10000,
         amountCents: 100,
         occurredOn: '2026-09-10',
@@ -700,7 +753,7 @@ void main() {
       });
       final result = await rig.holdings.trade(
         'h1',
-        buy: false,
+        side: TradeSide.sell,
         quantityE4: 5000000,
         amountCents: 60000,
         occurredOn: '2026-09-23',
@@ -727,7 +780,7 @@ void main() {
       });
       final result = await rig.holdings.trade(
         'h1',
-        buy: true,
+        side: TradeSide.buy,
         quantityE4: 1,
         amountCents: 0,
         occurredOn: '2026-09-23',

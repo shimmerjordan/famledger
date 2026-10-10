@@ -17,10 +17,13 @@
 //      **千万别改成 `strftime()` 或 UTC 区间**，那等于把每天最早的 8 小时记到
 //      前一天。`month` 省略时按**服务器本地时区**算当前月（部署 `TZ=Asia/Shanghai`
 //      时正好与家人的本地日期同一套），跨月那几个小时仍建议客户端显式传 `month`。
-//   4. **投资持仓进净资产**：挂了投资账户的持仓，成本已经以转账的形式记在账户余额里，
-//      只补浮盈（市值 − 成本）；没挂账户的整份市值计入。只算有价格、未归档未删除、
-//      份额 > 0 的持仓。「成本已在余额里」这个前提由 holdings.js 守着（有成本的持仓
+//   4. **理财进净资产**：估值按品类算（lib/invest.js：基金股票按份额×价、定期按天计息、
+//      活期按手动更新的金额）。挂了投资账户的，成本已经以转账的形式记在账户余额里，
+//      只补浮盈（估值 − 成本）；没挂账户的整份估值计入。只算估值算得出来、未归档未删除、
+//      还持有着的。「成本已在余额里」这个前提由 holdings.js 守着（有成本的持仓
 //      挂账户必须同时记转账、换账户补移仓转账、不许直接解绑），这里只管照算。
+//   6. **债务**：每笔债务背后一个 kind = 'debt' 的内部账户，余额就是还剩多少（借出为正、借入为负）。
+//      `debts.counted` 的才进资产负债（人情默认不计）；分项里不算进现金流。
 //   5. **实物估值进净资产**：物品估值按 lib/valuation.js 现算，只算未归档、在用或闲置的。
 //      按单件三态和类别默认「该计入」的部分是 `physical.includedCents`；家庭设置
 //      `assets.netWorthIncludesPhysical` 开着（`physical.counted`）才加进资产一侧，
@@ -128,22 +131,53 @@ function computeOverview(db, month = currentMonth()) {
   const accountDelta = sql.deltaMap(db, 'account');
   const fundDelta = sql.deltaMap(db, 'fund');
 
-  // 归档的也给 —— 归档只是「别在记账时挑到它」，钱还在里面。
-  const accounts = db
-    .all('SELECT id, initial_balance_cents FROM accounts WHERE deleted_at IS NULL ORDER BY sort_order, created_at')
-    .map((r) => ({
-      accountId: r.id,
-      balanceCents: (Number(r.initial_balance_cents) || 0) + (accountDelta.get(r.id) || 0),
-    }));
+  // 归档的也给 —— 归档只是「别在记账时挑到它」，钱还在里面。债务的内部账户（kind = 'debt'）也在列，
+  // App 靠它的余额算每笔债务还剩多少。
+  const accountRows = db.all(
+    'SELECT id, kind, initial_balance_cents FROM accounts WHERE deleted_at IS NULL ORDER BY sort_order, created_at',
+  );
+  const accounts = accountRows.map((r) => ({
+    accountId: r.id,
+    balanceCents: (Number(r.initial_balance_cents) || 0) + (accountDelta.get(r.id) || 0),
+  }));
   const funds = db
     .all('SELECT id FROM funds WHERE deleted_at IS NULL ORDER BY sort_order, created_at')
     .map((r) => ({ fundId: r.id, balanceCents: fundDelta.get(r.id) || 0 }));
 
+  // 债务账户 → 它那笔债务（方向、计不计入净资产）。账户在、债务被删了的不会有（删债务连账户一起删）。
+  const debtByAccount = new Map(
+    db.all('SELECT account_id, direction, counted FROM debts WHERE deleted_at IS NULL AND account_id IS NOT NULL')
+      .map((d) => [d.account_id, d]),
+  );
+  const kindById = new Map(accountRows.map((r) => [r.id, r.kind]));
+
   // 正余额是资产，负余额（通常是信用卡的欠款）取绝对值进负债。信用卡还成正数
   // 了（多还了钱）就照样是资产 —— 按余额的正负分，不按账户类型分。
+  // 分项：现金流 = 非投资、非债务账户；投资账户单列（证券户里的钱算理财）；债务按方向分应收、应付，
+  // 只有「计入净资产」的进资产负债（人情默认不计）。
   let assetsCents = 0;
   let liabilitiesCents = 0;
+  let cashCents = 0;
+  let investAccountsCents = 0;
+  const debts = { receivableCents: 0, payableCents: 0, countedReceivableCents: 0, countedPayableCents: 0, count: 0 };
   for (const a of accounts) {
+    const kind = kindById.get(a.accountId);
+    if (kind === 'debt') {
+      const d = debtByAccount.get(a.accountId);
+      if (!d) continue;
+      debts.count++;
+      const receivable = Math.max(0, a.balanceCents);
+      const payable = Math.max(0, -a.balanceCents);
+      debts.receivableCents += receivable;
+      debts.payableCents += payable;
+      if (!d.counted) continue;
+      debts.countedReceivableCents += receivable;
+      debts.countedPayableCents += payable;
+    } else if (kind === 'invest') {
+      investAccountsCents += a.balanceCents;
+    } else {
+      cashCents += a.balanceCents;
+    }
     if (a.balanceCents >= 0) assetsCents += a.balanceCents;
     else liabilitiesCents -= a.balanceCents;
   }
@@ -153,10 +187,20 @@ function computeOverview(db, month = currentMonth()) {
   const liveAccounts = new Set(accounts.map((a) => a.accountId));
   let investMarketCents = 0;
   let investCostCents = 0;
-  for (const p of sql.investPositions(db)) {
+  let investNetCents = 0;
+  /** @type {Map<string, {kind: string, valueCents: number, costCents: number, count: number}>} */
+  const byKind = new Map();
+  for (const p of sql.investPositions(db, valuation.localToday())) {
     investMarketCents += p.marketCents;
     investCostCents += p.costCents;
-    assetsCents += p.accountId && liveAccounts.has(p.accountId) ? p.marketCents - p.costCents : p.marketCents;
+    const net = p.accountId && liveAccounts.has(p.accountId) ? p.marketCents - p.costCents : p.marketCents;
+    investNetCents += net;
+    assetsCents += net;
+    const k = byKind.get(p.kind) || { kind: p.kind, valueCents: 0, costCents: 0, count: 0 };
+    k.valueCents += p.marketCents;
+    k.costCents += p.costCents;
+    k.count++;
+    byKind.set(p.kind, k);
   }
 
   const netWorthExPhysicalCents = assetsCents - liabilitiesCents;
@@ -198,6 +242,12 @@ function computeOverview(db, month = currentMonth()) {
     investMarketCents,
     investCostCents,
     investGainCents: investMarketCents - investCostCents,
+    // 净资产的分项（加起来 = netWorthExPhysicalCents）：现金流 + 投资账户 + 投资补差 + 计入的债务净额。
+    cashCents,
+    investAccountsCents,
+    investNetCents,
+    investByKind: [...byKind.values()].sort((x, y) => y.valueCents - x.valueCents || cmp(x.kind, y.kind)),
+    debts,
     netWorthExPhysicalCents,
     physical,
     month: {

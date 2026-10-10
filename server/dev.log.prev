@@ -1,0 +1,5 @@
+==> node v24.21.0  PORT=48090 DATA_DIR=./server/data WEB_ROOT=./app/build/web TRUST_PROXY=0
+==> http://127.0.0.1:48090/   健康检查 http://127.0.0.1:48090/healthz
+2026-10-09T13:34:50.688Z [debug] [ai] 限流 30/min/人，并发流上限 4
+2026-10-09T13:34:50.701Z [debug] [import] 导入限流 20/h/人，空闲超时 60000ms，总时长 300000ms；抓网页 10/min/人，fake-ip 拦截
+2026-10-09T13:34:50.745Z [info] [main] listening on 0.0.0.0:48090 data=/home/xyz/Projects/priv/famledger/server/data/famledger.db web=./app/build/web modules=accounts+ai+asset_import+assets+auth+backup+benefit_events+benefits+budgets+categories+changes+debts+funds+holdings+imports+members+memberships+model+platforms+rules+settings+setup+static+stats+transactions setupToken=off cors=off
