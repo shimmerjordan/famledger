@@ -34,7 +34,7 @@ void main() {
 
       expect(find.text('净资产'), findsOneWidget);
       expect(find.text('¥16,215.88'), findsOneWidget);
-      // 没有目标/储备基金攒着钱：可支配就是现金流，折叠行不重复写。
+      // 没有目标/储备模块攒着钱：可支配就是现金流，折叠行不重复写。
       expect(breakdownText(tester), '现金流 ¥9,800.00 · 理财 ¥520.00 · 实物计入 ¥5,895.88');
       expect(find.byKey(const ValueKey('net-worth-details')), findsNothing);
       expect(
@@ -48,7 +48,7 @@ void main() {
       expect(find.text('现金流'), findsOneWidget);
       expect(find.text('现金、银行卡、支付宝……已减信用卡欠款'), findsOneWidget);
       expect(find.text('可支配现金流'), findsOneWidget);
-      expect(find.text('目标、储备基金没攒着钱，和现金流一样'), findsOneWidget);
+      expect(find.text('目标、储备板块没攒着钱，和现金流一样'), findsOneWidget);
       expect(find.text('¥9,800.00'), findsNWidgets(2), reason: '现金流、可支配各一个');
       expect(find.text('理财'), findsWidgets);
       expect(find.text('¥520.00'), findsOneWidget);
@@ -75,7 +75,7 @@ void main() {
       );
       await expand(tester);
       expect(find.text('¥6,800.00'), findsOneWidget);
-      expect(find.text('已扣目标、储备基金攒着的 ¥3,000.00'), findsOneWidget);
+      expect(find.text('已扣目标、储备板块攒着的 ¥3,000.00'), findsOneWidget);
     });
 
     testWidgets('宽屏（≥ 840）：总览和下面的四段一样宽，分项排成一行格子带口径，不用展开；展开只剩动作', (tester) async {
@@ -382,7 +382,10 @@ void main() {
       physical: PhysicalSummary(counted: true),
     );
     expect(netWorthBreakdown(accountsOnly), '现金流 ¥5,000.00');
-    expect(netWorthBreakdown(accountsOnly, reservedCents: 100000), '现金流 ¥5,000.00 · 可支配 ¥4,000.00');
+    expect(
+      netWorthBreakdown(accountsOnly, reserved: const CurrencyAmounts({'CNY': 100000})),
+      '现金流 ¥5,000.00 · 可支配 ¥4,000.00',
+    );
   });
 
   test('可支配现金流 = 账户净额 − 目标/储备基金的正余额；超支的、日常的基金都不扣', () {
@@ -409,9 +412,27 @@ void main() {
         FundBalance(fundId: 'gone', balanceCents: 99999),
       ],
     );
-    expect(cashFlowCents(o), 980000);
-    expect(reservedCents(o, funds), 350000, reason: '旅行 + 应急；育儿超支不算，已删的基金不认');
-    expect(disposableCents(o, funds), 630000);
-    expect(disposableCents(o, const []), 980000, reason: '主数据还没到：先按没有专款算');
+    expect(cashFlowAmounts(o), const CurrencyAmounts({'CNY': 980000}));
+    expect(reservedAmounts(o, funds), const CurrencyAmounts({'CNY': 350000}), reason: '旅行 + 应急；育儿超支不算，已删的板块不认');
+    expect(disposableAmounts(o, funds), const CurrencyAmounts({'CNY': 630000}));
+    expect(disposableAmounts(o, const []), const CurrencyAmounts({'CNY': 980000}), reason: '主数据还没到：先按没有专款算');
+  });
+
+  test('多币种：可支配在同一个币种里相减；美元板块的钱只扣美元现金流', () {
+    const funds = [Fund(id: 'trip', name: '旅行', kind: 'goal')];
+    const o = StatsOverview(
+      netWorthCents: 0,
+      assetsCents: 0,
+      liabilitiesCents: 0,
+      month: MonthStats(),
+      byCurrency: {
+        'CNY': CurrencyBucket(cashCents: 1000000, netWorthCents: 1000000),
+        'USD': CurrencyBucket(cashCents: 50000, netWorthCents: 50000),
+      },
+      funds: [FundBalance(fundId: 'trip', balanceCents: 0, balances: CurrencyAmounts({'USD': 20000, 'CNY': -100}))],
+    );
+    expect(cashFlowAmounts(o), const CurrencyAmounts({'CNY': 1000000, 'USD': 50000}));
+    expect(disposableAmounts(o, funds), const CurrencyAmounts({'CNY': 1000000, 'USD': 30000}), reason: '人民币超支不扣，美元攒着的 200 扣美元');
+    expect(netWorthBreakdown(o, reserved: reservedAmounts(o, funds)), '现金流 ¥10,000.00 + \$500.00 · 可支配 ¥10,000.00 + \$300.00');
   });
 }

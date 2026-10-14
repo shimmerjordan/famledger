@@ -279,9 +279,9 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('category-c1')));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('改基金'));
+    await tester.tap(find.text('改板块'));
     await tester.pumpAndSettle();
-    expect(find.text('给选中的 3 笔改基金'), findsOneWidget);
+    expect(find.text('给选中的 3 笔改板块'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('batch-fund-f2')));
     await tester.pumpAndSettle();
 
@@ -291,7 +291,7 @@ void main() {
     expect(inRow(1, '餐饮'), findsOneWidget, reason: '改过就不再标「猜的」');
     expect(inRow(2, '没类别'), findsOneWidget, reason: '收入那笔不挂支出类别');
     expect(inRow(2, '个人零花'), findsOneWidget);
-    expect(find.text('你改过类别或基金的 3 笔会拿去学'), findsOneWidget);
+    expect(find.text('你改过类别或板块的 3 笔会拿去学'), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('import-submit')));
     await tester.pumpAndSettle();

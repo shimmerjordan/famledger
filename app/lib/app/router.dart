@@ -24,6 +24,7 @@ import '../ui/settings/backup_page.dart';
 import '../ui/settings/budgets_page.dart';
 import '../ui/settings/capture_page.dart';
 import '../ui/settings/categories_page.dart';
+import '../ui/settings/currency_page.dart';
 import '../ui/settings/members_page.dart';
 import '../ui/settings/perk_reminder_page.dart';
 import '../ui/settings/rules_page.dart';
@@ -166,6 +167,10 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/settings/categories',
         builder: (context, state) => _framed(state, const CategoriesPage()),
+      ),
+      GoRoute(
+        path: '/settings/currency',
+        builder: (context, state) => _framed(state, const CurrencyPage()),
       ),
       GoRoute(
         path: '/settings/budgets',

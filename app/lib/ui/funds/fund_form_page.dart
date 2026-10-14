@@ -5,9 +5,14 @@ import 'package:go_router/go_router.dart';
 import '../../app/providers.dart';
 import '../../app/theme.dart';
 import '../../core/colors.dart';
+import '../../core/dates.dart';
 import '../../core/money.dart';
 import '../../data/models/models.dart';
+import '../../data/repos/ledger_repo.dart';
+import '../add_tx/account_picker.dart';
 import '../add_tx/picker_field.dart';
+import '../assets/asset_providers.dart';
+import '../analysis/month_picker.dart';
 import '../widgets/widgets.dart';
 import 'fund_providers.dart';
 import 'fund_template_sheet.dart';
@@ -45,11 +50,19 @@ class _FundFormPageState extends ConsumerState<FundFormPage> {
   final TextEditingController _name = TextEditingController();
   final TextEditingController _target = TextEditingController();
   final TextEditingController _budget = TextEditingController();
+  final TextEditingController _monthlyIncome = TextEditingController();
   final TextEditingController _description = TextEditingController();
 
   String _kind = 'custom';
   String? _icon;
   String? _color;
+  String _incomeStartMonth = Dates.currentMonth();
+
+  /// 每月固定进账：开着就每月 [_incomeDay] 号往 [_incomeAccountId] 记一笔真的收入（服务端生成）。
+  bool _incomeOn = false;
+  int _incomeDay = 10;
+  String? _incomeAccountId;
+  String? _incomeCategoryId;
   bool _isDefault = false;
   bool _archived = false;
   bool _bound = false;
@@ -76,6 +89,7 @@ class _FundFormPageState extends ConsumerState<FundFormPage> {
     _name.dispose();
     _target.dispose();
     _budget.dispose();
+    _monthlyIncome.dispose();
     _description.dispose();
     super.dispose();
   }
@@ -100,6 +114,14 @@ class _FundFormPageState extends ConsumerState<FundFormPage> {
     _budget.text = fund.monthlyBudgetCents == null
         ? ''
         : Money.plain(fund.monthlyBudgetCents!);
+    _monthlyIncome.text = fund.monthlyIncomeCents == null
+        ? ''
+        : Money.plain(fund.monthlyIncomeCents!);
+    _incomeStartMonth = fund.incomeStartMonth ?? Dates.currentMonth();
+    _incomeOn = fund.hasMonthlyIncome;
+    _incomeDay = fund.incomeDay ?? 10;
+    _incomeAccountId = fund.incomeAccountId;
+    _incomeCategoryId = fund.incomeCategoryId;
     _kind = fund.kind;
     _icon = fund.icon;
     _color = fund.color;
@@ -122,12 +144,23 @@ class _FundFormPageState extends ConsumerState<FundFormPage> {
   Future<void> _save() async {
     final name = _name.text.trim();
     if (name.isEmpty) {
-      setState(() => _error = '给这个基金起个名字');
+      setState(() => _error = '给这个板块起个名字');
       return;
     }
-    for (final entry in {'目标金额': _target, '月预算': _budget}.entries) {
+    for (final entry in {'目标金额': _target, '月预算': _budget, '每月进账': _monthlyIncome}.entries) {
       if (entry.value.text.trim().isNotEmpty && _money(entry.value) == null) {
         setState(() => _error = '${entry.key}填得不对，例如 10000');
+        return;
+      }
+    }
+    final income = _money(_monthlyIncome);
+    if (_incomeOn) {
+      if (income == null || income <= 0) {
+        setState(() => _error = '每月进多少？例如 15000');
+        return;
+      }
+      if (_incomeAccountId == null) {
+        setState(() => _error = '选一下工资进哪个账户');
         return;
       }
     }
@@ -139,6 +172,14 @@ class _FundFormPageState extends ConsumerState<FundFormPage> {
       'color': _color,
       'targetCents': _money(_target),
       'monthlyBudgetCents': _money(_budget),
+      // 关掉 = 不再生成（已经记的照常在）；开着就整条规则一起发。
+      'monthlyIncomeCents': _incomeOn ? income : null,
+      if (_incomeOn) ...{
+        'incomeDay': _incomeDay,
+        'incomeAccountId': _incomeAccountId,
+        'incomeCategoryId': _incomeCategoryId,
+        'incomeStartMonth': _incomeStartMonth,
+      },
       'description': _description.text.trim(),
       'isDefault': _isDefault,
       'archived': _archived,
@@ -156,10 +197,11 @@ class _FundFormPageState extends ConsumerState<FundFormPage> {
         await repo.updateFund(widget.id!, body);
       }
       ref.invalidate(ledgerProvider);
-      ref.invalidate(statsProvider);
+      // 开着每月进账时服务端当场补记了该记的月份：账单、首页、净资产都要重取。
+      refreshMoneyViews(ref);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(widget.id == null ? '基金已建好' : '已保存')),
+        SnackBar(content: Text(widget.id == null ? '板块已建好' : '已保存')),
       );
       if (context.canPop()) {
         context.pop();
@@ -184,21 +226,21 @@ class _FundFormPageState extends ConsumerState<FundFormPage> {
 
     if (editing && ledger == null) {
       return Scaffold(
-        appBar: AppBar(title: const Text('编辑基金')),
+        appBar: AppBar(title: const Text('编辑板块')),
         body: const SkeletonList(rows: 5),
       );
     }
     if (editing && fund == null) {
       return Scaffold(
-        appBar: AppBar(title: const Text('编辑基金')),
-        body: const InlineError(message: '这个基金已经不在了。'),
+        appBar: AppBar(title: const Text('编辑板块')),
+        body: const InlineError(message: '这个板块已经不在了。'),
       );
     }
 
     final palette = LedgerColors.of(context).fundPalette;
     return Scaffold(
       appBar: AppBar(
-        title: Text(editing ? '编辑基金' : '新建基金'),
+        title: Text(editing ? '编辑板块' : '新建板块'),
         actions: [
           if (!editing)
             TextButton(onPressed: _pickTemplate, child: const Text('用模板')),
@@ -212,7 +254,7 @@ class _FundFormPageState extends ConsumerState<FundFormPage> {
             topGap: LedgerLayout.pagePadding,
             child: TextField(
               controller: _name,
-              decoration: const InputDecoration(hintText: '例如「家庭公共基金」'),
+              decoration: const InputDecoration(hintText: '例如「家庭公共」'),
             ),
           ),
           PickerField(
@@ -281,19 +323,28 @@ class _FundFormPageState extends ConsumerState<FundFormPage> {
               decoration: const InputDecoration(prefixText: '¥ ', hintText: '例如 3000'),
             ),
           ),
+          const SizedBox(height: LedgerLayout.itemGap),
+          SwitchListTile(
+            key: const ValueKey('fund-income-switch'),
+            value: _incomeOn,
+            onChanged: (v) => setState(() => _incomeOn = v),
+            title: const Text('每月固定进账'),
+            subtitle: const Text('比如工资：每月到账那天自动记一笔收入'),
+          ),
+          if (_incomeOn) ..._incomeFields(theme, ledger),
           PickerField(
             label: '说明（选填）',
             child: TextField(
               controller: _description,
               maxLines: 2,
-              decoration: const InputDecoration(hintText: '这个基金管哪些钱'),
+              decoration: const InputDecoration(hintText: '这个板块管哪些钱'),
             ),
           ),
           const SizedBox(height: LedgerLayout.itemGap),
           SwitchListTile(
             value: _isDefault,
             onChanged: (v) => setState(() => _isDefault = v),
-            title: const Text('设为默认基金'),
+            title: const Text('设为默认板块'),
             subtitle: const Text('自动记账认不出归属时就放这里'),
           ),
           if (editing)
@@ -338,6 +389,75 @@ class _FundFormPageState extends ConsumerState<FundFormPage> {
         ],
       ),
     );
+  }
+
+  /// 每月固定进账的几栏：多少、几号、进哪个账户、记成什么、从哪个月起，外加一句提醒别再手记。
+  List<Widget> _incomeFields(ThemeData theme, LedgerData? ledger) {
+    final accounts = ledger?.activeAccounts ?? const <Account>[];
+    final account = ledger?.account(_incomeAccountId);
+    final symbol = Money.symbolFor(account?.currency ?? ref.read(baseCurrencyProvider)).trim();
+    final categories = ledger?.incomeCategories() ?? const <TxCategory>[];
+    return [
+      PickerField(
+        label: '每月进多少',
+        topGap: LedgerLayout.itemGap,
+        child: TextField(
+          key: const ValueKey('fund-income-amount'),
+          controller: _monthlyIncome,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          decoration: InputDecoration(prefixText: '$symbol ', hintText: '例如 15000'),
+        ),
+      ),
+      PickerField(
+        label: '每月几号到账',
+        child: DropdownButtonFormField<int>(
+          key: const ValueKey('fund-income-day'),
+          value: _incomeDay,
+          items: [for (var d = 1; d <= 28; d++) DropdownMenuItem(value: d, child: Text('每月 $d 号'))],
+          onChanged: (d) => setState(() => _incomeDay = d ?? 10),
+        ),
+      ),
+      PickerField(
+        label: '进哪个账户',
+        trailing: Text('金额按这个账户的币种', style: theme.textTheme.bodySmall),
+        child: AccountPicker(
+          keyPrefix: 'fund-income-account',
+          accounts: accounts,
+          selectedId: _incomeAccountId,
+          onSelected: (id) => setState(() => _incomeAccountId = id),
+        ),
+      ),
+      PickerField(
+        label: '记成什么',
+        child: DropdownButtonFormField<String?>(
+          key: const ValueKey('fund-income-category'),
+          value: categories.any((c) => c.id == _incomeCategoryId) ? _incomeCategoryId : null,
+          isExpanded: true,
+          items: [
+            const DropdownMenuItem<String?>(value: null, child: Text('工资（没有就自动建一个）')),
+            for (final c in categories) DropdownMenuItem<String?>(value: c.id, child: Text(c.name)),
+          ],
+          onChanged: (v) => setState(() => _incomeCategoryId = v),
+        ),
+      ),
+      PickerField(
+        label: '从哪个月起',
+        trailing: Text('选以前的月份会补记，最多 24 个月', style: theme.textTheme.bodySmall),
+        child: MonthPicker(
+          month: _incomeStartMonth,
+          onChanged: (m) => setState(() => _incomeStartMonth = m),
+        ),
+      ),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(LedgerLayout.pagePadding, 8, LedgerLayout.pagePadding, 0),
+        child: Text(
+          '记的是真流水：账户余额、这个板块、本月收入都会涨，账单里能改能删。'
+          '开了就别再手记这份工资，不然会记重；改金额只影响以后的月份。',
+          key: const ValueKey('fund-income-note'),
+          style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+        ),
+      ),
+    ];
   }
 }
 

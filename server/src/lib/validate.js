@@ -86,6 +86,13 @@ function month(v, field, { allowStar = false } = {}) {
   return v;
 }
 
+/** A 3-letter ISO-4217 code (CNY, USD…), upper-cased on the way out. */
+function currency(v, field) {
+  const c = str(v, field, { min: 3, max: 3 }).toUpperCase();
+  if (!/^[A-Z]{3}$/.test(c)) bad(field, '币种必须是 3 个字母的代码');
+  return c;
+}
+
 const pad2 = (n) => String(n).padStart(2, '0');
 
 /** The server's local calendar day (the deploy image is pinned to Asia/Shanghai). */
@@ -136,5 +143,5 @@ function body(v) {
 }
 
 module.exports = {
-  bad, isObject, isMissing, str, optStr, int, optInt, num, bool, enumOf, color, emoji, month, day, optDay, localDay, isoTime, list, body,
+  bad, isObject, isMissing, str, optStr, int, optInt, num, bool, enumOf, color, emoji, month, currency, day, optDay, localDay, isoTime, list, body,
 };

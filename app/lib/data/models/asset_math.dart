@@ -124,6 +124,15 @@ AssetSummary summarizeAssets(Iterable<Asset> assets, DateTime now) {
   );
 }
 
+/// 按币种分开的物品小结：每个币种一份 [AssetSummary]（金额不折算，美元买的就按美元算）。
+Map<String, AssetSummary> summarizeAssetsByCurrency(Iterable<Asset> assets, DateTime now) {
+  final groups = <String, List<Asset>>{};
+  for (final a in assets) {
+    groups.putIfAbsent(a.currency.toUpperCase(), () => []).add(a);
+  }
+  return {for (final e in groups.entries) e.key: summarizeAssets(e.value, now)};
+}
+
 enum AssetSort { daily, days, price, value }
 
 /// 一律从大到小；一样大的按用户自己的排序。
@@ -334,6 +343,15 @@ class PortfolioSummary {
   int get gainCents => marketCents - costCents;
   double? get gainRate => costCents > 0 ? gainCents / costCents : null;
   bool get isEmpty => heldCount == 0 && clearedCount == 0;
+}
+
+/// 按币种分开的理财小结：每个币种一份 [PortfolioSummary]（美股按美元算，不折算）。
+Map<String, PortfolioSummary> summarizeHoldingsByCurrency(Iterable<Holding> holdings, DateTime now) {
+  final groups = <String, List<Holding>>{};
+  for (final h in holdings) {
+    groups.putIfAbsent(h.currency.toUpperCase(), () => []).add(h);
+  }
+  return {for (final e in groups.entries) e.key: summarizeHoldings(e.value, now)};
 }
 
 /// 没价格的、清了仓的都不进估值：前者不知道值多少，后者已经不值钱了。

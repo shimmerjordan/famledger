@@ -20,7 +20,7 @@
 const crypto = require('node:crypto');
 
 const { HttpError, sendJson } = require('../lib/router');
-const { makeCrud } = require('../lib/crud');
+const { makeCrud, currencyColumns, requireSameCurrency } = require('../lib/crud');
 const { rowToJson } = require('../lib/db');
 const { logActivity } = require('../lib/activity');
 const idem = require('../lib/idempotency');
@@ -294,6 +294,25 @@ module.exports = (ctx) => {
           }
         }
       }
+      // 币种：给了就用；新建没给就跟挂的投资账户走，再没有就是家庭基准币。挂的账户、成本从哪转进来，
+      // 都得和持仓同币种（美股持仓的成本从美元户走），不同就 400。
+      if (!v.isMissing(body.currency)) Object.assign(out, currencyColumns(db, body, isPatch));
+      else if (!isPatch) {
+        const acc = out.account_id && db.get('SELECT currency FROM accounts WHERE id = ?', out.account_id);
+        out.currency = acc ? acc.currency : db.meta('currency', 'CNY');
+      }
+      const currency = out.currency || row?.currency || db.meta('currency', 'CNY');
+      const linked = 'account_id' in out ? out.account_id : row?.account_id;
+      if (linked && (!isPatch || given('accountId') || given('currency'))) {
+        requireSameCurrency(db, linked, currency, 'accountId', '这笔持仓');
+      }
+      if (!isPatch) {
+        const rt = recordSpec(body.recordTransaction);
+        if (rt && typeof rt.fromAccountId === 'string') requireSameCurrency(db, rt.fromAccountId, currency, 'fromAccountId', '这笔持仓');
+      } else {
+        const move = pendingMoves.get(body);
+        if (move) requireSameCurrency(db, move.from, currency, 'fromAccountId', '这笔持仓');
+      }
       return out;
     },
 
@@ -350,6 +369,7 @@ module.exports = (ctx) => {
       if (rt && side === 'income') {
         into = v.str(rt.accountId, 'accountId', { max: 64 });
         if (!accountExists(into)) v.bad('accountId', '账户不存在');
+        requireSameCurrency(db, into, h.currency, 'accountId', '这笔持仓');
       } else if (rt) {
         if (!h.account_id) throw needsAccount();
         // 挂的账户被删了，下面记转账会报成请求里的账户字段不存在，用户会以为是自己选错了卡。
@@ -357,6 +377,7 @@ module.exports = (ctx) => {
           throw new HttpError(400, 'holding_needs_account', '这笔持仓挂的投资账户已经删了，重新挂一个才能同时记账');
         }
         counter = counterAccount(rt.accountId, 'accountId', h.account_id);
+        requireSameCurrency(db, counter, h.currency, 'accountId', '这笔持仓');
       }
 
       let qty = h.quantity_e4;

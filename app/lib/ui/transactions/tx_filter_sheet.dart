@@ -137,7 +137,7 @@ class _TxFilterSheetState extends State<_TxFilterSheet> {
                     ),
                   ),
                   PickerField(
-                    label: '基金',
+                    label: '板块',
                     child: _Chips(
                       values: {
                         for (final f in ledger.activeFunds) f.id: f.name,

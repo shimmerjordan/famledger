@@ -90,6 +90,7 @@ class AssetsRepo {
     String? note,
     ValuationInput? valuation,
     AssetRecord? record,
+    String? currency,
     String? clientId,
   }) async {
     final body = <String, dynamic>{
@@ -98,6 +99,7 @@ class AssetsRepo {
       'priceCents': priceCents,
       'purchasedOn': purchasedOn,
     };
+    putIfNotNull(body, 'currency', currency);
     putIfNotNull(body, 'expectedDays', expectedDays);
     if (note != null && note.isNotEmpty) body['note'] = note;
     if (valuation != null) body.addAll(valuation.toCreateJson());
@@ -116,7 +118,9 @@ class AssetsRepo {
     int? expectedDays,
     String? note,
     ValuationInput? valuation,
+    String? currency,
   }) => update(id, {
+    if (currency != null) 'currency': currency,
     'name': name,
     'category': category,
     'priceCents': priceCents,

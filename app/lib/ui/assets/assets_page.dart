@@ -35,7 +35,7 @@ class AssetsPage extends ConsumerStatefulWidget {
   final PerkView? perksView;
   final PerkScope? perksScope;
 
-  // 基金（家庭公共、育儿……这些钱袋子）不在这里：它不是一类资产，挪到了「我的 › 基金」（/funds）；
+  // 基金（家庭公共、育儿……这些钱袋子）不在这里：它不是一类资产，挪到了「我的 › 财富」（/funds）；
   // 公募基金是理财里的一个品类，和股票、定期平级。
   static const int investTab = 0;
   static const int debtsTab = 1;
@@ -219,6 +219,8 @@ class _AssetsPageState extends ConsumerState<AssetsPage>
       appBar: AppBar(
         title: const Text('资产'),
         actions: [
+          // 「换算」：合计按币种分开显示，点这里合成一个币种（按今日汇率）。
+          const CurrencyMenuButton(),
           // 物品 tab 的「✨ 智能导入」：粘贴订单文字，识别范围预选「只要实物」。
           if (items)
             IconButton(

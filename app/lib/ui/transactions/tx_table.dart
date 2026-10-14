@@ -217,7 +217,7 @@ class _Header extends StatelessWidget {
               date: text('日期'),
               category: text('类别'),
               merchant: text('商户 / 备注'),
-              fund: text('基金'),
+              fund: text('板块'),
               account: text('账户'),
               member: text('成员'),
               amount: text('金额'),
@@ -350,8 +350,9 @@ class _Row extends StatelessWidget {
             amount: FittedBox(
               fit: BoxFit.scaleDown,
               alignment: Alignment.centerRight,
-              child: MoneyText(
+              child: MultiCurrencyAmount(
                 tx.isExpense ? -tx.amountCents : tx.amountCents,
+                currency: tx.currency,
                 signed: tx.isIncome,
                 color: tx.status == 'void' ? muted : null,
               ),
@@ -459,7 +460,7 @@ class TxSelectionBar extends StatelessWidget {
           TextButton.icon(
             onPressed: onFund,
             icon: const Icon(Icons.savings_outlined, size: 18),
-            label: const Text('改基金'),
+            label: const Text('改板块'),
           ),
         ),
         Tooltip(

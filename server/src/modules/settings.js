@@ -27,6 +27,8 @@ const DEFAULTS = {
   },
   ui: {
     firstDayOfMonth: 1,
+    // 并排显示的币种（需求4e）；基准币另看 meta.currency。fx.js 也读这份来决定抓哪些对。
+    displayCurrencies: ['CNY', 'USD'],
   },
   // spec §2: physical items count towards net worth by default (per category,
   // overridable per item); this is the household-wide switch.
@@ -54,6 +56,21 @@ function currentSettings(db) {
     ui: { ...DEFAULTS.ui, ...(v.isObject(s.ui) ? s.ui : {}) },
     assets: { ...DEFAULTS.assets, ...(v.isObject(s.assets) ? s.assets : {}) },
   };
+}
+
+/**
+ * 校验并规整「显示币种」列表：每项 3 位字母、转大写、去重保序；空数组或全非法
+ * → 回退默认 [CNY, USD]（与客户端、fx.js 的兜底一致，绝不存一个空列表下去）。
+ */
+function currencyList(raw) {
+  if (!Array.isArray(raw)) v.bad('displayCurrencies', '显示币种必须是一个数组');
+  const out = [];
+  for (const item of raw) {
+    const code = typeof item === 'string' ? item.trim().toUpperCase() : '';
+    if (!/^[A-Z]{3}$/.test(code)) v.bad('displayCurrencies', '币种必须是 3 个字母的代码');
+    if (!out.includes(code)) out.push(code);
+  }
+  return out.length ? out : [...DEFAULTS.ui.displayCurrencies];
 }
 
 module.exports = (ctx) => {
@@ -87,6 +104,9 @@ module.exports = (ctx) => {
       const u = v.isObject(b.ui) ? b.ui : v.bad('ui', 'ui 必须是对象');
       if (u.firstDayOfMonth !== undefined) {
         next.ui.firstDayOfMonth = v.int(u.firstDayOfMonth, 'firstDayOfMonth', { min: 1, max: 28 });
+      }
+      if (u.displayCurrencies !== undefined) {
+        next.ui.displayCurrencies = currencyList(u.displayCurrencies);
       }
     }
     if (b.assets !== undefined) {

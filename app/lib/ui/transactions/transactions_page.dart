@@ -192,7 +192,7 @@ class _TransactionsPageState extends ConsumerState<TransactionsPage> {
     await _runBulk(
       [for (final tx in plain) tx.id],
       patch: {'fundId': id},
-      done: _doneText(plain.length, chosen.length - plain.length, '基金'),
+      done: _doneText(plain.length, chosen.length - plain.length, '板块'),
     );
   }
 
@@ -312,7 +312,7 @@ class _TransactionsPageState extends ConsumerState<TransactionsPage> {
     final categoryHint = plain.isEmpty
         ? '转账没有类别'
         : (kinds.length > 1 ? '支出和收入的类别不通用，分开改' : null);
-    final fundHint = plain.isEmpty ? '转账的基金是成对的，去详情里改' : null;
+    final fundHint = plain.isEmpty ? '转账的板块是成对的，去详情里改' : null;
     final ready = !_busy && ledger != null;
     return TxSelectionBar(
       count: chosen.length,
@@ -588,14 +588,14 @@ class _DayHeader extends StatelessWidget {
               style: theme.textTheme.titleSmall,
             ),
           ),
-          if (group.incomeCents > 0) ...[
+          if (!group.income.isZero) ...[
             Text('收 ', style: theme.textTheme.bodySmall),
-            MoneyText(group.incomeCents, size: MoneySize.small, signed: true),
+            CurrencyTotal(group.income, size: MoneySize.small, signed: true),
             const SizedBox(width: 10),
           ],
-          if (group.expenseCents > 0) ...[
+          if (!group.expense.isZero) ...[
             Text('支 ', style: theme.textTheme.bodySmall),
-            MoneyText(-group.expenseCents, size: MoneySize.small),
+            CurrencyTotal(group.expense.scale(-1), size: MoneySize.small),
           ],
         ],
       ),

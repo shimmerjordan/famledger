@@ -20,6 +20,7 @@ class Debt {
     this.memoLog = const [],
     this.sortOrder = 0,
     this.archived = false,
+    this.currency = 'CNY',
   });
 
   static const String lend = 'lend';
@@ -66,6 +67,9 @@ class Debt {
   final int sortOrder;
   final bool archived;
 
+  /// 这笔债务的币种（ISO-4217，默认 CNY）；与它的内部账户同币。
+  final String currency;
+
   bool get isLend => direction == lend;
   bool get isFavor => kind == kindFavor;
   String get kindLabel => kindLabels[kind] ?? '其他';
@@ -102,6 +106,7 @@ class Debt {
         : const [],
     sortOrder: jsonInt(json['sortOrder']),
     archived: jsonBool(json['archived']),
+    currency: jsonString(json['currency'], 'CNY'),
   );
 
   Map<String, dynamic> toJson() {
@@ -116,6 +121,7 @@ class Debt {
       'memoLog': memoLog.map((e) => e.toJson()).toList(),
       'sortOrder': sortOrder,
       'archived': archived,
+      'currency': currency,
     };
     putIfNotNull(json, 'accountId', accountId);
     putIfNotNull(json, 'dueOn', dueOn);

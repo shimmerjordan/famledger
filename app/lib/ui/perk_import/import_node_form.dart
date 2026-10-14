@@ -719,7 +719,7 @@ class _ImportNodeFormState extends State<ImportNodeForm> {
             groupValue: _linkValue,
             onChanged: _onLink,
             title: const Text('同时记一笔支出'),
-            subtitle: const Text('按价格和购买日期记，落在默认基金；这笔钱已经记过账就别选，免得记两遍'),
+            subtitle: const Text('按价格和购买日期记，落在默认板块；这笔钱已经记过账就别选，免得记两遍'),
           ),
         ]),
       ),

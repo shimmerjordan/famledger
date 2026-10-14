@@ -62,12 +62,19 @@ void main() {
         'color': '#c36a4f',
         'targetCents': 500000,
         'monthlyBudgetCents': 200000,
+        'monthlyIncomeCents': 1500000,
+        'incomeDay': 10,
+        'incomeAccountId': 'a1',
+        'incomeCategoryId': 'c1',
+        'incomeStartMonth': '2026-10',
         'description': '日常开销',
         'sortOrder': 1,
         'archived': false,
         'isDefault': true,
       };
-      expect(Fund.fromJson(json).toJson(), json);
+      final fund = Fund.fromJson(json);
+      expect(fund.toJson(), json);
+      expect(fund.hasMonthlyIncome, isTrue, reason: '有金额、有账户 = 开着每月进账');
     });
   });
 
@@ -447,7 +454,7 @@ void main() {
           'aiProviderId': 'prov-1',
           'allowedApps': ['com.tencent.mm'],
         },
-        'ui': {'firstDayOfMonth': 1},
+        'ui': {'firstDayOfMonth': 1, 'displayCurrencies': ['CNY', 'USD']},
         'assets': {'netWorthIncludesPhysical': false},
       };
       final s = Settings.fromJson(json);
@@ -456,6 +463,7 @@ void main() {
       expect(s.capture.aiAutoConfirm, isTrue);
       expect(s.capture.aiProviderId, 'prov-1');
       expect(s.ui.firstDayOfMonth, 1);
+      expect(s.ui.displayCurrencies, ['CNY', 'USD']);
       expect(s.assets.netWorthIncludesPhysical, isFalse);
       expect(s.toJson(), json);
 
@@ -467,6 +475,7 @@ void main() {
       expect(empty.capture.aiProviderId, isNull);
       expect(empty.capture.allowedApps, isEmpty);
       expect(empty.ui.firstDayOfMonth, 1);
+      expect(empty.ui.displayCurrencies, ['CNY', 'USD'], reason: '老服务端没给 displayCurrencies：默认人民币 + 美元');
       expect(empty.assets.netWorthIncludesPhysical, isTrue, reason: '老服务端没有 assets 段：实物默认计入');
     });
   });

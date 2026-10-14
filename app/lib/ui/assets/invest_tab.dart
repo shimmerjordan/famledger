@@ -117,6 +117,12 @@ class _InvestTabState extends ConsumerState<InvestTab> {
             final held = holdings.where((h) => !h.isCleared).toList();
             final cleared = holdings.where((h) => h.isCleared).toList();
             final summary = summarizeHoldings(holdings, now);
+            // 金额按币种分开（美股按美元算），笔数、品类这些不分。
+            final byCurrency = summarizeHoldingsByCurrency(holdings, now);
+            CurrencyAmounts kindValue(String kind) => CurrencyAmounts({
+              for (final e in summarizeHoldingsByCurrency(held.where((h) => h.kind == kind), now).entries)
+                e.key: e.value.marketCents,
+            });
             // 只有一个品类时不出组头：小计和顶上的合计是同一个数。
             final grouped = summary.byKind.length > 1;
             return ListView(
@@ -125,6 +131,7 @@ class _InvestTabState extends ConsumerState<InvestTab> {
                 banner,
                 _Header(
                   summary: summary,
+                  byCurrency: byCurrency,
                   priceAt: _latestPriceAt(held),
                   refreshing: _refreshing,
                   refreshError: _refreshError,
@@ -134,7 +141,7 @@ class _InvestTabState extends ConsumerState<InvestTab> {
                   onRefresh: _refreshQuotes,
                 ),
                 for (final kind in summary.byKind) ...[
-                  if (grouped) _KindHeader(total: kind),
+                  if (grouped) _KindHeader(total: kind, value: kindValue(kind.kind)),
                   for (final h in held)
                     if (h.kind == kind.kind)
                       HoldingTile(holding: h, now: now, selected: h.id == shown, onTap: () => open(h)),
@@ -174,6 +181,7 @@ class _InvestTabState extends ConsumerState<InvestTab> {
 class _Header extends StatelessWidget {
   const _Header({
     required this.summary,
+    required this.byCurrency,
     required this.refreshing,
     required this.holdings,
     required this.onRefresh,
@@ -184,6 +192,9 @@ class _Header extends StatelessWidget {
   });
 
   final PortfolioSummary summary;
+
+  /// 每个币种一份小结（金额不折算）；估值、收益、涨跌按币种分开显示。
+  final Map<String, PortfolioSummary> byCurrency;
   final DateTime? priceAt;
   final bool refreshing;
   final Object? refreshError;
@@ -199,12 +210,15 @@ class _Header extends StatelessWidget {
       color: theme.colorScheme.error,
     );
     final failed = lastRefresh?.failed ?? const <QuoteFailure>[];
-    final rate = summary.gainRate;
+    // 收益率只在一种币时有意义（美元的收益除以人民币的成本不成话）。
+    final rate = byCurrency.length <= 1 ? summary.gainRate : null;
+    CurrencyAmounts by(int Function(PortfolioSummary p) pick) =>
+        CurrencyAmounts({for (final e in byCurrency.entries) e.key: pick(e.value)});
     final hasUnits = holdings.any((h) => !h.archived && !h.isCleared && h.isUnit);
     final canRefresh = wantsAutoQuotes(holdings);
     return SegmentSummary(
       label: '理财估值',
-      value: MoneyText(summary.marketCents, size: MoneySize.title),
+      value: CurrencyTotal(by((p) => p.marketCents), size: MoneySize.title),
       trailing: canRefresh
           ? TextButton.icon(
               onPressed: refreshing ? null : onRefresh,
@@ -229,9 +243,11 @@ class _Header extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text('浮动收益 ', style: theme.textTheme.bodySmall),
-                MoneyText(summary.gainCents, signed: true, size: MoneySize.small),
-                const SizedBox(width: 4),
-                RateText(rate, small: true),
+                CurrencyTotal(by((p) => p.gainCents), signed: true, size: MoneySize.small),
+                if (rate != null) ...[
+                  const SizedBox(width: 4),
+                  RateText(rate, small: true),
+                ],
               ],
             ),
             if (summary.realizedCents != 0)
@@ -239,7 +255,7 @@ class _Header extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text('已实现 ', style: theme.textTheme.bodySmall),
-                  MoneyText(summary.realizedCents, signed: true, size: MoneySize.small),
+                  CurrencyTotal(by((p) => p.realizedCents), signed: true, size: MoneySize.small),
                 ],
               ),
             if (hasUnits)
@@ -247,7 +263,7 @@ class _Header extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text('今日涨跌 ', style: theme.textTheme.bodySmall),
-                  MoneyText(summary.todayChangeCents, signed: true, size: MoneySize.small),
+                  CurrencyTotal(by((p) => p.todayChangeCents), signed: true, size: MoneySize.small),
                 ],
               ),
           ],
@@ -377,9 +393,12 @@ String? maturityLabel(HoldingMetrics m) {
 
 /// 一个品类的组头：名字、笔数，右边小计。
 class _KindHeader extends StatelessWidget {
-  const _KindHeader({required this.total});
+  const _KindHeader({required this.total, required this.value});
 
   final KindTotal total;
+
+  /// 这个品类的估值，按币种分开。
+  final CurrencyAmounts value;
 
   @override
   Widget build(BuildContext context) {
@@ -397,8 +416,8 @@ class _KindHeader extends StatelessWidget {
           Text(Holding.kindLabels[total.kind] ?? '其他', style: theme.textTheme.titleSmall),
           const SizedBox(width: 6),
           Text('${total.heldCount} 笔', style: theme.textTheme.bodySmall),
-          const Spacer(),
-          MoneyText(total.valueCents, size: MoneySize.small),
+          const SizedBox(width: 8),
+          Expanded(child: CurrencyTotal(value, size: MoneySize.small, alignEnd: true)),
         ],
       ),
     );
@@ -440,7 +459,7 @@ class HoldingTile extends StatelessWidget {
               InvestMode.unit => [
                 if (code != null) code,
                 '持有 ${m.days} 天',
-                if (daily != null) '日均 ${Money.format(daily.round(), signed: true)}',
+                if (daily != null) '日均 ${Money.format(daily.round(), signed: true, currency: h.currency)}',
               ],
               InvestMode.deposit => [
                 if (inst != null) inst,
@@ -505,7 +524,7 @@ class HoldingTile extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 Text('已实现', style: theme.textTheme.bodySmall),
-                MoneyText(h.realizedCents, signed: true),
+                MultiCurrencyAmount(h.realizedCents, currency: h.currency, signed: true),
               ],
             )
           : Column(
@@ -514,7 +533,7 @@ class HoldingTile extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 if (m.marketCents != null)
-                  MoneyText(m.marketCents!)
+                  MultiCurrencyAmount(m.marketCents!, currency: h.currency)
                 else
                   Text('—', style: theme.textTheme.bodyLarge),
                 if (m.gainCents != null) ...[
@@ -522,7 +541,7 @@ class HoldingTile extends StatelessWidget {
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      MoneyText(m.gainCents!, signed: true, size: MoneySize.small),
+                      MultiCurrencyAmount(m.gainCents!, currency: h.currency, signed: true, size: MoneySize.small),
                       const SizedBox(width: 4),
                       RateText(m.gainRate, small: true),
                     ],

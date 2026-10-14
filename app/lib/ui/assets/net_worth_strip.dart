@@ -5,32 +5,30 @@ import 'package:go_router/go_router.dart';
 import '../../app/providers.dart';
 import '../../app/theme.dart';
 import '../../core/dates.dart';
-import '../../core/money.dart';
 import '../../data/api/api_client.dart';
 import '../../data/models/models.dart';
 import '../widgets/widgets.dart';
 
-/// 「现金流」：现金、银行卡、支付宝这些账户的余额合计（信用卡欠款已减），不含投资账户和债务。
-/// 老服务端不分项时就是全部账户的合计（见 [StatsOverview.cashFlowCents]）。
-int cashFlowCents(StatsOverview o) => o.cashFlowCents;
+/// 「现金流」：现金、银行卡、支付宝这些账户的余额合计（信用卡欠款已减），不含投资账户和债务。按币种分开。
+CurrencyAmounts cashFlowAmounts(StatsOverview o) => o.amountsBy((b) => b.cashCents);
 
-/// 目标、储备两类基金（旅行、应急、养老这种专款）里攒着的钱：正余额之和。
+/// 目标、储备两类板块（旅行、应急、养老这种专款）里攒着的钱：各币种正余额之和。
 /// 超支（负余额）的钱早从账户里花出去、账户净额里已经减掉，这里不再减一次。
-int reservedCents(StatsOverview o, Iterable<Fund> funds) {
+CurrencyAmounts reservedAmounts(StatsOverview o, Iterable<Fund> funds) {
   final saving = {
     for (final f in funds)
       if (Fund.savingKinds.contains(f.kind)) f.id,
   };
-  var sum = 0;
+  var sum = const CurrencyAmounts();
   for (final b in o.funds) {
-    if (b.balanceCents > 0 && saving.contains(b.fundId)) sum += b.balanceCents;
+    if (saving.contains(b.fundId)) sum += b.amounts(o.fx.base).map((v) => v > 0 ? v : 0);
   }
   return sum;
 }
 
-/// 「可支配现金流」= 现金流 − 专款里攒着的钱：真能随便花的部分。
-int disposableCents(StatsOverview o, Iterable<Fund> funds) =>
-    cashFlowCents(o) - reservedCents(o, funds);
+/// 「可支配现金流」= 现金流 − 专款里攒着的钱：真能随便花的部分（同一个币种里相减）。
+CurrencyAmounts disposableAmounts(StatsOverview o, Iterable<Fund> funds) =>
+    cashFlowAmounts(o) - reservedAmounts(o, funds);
 
 /// 有没有债务这一段：服务端给了汇总、而且记过债务。
 bool _hasDebts(StatsOverview o) => (o.debts?.count ?? 0) > 0;
@@ -39,63 +37,66 @@ bool _hasDebts(StatsOverview o) => (o.debts?.count ?? 0) > 0;
 bool _hasInvest(StatsOverview o) => o.investTotalCents != 0 || (o.investMarketCents ?? 0) > 0;
 
 /// 折叠时那行小字：「现金流 ¥… · 可支配 ¥… · 理财 ¥… · 债务 ¥… · 实物计入 ¥…」，
-/// 总开关关着时末段写「不含实物」。
+/// 总开关关着时末段写「不含实物」。每段按币种分开写（「¥1,000.00 + $200.00」）。
 ///
 /// 现金流、理财、债务、实物计入加起来就是净资产（可支配是现金流的一部分，不另外加）。
 /// 「理财」= 投资账户里的钱 + 持仓相对成本的补差（口径在 stats.js），也就是各品类估值加上投资账户里的闲钱。
 /// 「债务」只算计入净资产的（人情默认不算）。「实物计入」是计入额，不是物品页的估值合计。
 ///
 /// 没有专款攒着钱时可支配就等于现金流，不重复写；没有理财、没有债务、没有在用的物品时那一段不写。
-String netWorthBreakdown(StatsOverview o, {int reservedCents = 0}) {
+String netWorthBreakdown(StatsOverview o, {CurrencyAmounts reserved = const CurrencyAmounts(), String? convertTo}) {
   final p = o.physical;
-  final cash = cashFlowCents(o);
+  final cash = cashFlowAmounts(o);
+  final base = o.fx.base;
+  String f(CurrencyAmounts a, {bool signed = false}) =>
+      formatAmounts(a, base: base, signed: signed, convertTo: convertTo, fx: o.fx);
   return [
-    '现金流 ${Money.format(cash)}',
-    if (reservedCents > 0) '可支配 ${Money.format(cash - reservedCents)}',
-    if (_hasInvest(o)) '理财 ${Money.format(o.investTotalCents)}',
-    if (_hasDebts(o)) '债务 ${Money.format(o.debtsNetCents, signed: true)}',
+    '现金流 ${f(cash)}',
+    if (!reserved.isZero) '可支配 ${f(cash - reserved)}',
+    if (_hasInvest(o)) '理财 ${f(o.amountsBy((b) => b.investTotalCents))}',
+    if (_hasDebts(o)) '债务 ${f(o.amountsBy((b) => b.debtsNetCents), signed: true)}',
     if (p != null && p.count > 0)
-      p.counted ? '实物计入 ${Money.format(p.includedCents)}' : '不含实物',
+      p.counted ? '实物计入 ${f(o.amountsBy((b) => b.physicalIncludedCents))}' : '不含实物',
   ].join(' · ');
 }
 
-/// 总览里的一项：名目、数、一句说明口径的副标题。宽屏排成一行格子，窄屏展开后一行一项。
+/// 总览里的一项：名目、数（按币种分开）、一句说明口径的副标题。宽屏排成一行格子，窄屏展开后一行一项。
 class _Figure {
   const _Figure({
     required this.key,
     required this.label,
-    required this.cents,
+    required this.amounts,
     required this.note,
     this.signed = false,
   });
 
   final String key;
   final String label;
-  final int cents;
+  final CurrencyAmounts amounts;
   final String note;
   final bool signed;
 }
 
 /// 净资产的几段，按「现金流 → 可支配 → 理财 → 债务 → 实物」排：先说手头有多少钱、多少能动，再说别的。
-List<_Figure> _figures(StatsOverview o, int reserved) {
-  final cash = cashFlowCents(o);
-  final market = o.investMarketCents;
-  final invest = o.investTotalCents;
+List<_Figure> _figures(StatsOverview o, CurrencyAmounts reserved, {String? convertTo}) {
+  final base = o.fx.base;
+  String f(CurrencyAmounts a) => formatAmounts(a, base: base, convertTo: convertTo, fx: o.fx);
+  final cash = cashFlowAmounts(o);
+  final market = o.amountsBy((b) => b.investMarketCents);
+  final invest = o.amountsBy((b) => b.investTotalCents);
   final p = o.physical;
   final d = o.debts;
   String investNote() {
     if (o.investAccountsCents == null) return '账户余额以外的那部分';
-    if (market == null) return '各品类估值合计';
+    if (o.investMarketCents == null) return '各品类估值合计';
     final idle = invest - market;
-    return idle == 0
-        ? '各品类估值合计 ${Money.format(market)}'
-        : '估值 ${Money.format(market)}，投资账户里另有 ${Money.format(idle)}';
+    return idle.isZero ? '各品类估值合计 ${f(market)}' : '估值 ${f(market)}，投资账户里另有 ${f(idle)}';
   }
 
   String debtNote() {
     if (d == null) return '';
     final skipped = d.receivableCents != d.countedReceivableCents || d.payableCents != d.countedPayableCents;
-    return '别人欠 ${Money.format(d.countedReceivableCents)} · 欠别人 ${Money.format(d.countedPayableCents)}'
+    return '别人欠 ${f(o.amountsBy((b) => b.debts.countedReceivableCents))} · 欠别人 ${f(o.amountsBy((b) => b.debts.countedPayableCents))}'
         '${skipped ? '（人情不计）' : ''}';
   }
 
@@ -103,30 +104,31 @@ List<_Figure> _figures(StatsOverview o, int reserved) {
     _Figure(
       key: 'cash',
       label: '现金流',
-      cents: cash,
+      amounts: cash,
       note: o.cashCents == null ? '账户余额合计，已减信用卡欠款' : '现金、银行卡、支付宝……已减信用卡欠款',
     ),
     _Figure(
       key: 'disposable',
       label: '可支配现金流',
-      cents: cash - reserved,
-      note: reserved > 0 ? '已扣目标、储备基金攒着的 ${Money.format(reserved)}' : '目标、储备基金没攒着钱，和现金流一样',
+      amounts: cash - reserved,
+      note: !reserved.isZero ? '已扣目标、储备板块攒着的 ${f(reserved)}' : '目标、储备板块没攒着钱，和现金流一样',
     ),
-    if (_hasInvest(o)) _Figure(key: 'invest', label: '理财', cents: invest, note: investNote()),
-    if (_hasDebts(o)) _Figure(key: 'debts', label: '债务', cents: o.debtsNetCents, note: debtNote(), signed: true),
+    if (_hasInvest(o)) _Figure(key: 'invest', label: '理财', amounts: invest, note: investNote()),
+    if (_hasDebts(o))
+      _Figure(key: 'debts', label: '债务', amounts: o.amountsBy((b) => b.debtsNetCents), note: debtNote(), signed: true),
     if (p != null && p.count > 0)
       p.counted
           ? _Figure(
               key: 'physical',
               label: '实物计入',
-              cents: p.includedCents,
-              note: '估值 ${Money.format(p.valueCents)}，按类别计入',
+              amounts: o.amountsBy((b) => b.physicalIncludedCents),
+              note: '估值 ${f(o.amountsBy((b) => b.physicalValueCents))}，按类别计入',
             )
           : _Figure(
               key: 'physical',
               label: '实物估值',
-              cents: p.valueCents,
-              note: '不计入净资产，打开开关后计入 ${Money.format(p.includedCents)}',
+              amounts: o.amountsBy((b) => b.physicalValueCents),
+              note: '不计入净资产，打开开关后计入 ${f(o.amountsBy((b) => b.physicalIncludedCents))}',
             ),
   ];
 }
@@ -232,7 +234,7 @@ class _NetWorthStripState extends ConsumerState<NetWorthStrip> {
             context,
             overview,
             wide: wide,
-            reserved: reservedCents(overview, funds),
+            reserved: reservedAmounts(overview, funds),
             canEdit: canEdit,
             month: month,
             stale: stats.hasError ? _reason(stats.error!) : null,
@@ -249,14 +251,15 @@ class _NetWorthStripState extends ConsumerState<NetWorthStrip> {
     BuildContext context,
     StatsOverview o, {
     required bool wide,
-    required int reserved,
+    required CurrencyAmounts reserved,
     required bool canEdit,
     required String month,
     required String? stale,
     required VoidCallback? onRetry,
   }) {
     final theme = Theme.of(context);
-    final figures = _figures(o, reserved);
+    final convertTo = ref.watch(displayCurrencyOverrideProvider);
+    final figures = _figures(o, reserved, convertTo: convertTo);
     final details = _expanded
         ? _details(context, o, figures, wide: wide, canEdit: canEdit, month: month)
         : const SizedBox(width: double.infinity);
@@ -319,7 +322,7 @@ class _NetWorthStripState extends ConsumerState<NetWorthStrip> {
 
   /// 窄屏折叠时两行就够：「净资产 ¥…」一行，分项一行（放不下就省略，展开有明细）。
   /// 这一条压在四段上面，它每多一行，下面的列表就少露一行。
-  Widget _compactHead(BuildContext context, StatsOverview o, int reserved) {
+  Widget _compactHead(BuildContext context, StatsOverview o, CurrencyAmounts reserved) {
     final theme = Theme.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -329,12 +332,12 @@ class _NetWorthStripState extends ConsumerState<NetWorthStrip> {
           children: [
             Text('净资产', style: theme.textTheme.bodySmall),
             const SizedBox(width: 8),
-            Flexible(child: MoneyText(o.netWorthCents, size: MoneySize.title)),
+            Flexible(child: CurrencyTotal(o.amountsBy((b) => b.netWorthCents), size: MoneySize.title)),
           ],
         ),
         const SizedBox(height: 2),
         Text(
-          netWorthBreakdown(o, reservedCents: reserved),
+          netWorthBreakdown(o, reserved: reserved, convertTo: ref.watch(displayCurrencyOverrideProvider)),
           key: const ValueKey('net-worth-breakdown'),
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
@@ -354,7 +357,7 @@ class _NetWorthStripState extends ConsumerState<NetWorthStrip> {
         child: _Cell(
           key: const ValueKey('net-worth-figure-total'),
           label: '净资产',
-          value: MoneyText(o.netWorthCents, size: MoneySize.title),
+          value: CurrencyTotal(o.amountsBy((b) => b.netWorthCents), size: MoneySize.title),
           note: _netWorthNote(figures),
         ),
       ),
@@ -364,7 +367,7 @@ class _NetWorthStripState extends ConsumerState<NetWorthStrip> {
           child: _Cell(
             key: ValueKey('net-worth-figure-${f.key}'),
             label: f.label,
-            value: MoneyText(f.cents, signed: f.signed),
+            value: CurrencyTotal(f.amounts, signed: f.signed),
             note: f.note,
           ),
         ),
@@ -409,7 +412,7 @@ class _NetWorthStripState extends ConsumerState<NetWorthStrip> {
           )
         else ...[
           for (final f in figures) ...[
-            _FigureRow(f),
+            _FigureRow(f, o.fx.base),
             if (f.key == 'cash') manage,
           ],
           if (p != null)
@@ -510,9 +513,10 @@ class _InlineSwitch extends StatelessWidget {
 
 /// 窄屏展开后的一行：左边名目和一句口径，右边数。
 class _FigureRow extends StatelessWidget {
-  const _FigureRow(this.figure);
+  const _FigureRow(this.figure, this.currency);
 
   final _Figure figure;
+  final String currency;
 
   @override
   Widget build(BuildContext context) {
@@ -537,7 +541,7 @@ class _FigureRow extends StatelessWidget {
             ),
           ),
           const SizedBox(width: LedgerLayout.pagePadding),
-          MoneyText(figure.cents, signed: figure.signed),
+          Flexible(child: CurrencyTotal(figure.amounts, signed: figure.signed, alignEnd: true)),
         ],
       ),
     );

@@ -229,14 +229,14 @@ class _AccountsPageState extends ConsumerState<AccountsPage> {
     // 小计只在组里两个起才有意义：一个账户的小计就是它自己的余额，右边已经写了。
     final total = stats == null || accounts.length < 2
         ? null
-        : accounts.fold<int>(0, (sum, a) => sum + stats.accountBalance(a.id));
+        : accounts.fold(const CurrencyAmounts(), (sum, a) => sum.add(a.currency, stats.accountBalance(a.id)));
     return [
       const SizedBox(height: LedgerLayout.itemGap),
       SectionHeader(
         Account.kindLabels[kind] ?? kind,
         trailing: total == null
             ? null
-            : MoneyText(total, size: MoneySize.small, muted: true),
+            : CurrencyTotal(total, size: MoneySize.small, muted: true),
       ),
       for (final account in accounts)
         _AccountTile(
@@ -326,7 +326,7 @@ class _AccountTile extends StatelessWidget {
             ),
       trailing: balanceCents == null
           ? const Skeleton(width: 64, height: 16)
-          : MoneyText(balanceCents!),
+          : MultiCurrencyAmount(balanceCents!, currency: account.currency),
       onTap: onTap,
     );
   }

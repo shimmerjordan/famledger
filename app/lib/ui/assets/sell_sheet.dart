@@ -137,7 +137,7 @@ class _SellSheetState extends ConsumerState<SellSheet> {
                   autofocus: true,
                   keyboardType: const TextInputType.numberWithOptions(decimal: true),
                   onChanged: (_) => setState(() {}),
-                  decoration: const InputDecoration(prefixText: '¥ ', hintText: '800'),
+                  decoration: InputDecoration(prefixText: '${Money.symbolFor(widget.asset.currency).trim()} ', hintText: '800'),
                 ),
               ),
               PickerField(
@@ -158,6 +158,7 @@ class _SellSheetState extends ConsumerState<SellSheet> {
                 RecordTargetFields(
                   ledger: ledger,
                   income: true,
+                  currency: widget.asset.currency,
                   accountId: _accountId,
                   fundId: _fundTouched ? _fundId : defaultFundId(ledger),
                   categoryId: _categoryId,

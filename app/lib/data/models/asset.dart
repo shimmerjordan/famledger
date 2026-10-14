@@ -21,6 +21,7 @@ class Asset {
     this.saleTransactionId,
     this.sortOrder = 0,
     this.archived = false,
+    this.currency = 'CNY',
     this.valuationMethod = methodAuto,
     this.rateBp,
     this.residualBp,
@@ -114,6 +115,9 @@ class Asset {
   final int sortOrder;
   final bool archived;
 
+  /// 这件物品的币种（ISO-4217，默认 CNY）；原价、估值都是这个币。
+  final String currency;
+
   /// auto | straight | declining | locked
   final String valuationMethod;
 
@@ -158,6 +162,7 @@ class Asset {
     saleTransactionId: jsonStringOrNull(json['saleTransactionId']),
     sortOrder: jsonInt(json['sortOrder']),
     archived: jsonBool(json['archived']),
+    currency: jsonString(json['currency'], 'CNY'),
     valuationMethod: _oneOf(json['valuationMethod'], valuationMethods, methodAuto),
     rateBp: jsonIntOrNull(json['rateBp']),
     residualBp: jsonIntOrNull(json['residualBp']),
@@ -187,6 +192,7 @@ class Asset {
     putIfNotNull(json, 'saleTransactionId', saleTransactionId);
     json['sortOrder'] = sortOrder;
     json['archived'] = archived;
+    json['currency'] = currency;
     json['valuationMethod'] = valuationMethod;
     putIfNotNull(json, 'rateBp', rateBp);
     putIfNotNull(json, 'residualBp', residualBp);

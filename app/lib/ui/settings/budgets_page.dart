@@ -73,7 +73,7 @@ class _BudgetsPageState extends ConsumerState<BudgetsPage> {
     if (funds.isEmpty && data.expenseCategories().isEmpty) {
       return const EmptyState(
         title: '还没有可以定预算的东西',
-        message: '先建几个基金或支出类别，再回来给它们定上限。',
+        message: '先建几个板块或支出类别，再回来给它们定上限。',
         icon: Icons.pie_chart_outline,
       );
     }
@@ -87,11 +87,11 @@ class _BudgetsPageState extends ConsumerState<BudgetsPage> {
             onRetry: () => ref.read(statsProvider(_month).notifier).refresh(),
           ),
         const SizedBox(height: LedgerLayout.itemGap),
-        const SectionHeader('基金预算'),
+        const SectionHeader('板块预算'),
         if (funds.isEmpty)
           const EmptyState(
-            title: '还没有基金',
-            message: '基金是「这笔钱归谁、干什么用」，建好了再定预算。',
+            title: '还没有板块',
+            message: '板块是「这笔钱归谁、干什么用」，建好了再定预算。',
             compact: true,
           )
         else
@@ -132,7 +132,7 @@ class _BudgetsPageState extends ConsumerState<BudgetsPage> {
               8,
             ),
             child: Text(
-              '还没给单个类别定过上限。基金管「谁的钱」，类别管「哪类开销」，两者可以一起用。',
+              '还没给单个类别定过上限。板块管「谁的钱」，类别管「哪类开销」，两者可以一起用。',
               style: Theme.of(context).textTheme.bodySmall,
             ),
           )

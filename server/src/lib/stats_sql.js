@@ -46,6 +46,21 @@ const INCOME_SUM = "SUM(CASE WHEN type = 'income' THEN amount_cents ELSE 0 END)"
 /** SUM 在空集上返回 NULL；余额从来不是 NULL，是 0。 */
 const cents = (x) => Number(x) || 0;
 
+/**
+ * 折算器：`conv(amountNative, currency) → 基准币金额`。跨实体的月度聚合必须按每笔流水自己的
+ * 币种折到基准币再相加（否则把美元和人民币的分直接加起来）。默认恒等 —— 只有一种币（或调用方
+ * 要原生币）时忽略 currency、原样返回，数字和不分币种的旧写法逐分一致。
+ */
+const IDENTITY = (amount) => amount;
+
+/** JS 里复刻 SQL 的 `ORDER BY … ref ASC`：NULL 最靠前，其余按字符串升序。 */
+function cmpRefAsc(a, b) {
+  if (a === b) return 0;
+  if (a === null || a === undefined) return -1;
+  if (b === null || b === undefined) return 1;
+  return a < b ? -1 : 1;
+}
+
 /** 能拿来分组的列。只在代码里出现，不接受用户输入 —— 但还是挡一道。 */
 const GROUPABLE = new Set(['fund_id', 'category_id', 'member_id', 'account_id']);
 
@@ -90,7 +105,7 @@ function deltaMap(db, side, onlyId = null) {
        SELECT ${from} AS ref, SUM(CASE WHEN type = 'income' THEN amount_cents ELSE -amount_cents END) AS delta
          FROM transactions WHERE ${CONFIRMED} AND ${from} ${only} GROUP BY ${from}
        UNION ALL
-       SELECT ${to} AS ref, SUM(amount_cents) AS delta
+       SELECT ${to} AS ref, SUM(COALESCE(to_amount_cents, amount_cents)) AS delta
          FROM transactions WHERE ${CONFIRMED} AND type = 'transfer' AND ${to} ${only} GROUP BY ${to}
      ) AS both GROUP BY ref`,
     ...args,
@@ -99,18 +114,69 @@ function deltaMap(db, side, onlyId = null) {
 }
 
 /**
+ * 各板块按币种分开的余额：`Map<fundId, Map<currency, cents>>`。板块没有币种 —— 美元户的支出挂在
+ * 「家庭公共」上，就是家庭公共的美元余额少了，不能和人民币的分直接加。跨币种转账的转入一侧按
+ * 到账币种 / 到账金额记（to_currency / to_amount_cents），同币种转账这两列为空。
+ */
+function fundBalancesByCurrency(db, onlyId = null) {
+  const only = onlyId ? '= ?' : 'IS NOT NULL';
+  const args = onlyId ? [onlyId, onlyId] : [];
+  const rows = db.all(
+    `SELECT ref, cur, SUM(delta) AS delta FROM (
+       SELECT fund_id AS ref, currency AS cur,
+              SUM(CASE WHEN type = 'income' THEN amount_cents ELSE -amount_cents END) AS delta
+         FROM transactions WHERE ${CONFIRMED} AND fund_id ${only} GROUP BY fund_id, currency
+       UNION ALL
+       SELECT to_fund_id AS ref, COALESCE(to_currency, currency) AS cur, SUM(COALESCE(to_amount_cents, amount_cents)) AS delta
+         FROM transactions WHERE ${CONFIRMED} AND type = 'transfer' AND to_fund_id ${only}
+        GROUP BY to_fund_id, COALESCE(to_currency, currency)
+     ) AS both GROUP BY ref, cur`,
+    ...args,
+  );
+  const out = new Map();
+  for (const r of rows) {
+    if (!out.has(r.ref)) out.set(r.ref, new Map());
+    const v = cents(r.delta);
+    if (v !== 0) out.get(r.ref).set(r.cur || 'CNY', v);
+  }
+  return out;
+}
+
+/**
+ * 某个月按币种分开的支出/收入（原生金额，不折算）：首页「本月支出」按币种分行显示用。
+ * @returns {{currency: string, expenseCents: number, incomeCents: number}[]}
+ */
+function monthSumsByCurrency(db, month, filter) {
+  const f = filterClause(filter);
+  const r = monthRange(month);
+  return db.all(
+    `SELECT currency, ${EXPENSE_SUM} AS expense, ${INCOME_SUM} AS income
+       FROM transactions WHERE ${CONFIRMED} AND ${r.sql}${f.sql} GROUP BY currency`,
+    ...r.args, ...f.args,
+  ).map((x) => ({ currency: x.currency || 'CNY', expenseCents: cents(x.expense), incomeCents: cents(x.income) }))
+    .filter((x) => x.expenseCents !== 0 || x.incomeCents !== 0);
+}
+
+/**
  * 某个月的支出/收入合计。
  * @returns {{expenseCents: number, incomeCents: number}}
  */
-function monthSums(db, month, filter) {
+function monthSums(db, month, filter, conv = IDENTITY) {
   const f = filterClause(filter);
   const r = monthRange(month);
-  const row = db.get(
-    `SELECT ${EXPENSE_SUM} AS expense, ${INCOME_SUM} AS income
-       FROM transactions WHERE ${CONFIRMED} AND ${r.sql}${f.sql}`,
+  // 按币种分组、各自折算再相加：把美元的分和人民币的分直接 SUM 到一起是没有意义的。
+  const rows = db.all(
+    `SELECT currency, ${EXPENSE_SUM} AS expense, ${INCOME_SUM} AS income
+       FROM transactions WHERE ${CONFIRMED} AND ${r.sql}${f.sql} GROUP BY currency`,
     ...r.args, ...f.args,
   );
-  return { expenseCents: cents(row && row.expense), incomeCents: cents(row && row.income) };
+  let expenseCents = 0;
+  let incomeCents = 0;
+  for (const row of rows) {
+    expenseCents += conv(cents(row.expense), row.currency);
+    incomeCents += conv(cents(row.income), row.currency);
+  }
+  return { expenseCents, incomeCents };
 }
 
 /**
@@ -118,17 +184,28 @@ function monthSums(db, month, filter) {
  * 收入，放进来只会多出一堆全零的分组。没填该列的行不参与。
  * @returns {{ref: string, expenseCents: number, incomeCents: number}[]} 支出多的在前
  */
-function totalsByColumn(db, month, column, filter) {
+function totalsByColumn(db, month, column, filter, conv = IDENTITY) {
   const col = groupColumn(column);
   const f = filterClause(filter);
   const r = monthRange(month);
-  return db.all(
-    `SELECT ${col} AS ref, ${EXPENSE_SUM} AS expense, ${INCOME_SUM} AS income
+  const rows = db.all(
+    `SELECT ${col} AS ref, currency, ${EXPENSE_SUM} AS expense, ${INCOME_SUM} AS income
        FROM transactions WHERE ${CONFIRMED} AND ${r.sql} AND type IN ('expense', 'income')
        AND ${col} IS NOT NULL${f.sql}
-      GROUP BY ref ORDER BY expense DESC, income DESC, ref ASC`,
+      GROUP BY ref, currency`,
     ...r.args, ...f.args,
-  ).map((r) => ({ ref: r.ref, expenseCents: cents(r.expense), incomeCents: cents(r.income) }));
+  );
+  // 同一 ref 可能有多种币的行，折算到基准币后合并，再按 SQL 原本的次序排（支出多在前）。
+  const acc = new Map();
+  for (const x of rows) {
+    const e = acc.get(x.ref) || { ref: x.ref, expenseCents: 0, incomeCents: 0 };
+    e.expenseCents += conv(cents(x.expense), x.currency);
+    e.incomeCents += conv(cents(x.income), x.currency);
+    acc.set(x.ref, e);
+  }
+  return [...acc.values()].sort(
+    (a, b) => b.expenseCents - a.expenseCents || b.incomeCents - a.incomeCents || cmpRefAsc(a.ref, b.ref),
+  );
 }
 
 /**
@@ -136,16 +213,24 @@ function totalsByColumn(db, month, column, filter) {
  * （「未分类」是真实存在的开销，藏起来会让环形图对不上总数）。
  * @returns {{ref: string|null, expenseCents: number}[]} 金额大的在前
  */
-function expenseByColumn(db, month, column, filter) {
+function expenseByColumn(db, month, column, filter, conv = IDENTITY) {
   const col = groupColumn(column);
   const f = filterClause(filter);
   const r = monthRange(month);
-  return db.all(
-    `SELECT ${col} AS ref, SUM(amount_cents) AS expense
+  const rows = db.all(
+    `SELECT ${col} AS ref, currency, SUM(amount_cents) AS expense
        FROM transactions WHERE ${CONFIRMED} AND ${r.sql} AND type = 'expense'${f.sql}
-      GROUP BY ref ORDER BY expense DESC, ref ASC`,
+      GROUP BY ref, currency`,
     ...r.args, ...f.args,
-  ).map((r) => ({ ref: r.ref === undefined ? null : r.ref, expenseCents: cents(r.expense) }));
+  );
+  const acc = new Map();
+  for (const x of rows) {
+    const key = x.ref === undefined ? null : x.ref;
+    acc.set(key, (acc.get(key) || 0) + conv(cents(x.expense), x.currency));
+  }
+  return [...acc.entries()]
+    .map(([ref, expenseCents]) => ({ ref, expenseCents }))
+    .sort((a, b) => b.expenseCents - a.expenseCents || cmpRefAsc(a.ref, b.ref));
 }
 
 /**
@@ -153,35 +238,47 @@ function expenseByColumn(db, month, column, filter) {
  * 缺的月份这里不补 —— 补零是调用方的事（它才知道要几个月）。
  * @returns {{month: string, expenseCents: number, incomeCents: number}[]}
  */
-function monthlyTotals(db, fromMonth, toMonth, filter) {
+function monthlyTotals(db, fromMonth, toMonth, filter, conv = IDENTITY) {
   const f = filterClause(filter);
   const r = monthRange(fromMonth, toMonth);
-  return db.all(
-    `SELECT ${MONTH_OF} AS month, ${EXPENSE_SUM} AS expense, ${INCOME_SUM} AS income
+  const rows = db.all(
+    `SELECT ${MONTH_OF} AS month, currency, ${EXPENSE_SUM} AS expense, ${INCOME_SUM} AS income
        FROM transactions WHERE ${CONFIRMED} AND ${r.sql}${f.sql}
-      GROUP BY month ORDER BY month`,
+      GROUP BY month, currency`,
     ...r.args, ...f.args,
-  ).map((r) => ({ month: r.month, expenseCents: cents(r.expense), incomeCents: cents(r.income) }));
+  );
+  const acc = new Map();
+  for (const x of rows) {
+    const e = acc.get(x.month) || { month: x.month, expenseCents: 0, incomeCents: 0 };
+    e.expenseCents += conv(cents(x.expense), x.currency);
+    e.incomeCents += conv(cents(x.income), x.currency);
+    acc.set(x.month, e);
+  }
+  return [...acc.values()].sort((a, b) => (a.month < b.month ? -1 : a.month > b.month ? 1 : 0));
 }
 
 /**
  * 某个月里**有流水的每一天**。转账不进支出也不进收入，但算一笔（`count`）。
  * @returns {{date: string, expenseCents: number, incomeCents: number, count: number}[]}
  */
-function dailyTotals(db, month, filter) {
+function dailyTotals(db, month, filter, conv = IDENTITY) {
   const f = filterClause(filter);
   const r = monthRange(month);
-  return db.all(
-    `SELECT ${DATE_OF} AS date, ${EXPENSE_SUM} AS expense, ${INCOME_SUM} AS income, COUNT(*) AS n
+  const rows = db.all(
+    `SELECT ${DATE_OF} AS date, currency, ${EXPENSE_SUM} AS expense, ${INCOME_SUM} AS income, COUNT(*) AS n
        FROM transactions WHERE ${CONFIRMED} AND ${r.sql}${f.sql}
-      GROUP BY date ORDER BY date ASC`,
+      GROUP BY date, currency`,
     ...r.args, ...f.args,
-  ).map((r) => ({
-    date: r.date,
-    expenseCents: cents(r.expense),
-    incomeCents: cents(r.income),
-    count: Number(r.n) || 0,
-  }));
+  );
+  const acc = new Map();
+  for (const x of rows) {
+    const e = acc.get(x.date) || { date: x.date, expenseCents: 0, incomeCents: 0, count: 0 };
+    e.expenseCents += conv(cents(x.expense), x.currency);
+    e.incomeCents += conv(cents(x.income), x.currency);
+    e.count += Number(x.n) || 0; // 笔数与币种无关：各币种分组的 COUNT 相加就是当天总笔数
+    acc.set(x.date, e);
+  }
+  return [...acc.values()].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 }
 
 /** 持仓市值（分）= 份额E4 × 价格E4 / 1e6，四舍五入。口径在 lib/invest.js。 */
@@ -200,13 +297,18 @@ function investPositions(db, today) {
   )) {
     const value = invest.valueOf(r, today);
     if (value === null) continue;
-    out.push({ accountId: r.account_id, kind: invest.kindOf(r), costCents: cents(r.cost_cents), marketCents: value });
+    // 市值/成本都是持仓自己的币种；由 stats.js 折到基准币再进净资产。
+    out.push({
+      accountId: r.account_id, kind: invest.kindOf(r), costCents: cents(r.cost_cents), marketCents: value,
+      currency: r.currency || 'CNY',
+    });
   }
   return out;
 }
 
 module.exports = {
   CONFIRMED, MONTH_OF, DATE_OF, EXPENSE_SUM, INCOME_SUM,
-  nextMonth, monthRange, filterClause, deltaMap, monthSums, totalsByColumn, expenseByColumn, monthlyTotals, dailyTotals,
+  nextMonth, monthRange, filterClause, deltaMap, fundBalancesByCurrency, monthSums, monthSumsByCurrency, totalsByColumn,
+  expenseByColumn, monthlyTotals, dailyTotals,
   marketCents, investPositions,
 };

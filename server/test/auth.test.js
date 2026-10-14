@@ -310,7 +310,7 @@ test('⑧ GET /settings 默认 currency:CNY；PATCH 深合并生效', async (t) 
       aiAutoConfirm: false,
       aiProviderId: null,
     },
-    ui: { firstDayOfMonth: 1 },
+    ui: { firstDayOfMonth: 1, displayCurrencies: ['CNY', 'USD'] },
     assets: { netWorthIncludesPhysical: true },
   });
 
@@ -353,6 +353,17 @@ test('⑧ GET /settings 默认 currency:CNY；PATCH 深合并生效', async (t) 
   const badTrigger = await a.patch('/settings', { capture: { aiTrigger: 'sometimes' } }, { token });
   assert.equal(badTrigger.status, 400);
   assert.equal(badTrigger.json.error.code, 'invalid_aiTrigger');
+
+  // 显示币种（需求4e）：一层深合并（不碰 firstDayOfMonth）、大写去重保序、空列表回退默认、非法拒绝。
+  const disp = await a.patch('/settings', { ui: { displayCurrencies: ['cny', 'usd', 'eur', 'USD'] } }, { token });
+  assert.equal(disp.status, 200, disp.text);
+  assert.deepEqual(disp.json.ui.displayCurrencies, ['CNY', 'USD', 'EUR']);
+  assert.equal(disp.json.ui.firstDayOfMonth, 5, '改 displayCurrencies 不碰 firstDayOfMonth');
+  const emptied = await a.patch('/settings', { ui: { displayCurrencies: [] } }, { token });
+  assert.deepEqual(emptied.json.ui.displayCurrencies, ['CNY', 'USD'], '空列表回退默认');
+  const badDisp = await a.patch('/settings', { ui: { displayCurrencies: ['CN'] } }, { token });
+  assert.equal(badDisp.status, 400);
+  assert.equal(badDisp.json.error.code, 'invalid_displayCurrencies');
 });
 
 // ⑧b --------------------------------------------------------------------

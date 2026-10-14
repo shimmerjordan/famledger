@@ -161,7 +161,7 @@ class _DebtDetailPageState extends ConsumerState<DebtDetailPage> {
                     if (left == null)
                       Text('—', style: theme.textTheme.headlineMedium)
                     else
-                      MoneyText(left, size: MoneySize.display),
+                      MultiCurrencyAmount(left, currency: d.currency, size: MoneySize.display),
                     const SizedBox(height: LedgerLayout.itemGap),
                     Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -169,7 +169,7 @@ class _DebtDetailPageState extends ConsumerState<DebtDetailPage> {
                         Expanded(
                           child: _Cell(
                             label: d.isFavor ? (d.isLend ? '随出去' : '收下') : (d.isLend ? '借出' : '借入'),
-                            child: MoneyText(d.amountCents),
+                            child: MultiCurrencyAmount(d.amountCents, currency: d.currency),
                           ),
                         ),
                         Expanded(
@@ -289,7 +289,7 @@ class _History extends ConsumerWidget {
             ].join(' · '),
             style: theme.textTheme.bodySmall,
           ),
-          trailing: MoneyText(delta, signed: true),
+          trailing: MultiCurrencyAmount(delta, currency: debt.currency, signed: true),
         ),
       ));
     }

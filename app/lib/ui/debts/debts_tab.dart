@@ -123,14 +123,18 @@ class _DebtsTabState extends ConsumerState<DebtsTab> {
   }
 }
 
-class _Summary extends StatelessWidget {
+class _Summary extends ConsumerWidget {
   const _Summary({required this.overview, required this.debts});
 
   final StatsOverview? overview;
   final List<Debt> debts;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    // 说明文字里的金额也跟着「换算」走。
+    final convertTo = ref.watch(displayCurrencyOverrideProvider);
+    String f(CurrencyAmounts a) =>
+        formatAmounts(a, base: overview?.fx.base ?? 'CNY', convertTo: convertTo, fx: overview?.fx);
     final theme = Theme.of(context);
     final s = overview?.debts;
     final favorOnly = debts.any((d) => d.isFavor);
@@ -139,11 +143,12 @@ class _Summary extends StatelessWidget {
       label: '净额',
       value: s == null
           ? Text('—', style: theme.textTheme.titleLarge)
-          : MoneyText(s.countedNetCents, size: MoneySize.title, signed: true),
+          : CurrencyTotal(overview!.amountsBy((b) => b.debtsNetCents), size: MoneySize.title, signed: true),
       lines: [
         if (s != null)
           Text(
-            '别人欠我 ${Money.format(s.receivableCents)} · 我欠别人 ${Money.format(s.payableCents)}',
+            '别人欠我 ${f(overview!.amountsBy((b) => b.debts.receivableCents))}'
+            ' · 我欠别人 ${f(overview!.amountsBy((b) => b.debts.payableCents))}',
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
             style: theme.textTheme.bodySmall,
@@ -167,12 +172,13 @@ class _GroupHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    var total = 0;
+    // 这一组还剩多少，按币种分开（美元的债按美元算）。
+    var total = const CurrencyAmounts();
     var known = true;
     for (final d in debts) {
       final o = outstandingOf(d, overview);
       if (o == null) known = false;
-      total += o ?? 0;
+      total = total.add(d.currency, o ?? 0);
     }
     return Padding(
       padding: const EdgeInsets.fromLTRB(LedgerLayout.pagePadding, LedgerLayout.itemGap, LedgerLayout.pagePadding, 0),
@@ -181,8 +187,8 @@ class _GroupHeader extends StatelessWidget {
           Text(title, style: theme.textTheme.titleSmall),
           const SizedBox(width: 6),
           Text('${debts.length} 笔', style: theme.textTheme.bodySmall),
-          const Spacer(),
-          if (known) MoneyText(total, size: MoneySize.small),
+          const SizedBox(width: 8),
+          if (known) Expanded(child: CurrencyTotal(total, size: MoneySize.small, alignEnd: true)) else const Spacer(),
         ],
       ),
     );
@@ -216,7 +222,7 @@ class DebtTile extends StatelessWidget {
     final overdue = due != null && due.startsWith('逾期');
     final sub = [
       d.kindLabel,
-      '${d.isFavor ? (d.isLend ? '随了' : '收了') : (d.isLend ? '借出' : '借入')} ${Money.format(d.amountCents)}',
+      '${d.isFavor ? (d.isLend ? '随了' : '收了') : (d.isLend ? '借出' : '借入')} ${Money.format(d.amountCents, currency: d.currency)}',
       if (due != null) due,
       if (!d.counted && !d.isFavor) '不计入净资产',
     ].join(' · ');
@@ -246,7 +252,10 @@ class DebtTile extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.center,
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
-          if (left == null) Text('—', style: theme.textTheme.bodyLarge) else MoneyText(left),
+          if (left == null)
+            Text('—', style: theme.textTheme.bodyLarge)
+          else
+            MultiCurrencyAmount(left, currency: d.currency),
           const SizedBox(height: 2),
           Text(settled ? '已结清' : '还剩', style: theme.textTheme.bodySmall),
         ],

@@ -6,7 +6,6 @@ import '../../app/providers.dart';
 import '../../app/shell.dart';
 import '../../app/theme.dart';
 import '../../core/dates.dart';
-import '../../core/money.dart';
 import '../../data/models/models.dart';
 import '../../data/repos/ledger_repo.dart';
 import '../assets/asset_providers.dart';
@@ -20,8 +19,8 @@ import 'fund_template_sheet.dart';
 
 /// 基金（钱袋子）的列表：每个模块还剩多少、这个月花了多少、离目标还有多远。
 ///
-/// 只是内容，顶栏归「我的 › 基金」那一页（funds_page.dart，它的「新建基金」调 [startNewFund]）。
-/// 首页的基金卡片是它的缩略。
+/// 只是内容，顶栏归「我的 › 财富」那一页（funds_page.dart，它的「新建板块」调 [startNewFund]）。
+/// 首页的板块卡片是它的缩略。
 class FundsTab extends ConsumerStatefulWidget {
   const FundsTab({super.key});
 
@@ -99,7 +98,7 @@ class _FundsTabState extends ConsumerState<FundsTab> {
       main: list,
       sideWidth: LedgerLayout.detailPaneWidth,
       side: shown == null
-          ? const EmptyState(title: '选一个基金看详情', compact: true)
+          ? const EmptyState(title: '选一个板块看详情', compact: true)
           : DetailPane(key: ValueKey('fund-pane-$shown'), child: FundDetailPage(shown)),
     );
   }
@@ -128,7 +127,7 @@ class _FundsTabState extends ConsumerState<FundsTab> {
                 _syncBanner(month),
                 const SizedBox(height: 40),
                 EmptyState(
-                  title: '还没有基金',
+                  title: '还没有板块',
                   message: '先从模板建一个，钱才有地方归。',
                   icon: Icons.savings_outlined,
                   actionLabel: '从模板新建',
@@ -164,6 +163,7 @@ class _FundsTabState extends ConsumerState<FundsTab> {
                       index: index,
                       width: double.infinity,
                       progress: fundProgressOf(funds[index], overview),
+                      balances: overview?.fundBalances(funds[index].id) ?? const CurrencyAmounts(),
                       onTap: () => onOpen(funds[index]),
                     ),
                   ),
@@ -187,7 +187,7 @@ class _FundsTabState extends ConsumerState<FundsTab> {
   }
 }
 
-class _Total extends StatelessWidget {
+class _Total extends ConsumerWidget {
   const _Total({required this.funds, required this.loading, this.stats});
 
   final List<Fund> funds;
@@ -195,24 +195,25 @@ class _Total extends StatelessWidget {
   final bool loading;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final overview = stats;
-    var balance = 0;
+    final base = ref.watch(baseCurrencyProvider);
+    var balance = const CurrencyAmounts();
     var expense = 0;
     for (final fund in funds) {
-      final progress = fundProgressOf(fund, overview);
-      balance += progress.balanceCents;
-      expense += progress.monthExpenseCents;
+      // 各板块余额按币种分开相加（不折算）；月度支出服务端已折成基准币。
+      if (overview != null) balance += overview.fundBalances(fund.id);
+      expense += fundProgressOf(fund, overview).monthExpenseCents;
     }
     return SegmentSummary(
-      label: '基金合计',
+      label: '财富合计',
       value: overview == null && loading
           ? const Skeleton(width: 140, height: 22)
-          : MoneyText(balance, size: MoneySize.title),
+          : CurrencyTotal(balance, size: MoneySize.title),
       lines: [
         Text(
-          '本月支出 ${Money.format(expense)} · ${funds.length} 个基金',
+          '本月支出 ${formatAmounts(CurrencyAmounts.single(base, expense), base: base, convertTo: ref.watch(displayCurrencyOverrideProvider), fx: ref.watch(fxRatesProvider))} · ${funds.length} 个板块',
           style: theme.textTheme.bodySmall,
         ),
       ],

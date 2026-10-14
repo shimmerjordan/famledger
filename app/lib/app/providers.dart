@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../core/dates.dart';
 import '../data/api/api_client.dart';
 import '../data/local/local_store.dart';
 import '../data/local/outbox.dart';
@@ -232,3 +233,41 @@ class SettingsController extends AsyncNotifier<Settings> {
     state = AsyncData(updated);
   }
 }
+
+// —— 多币种显示（需求4）——
+
+/// 家庭基准币（默认 CNY）：所有聚合都由服务端折到它。
+final baseCurrencyProvider = Provider<String>(
+  (ref) => ref.watch(settingsProvider).valueOrNull?.currency ?? 'CNY',
+);
+
+/// 当前生效的汇率表：直接取当月总览里内嵌的 `fx`（服务端算聚合用的同一份，
+/// 杜绝两边对不上）。总览还没加载时给空表 —— 那时「换算」不可用，各金额只显示原生币。
+final fxRatesProvider = Provider<FxRates>((ref) {
+  final overview = ref.watch(statsProvider(Dates.currentMonth())).valueOrNull;
+  if (overview != null) return overview.fx;
+  return FxRates(base: ref.watch(baseCurrencyProvider));
+});
+
+/// 并排显示的币种（默认 [CNY, USD]）；读家庭设置 ui.displayCurrencies。
+final displayCurrenciesProvider = Provider<List<String>>((ref) {
+  final list = ref.watch(settingsProvider).valueOrNull?.ui.displayCurrencies ?? const ['CNY', 'USD'];
+  return list.isEmpty ? const ['CNY', 'USD'] : list;
+});
+
+/// 账本里用到的币种（账户、理财、物品、债务），「换算」菜单里给出这些选项。
+final usedCurrenciesProvider = Provider<List<String>>((ref) {
+  final ledger = ref.watch(ledgerProvider).valueOrNull;
+  if (ledger == null) return const [];
+  final set = <String>{
+    for (final a in ledger.accounts) a.currency.toUpperCase(),
+    for (final h in ledger.holdings) h.currency.toUpperCase(),
+    for (final a in ledger.assets) a.currency.toUpperCase(),
+    for (final d in ledger.debts) d.currency.toUpperCase(),
+  };
+  return set.toList()..sort();
+});
+
+/// 「换算」目标币种：null = 并排显示原生币 + 显示币；非 null = 全量以该币显示
+/// （纯显示层，不改任何存量金额）。
+final displayCurrencyOverrideProvider = StateProvider<String?>((ref) => null);

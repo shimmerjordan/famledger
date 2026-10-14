@@ -34,10 +34,10 @@ Future<String?> showBulkFundDialog(
 }) => showDialog<String>(
   context: context,
   builder: (context) => _PickDialog(
-    title: '把这 $count 笔改到哪个基金？',
+    title: '把这 $count 笔改到哪个板块？',
     confirmLabel: '改 $count 笔',
     builder: (selected, onSelected) => funds.isEmpty
-        ? Text('还没有基金', style: Theme.of(context).textTheme.bodySmall)
+        ? Text('还没有板块', style: Theme.of(context).textTheme.bodySmall)
         : Wrap(
             spacing: 8,
             runSpacing: 8,

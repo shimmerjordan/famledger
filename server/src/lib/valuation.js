@@ -122,8 +122,12 @@ function countsInNetWorth(asset) {
 /**
  * 实物汇总：只算未归档、在用或闲置的。includedCents 是按单件/类别「该计入」的那部分，
  * 进不进净资产由调用方按家庭设置的全局开关决定。
+ *
+ * `convert(valueCents, asset)` 可选：把单件估值从它自己的币种折到基准币（多币种净资产用）。
+ * 缺省即恒等 —— 全部同币时数字与不分币种的旧写法逐分一致。
  */
-function summarizePhysical(assets, today) {
+function summarizePhysical(assets, today, convert = null) {
+  const fold = convert || ((v) => v);
   let valueCents = 0;
   let includedCents = 0;
   let count = 0;
@@ -131,8 +135,8 @@ function summarizePhysical(assets, today) {
     if (a.archived || ENDED.has(a.status)) continue;
     const v = currentValue(a, today);
     count++;
-    valueCents += v;
-    if (countsInNetWorth(a)) includedCents += v;
+    valueCents += fold(v, a);
+    if (countsInNetWorth(a)) includedCents += fold(v, a);
   }
   return { valueCents, includedCents, count };
 }

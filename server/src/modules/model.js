@@ -148,7 +148,7 @@ module.exports = (ctx) => {
   function takeRef(value, field, kind, exists) {
     const id = v.optStr(value, field, { max: 64 });
     if (id === null) return null;
-    if (!exists(kind, id)) v.bad(field, `${field} 指向的${kind === 'category' ? '类别' : '基金'}不存在`);
+    if (!exists(kind, id)) v.bad(field, `${field} 指向的${kind === 'category' ? '类别' : '板块'}不存在`);
     return id;
   }
 

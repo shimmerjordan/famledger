@@ -35,9 +35,11 @@ class DebtsRepo {
     String? note,
     String? accountId,
     int? settledCents,
+    String? currency,
     String? clientId,
   }) async {
     final body = <String, dynamic>{
+      if (currency != null) 'currency': currency,
       'direction': direction,
       'kind': kind,
       'counterparty': counterparty,

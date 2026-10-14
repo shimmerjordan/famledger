@@ -80,7 +80,7 @@ function buildFinanceContext(db, month = stats.currentMonth()) {
     );
   }
 
-  L.push('【各基金】余额 · 本月收支 · 月预算 · 目标');
+  L.push('【各板块】余额 · 本月收支 · 月预算 · 目标');
   for (const f of fundRows) {
     const bits = [`余额 ${formatMoney(balance.get(f.id) || 0)}`];
     const m = fundMonth.get(f.id);
@@ -126,7 +126,7 @@ const SYSTEM_PROMPT = [
   '规则：',
   '1. 只用下面给出的账本数据说话。数据里没有的，就说「账本里没有这项数据」，绝对不要编造金额、笔数或时间。',
   '2. 所有金额单位是元，按「¥1,234.56」的写法；涨跌要给出具体数字或百分比。',
-  '3. 每次回答最后给最多 3 条可执行的建议，每条一句话，能落到具体基金、类别或金额上。',
+  '3. 每次回答最后给最多 3 条可执行的建议，每条一句话，能落到具体板块、类别或金额上。',
   '4. 全程简体中文。不要输出表格以外的大段排版，手机屏幕很窄。',
   '',
   '以下是这个家庭的账本数据：',
@@ -138,11 +138,11 @@ function REPORT_PROMPT(month) {
     `请基于上面的账本数据，写一份 ${month} 的家庭月度理财报告，用 Markdown，二级标题固定为下面四个、顺序不变：`,
     '',
     '## 本月概览',
-    '## 各基金',
+    '## 各板块',
     '## 值得注意',
     '## 下月建议',
     '',
-    `要求：「本月概览」用两三句话交代 ${month} 的支出、收入、结余和环比；「各基金」每个基金一行，点出余额、预算使用与目标进度；`,
+    `要求：「本月概览」用两三句话交代 ${month} 的支出、收入、结余和环比；「各板块」每个板块一行，点出余额、预算使用与目标进度；`,
     '「值得注意」写 1~3 条异常（超预算、某类别激增、待确认流水堆积等），没有异常就明说没有；「下月建议」给正好 3 条可执行建议。',
     '不要重复罗列所有原始数字，不要编造账本里没有的东西，全文控制在 600 字以内。',
   ].join('\n');
@@ -163,18 +163,18 @@ function CLASSIFY_PROMPT(input, candidates) {
   if (input.merchant) lines.push(`商户：${input.merchant}`);
   if (input.amountCents != null) lines.push(`金额：${formatMoney(input.amountCents)}`);
   return [
-    '给下面这笔支付流水挑一个类别和一个基金。',
+    '给下面这笔支付流水挑一个类别和一个板块。',
     '',
     ...lines,
     '',
     '可选类别（id 与名称，只能选其中一个 id）：',
     cats,
     '',
-    '可选基金（id 与名称，只能选其中一个 id）：',
+    '可选板块（id 与名称，只能选其中一个 id）：',
     funds,
     '',
     '只输出这个 JSON，一行，不要代码块：',
-    '{"categoryId":"候选类别 id 或 null","fundId":"候选基金 id 或 null","confidence":0 到 1 之间的小数,"reason":"20 字以内的理由"}',
+    '{"categoryId":"候选类别 id 或 null","fundId":"候选板块 id 或 null","confidence":0 到 1 之间的小数,"reason":"20 字以内的理由"}',
   ].join('\n');
 }
 

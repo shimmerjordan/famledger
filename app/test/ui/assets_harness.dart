@@ -271,6 +271,17 @@ class AssetsBackend {
       res = _holdings(req.method, seg, body);
     } else if (seg.isNotEmpty && seg.first == 'debts') {
       res = _debts(req.method, seg, body);
+    } else if (seg.isNotEmpty && seg.first == 'funds') {
+      // 板块：只管新建 / 修改（每月进账规则跟着请求体原样存下）。
+      if (req.method == 'POST' && seg.length == 1) {
+        final row = {'id': 'f-new${++_fundIds}', 'kind': 'custom', 'color': '#c36a4f', ...body}..remove('clientId');
+        fundRows[row['id'] as String] = row;
+        res = _ok({'fund': row}, 201);
+      } else if (req.method == 'PATCH' && seg.length == 2 && fundRows.containsKey(seg[1])) {
+        res = _ok({'fund': fundRows[seg[1]]!..addAll(body)});
+      } else {
+        res = _error(404, 'not_found', '板块不存在');
+      }
     } else if (req.method == 'GET' && path == '/transactions') {
       // 债务详情的「往来」按账户查流水；这个假服务端不记流水，回空。
       res = _ok({'items': <Object>[]});
@@ -413,6 +424,10 @@ class AssetsBackend {
 
   /// 债务按 d1、d2…… 编号，测试里好指。
   int _debtIds = 0;
+
+  /// 板块（POST /funds 建的）。
+  final Map<String, Map<String, dynamic>> fundRows = {};
+  int _fundIds = 0;
 
   http.Response _assets(String method, List<String> seg, Map<String, dynamic> body) {
     if (method == 'POST' && seg.length == 1) {

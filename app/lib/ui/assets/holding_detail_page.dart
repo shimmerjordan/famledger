@@ -67,7 +67,7 @@ class _HoldingDetailPageState extends ConsumerState<HoldingDetailPage> {
       refreshNetWorth(ref);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('当前金额改成 ${Money.format(value)}')),
+        SnackBar(content: Text('当前金额改成 ${Money.format(value, currency: h.currency)}')),
       );
     } catch (error) {
       if (mounted) setState(() => _error = describeError(error));
@@ -271,7 +271,7 @@ class _HoldingDetailPageState extends ConsumerState<HoldingDetailPage> {
           const SectionHeader('明细'),
           InfoRow('品类', InfoText(h.kindLabel)),
           InfoRow(h.kind == Holding.kindGold ? '克数' : '份额', InfoText('${formatE4(h.quantityE4)} $unitName')),
-          InfoRow('成本', MoneyText(h.costCents)),
+          InfoRow('成本', MultiCurrencyAmount(h.costCents, currency: h.currency)),
           if (h.quantityE4 > 0)
             InfoRow('成本价', InfoText(formatE4((h.costCents * 1e6 / h.quantityE4).round(), minFraction: 2))),
           InfoRow(
@@ -287,8 +287,8 @@ class _HoldingDetailPageState extends ConsumerState<HoldingDetailPage> {
             ),
           ),
           if (!m.cleared) InfoRow('持有', InfoText('${m.days} 天')),
-          if (!m.cleared && daily != null) InfoRow('日均收益', MoneyText(daily.round(), signed: true)),
-          InfoRow('已实现盈亏', MoneyText(h.realizedCents, signed: true)),
+          if (!m.cleared && daily != null) InfoRow('日均收益', MultiCurrencyAmount(daily.round(), currency: h.currency, signed: true)),
+          InfoRow('已实现盈亏', MultiCurrencyAmount(h.realizedCents, currency: h.currency, signed: true)),
           if (opened != null) InfoRow('开仓', InfoText(Dates.dayLabel(opened))),
           if (h.kind != Holding.kindGold)
             InfoRow('市场', InfoText([h.marketLabel, if (h.code != null) h.code!].join(' · '))),
@@ -304,7 +304,7 @@ class _HoldingDetailPageState extends ConsumerState<HoldingDetailPage> {
         return [
           const SectionHeader('明细'),
           InfoRow('品类', InfoText(h.kindLabel)),
-          InfoRow('本金', MoneyText(h.isCleared ? 0 : h.costCents)),
+          InfoRow('本金', MultiCurrencyAmount(h.isCleared ? 0 : h.costCents, currency: h.currency)),
           InfoRow(
             h.kind == Holding.kindStructured ? '年化（保底 ~ 最高）' : '年化',
             InfoText(
@@ -318,8 +318,8 @@ class _HoldingDetailPageState extends ConsumerState<HoldingDetailPage> {
           if (opened != null) InfoRow('起息', InfoText(Dates.dayLabel(opened))),
           if (due != null) InfoRow('到期', InfoText(Dates.dayLabel(due))),
           if (term != null && term > 0) InfoRow('期限', InfoText('$term 天')),
-          if (accrued != null) InfoRow('已计息', MoneyText(accrued, signed: true)),
-          InfoRow(h.isCleared ? '利息合计' : '已到手的利息', MoneyText(h.realizedCents, signed: true)),
+          if (accrued != null) InfoRow('已计息', MultiCurrencyAmount(accrued, currency: h.currency, signed: true)),
+          InfoRow(h.isCleared ? '利息合计' : '已到手的利息', MultiCurrencyAmount(h.realizedCents, currency: h.currency, signed: true)),
           ...common,
         ];
       case InvestMode.balance:
@@ -327,11 +327,11 @@ class _HoldingDetailPageState extends ConsumerState<HoldingDetailPage> {
         return [
           const SectionHeader('明细'),
           InfoRow('品类', InfoText(h.kindLabel)),
-          InfoRow('本金', MoneyText(h.costCents)),
-          InfoRow('当前金额', MoneyText(h.isCleared ? 0 : h.valueCents ?? h.costCents)),
+          InfoRow('本金', MultiCurrencyAmount(h.costCents, currency: h.currency)),
+          InfoRow('当前金额', MultiCurrencyAmount(h.isCleared ? 0 : h.valueCents ?? h.costCents, currency: h.currency)),
           InfoRow('更新于', InfoText(valueOn == null ? '没更新过（按本金）' : Dates.dayLabel(valueOn))),
           if (h.rateE6 != null) InfoRow('年化', InfoText(formatRateE6(h.rateE6!))),
-          InfoRow('已实现收益', MoneyText(h.realizedCents, signed: true)),
+          InfoRow('已实现收益', MultiCurrencyAmount(h.realizedCents, currency: h.currency, signed: true)),
           if (opened != null) InfoRow('存入', InfoText(Dates.dayLabel(opened))),
           ...common,
         ];
@@ -373,7 +373,7 @@ class _Hero extends StatelessWidget {
     final Widget second = switch (h.mode) {
       InvestMode.unit => m.todayChangeCents == null
           ? Text(m.manual ? '手动价没有昨收' : '—', style: theme.textTheme.bodySmall)
-          : MoneyText(m.todayChangeCents!, signed: true),
+          : MultiCurrencyAmount(m.todayChangeCents!, currency: h.currency, signed: true),
       InvestMode.deposit => Text(maturityLabel(m) ?? '—', style: theme.textTheme.bodyLarge),
       InvestMode.balance => Text(
           h.valueOn == null ? '没更新过' : Dates.dayLabel(localDate(h.valueOn)!),
@@ -401,9 +401,9 @@ class _Hero extends StatelessWidget {
           ),
           const SizedBox(height: 2),
           if (m.cleared)
-            MoneyText(h.realizedCents, signed: true, size: MoneySize.display)
+            MultiCurrencyAmount(h.realizedCents, currency: h.currency, signed: true, size: MoneySize.display)
           else if (m.marketCents != null)
-            MoneyText(m.marketCents!, size: MoneySize.display)
+            MultiCurrencyAmount(m.marketCents!, currency: h.currency, size: MoneySize.display)
           else
             Text('还没有价格', style: theme.textTheme.headlineMedium),
           if (!m.cleared) ...[
@@ -419,7 +419,7 @@ class _Hero extends StatelessWidget {
                       crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
                         if (m.gainCents != null)
-                          MoneyText(m.gainCents!, signed: true)
+                          MultiCurrencyAmount(m.gainCents!, currency: h.currency, signed: true)
                         else
                           Text('—', style: theme.textTheme.bodyLarge),
                         RateText(m.gainRate),

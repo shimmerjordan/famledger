@@ -44,6 +44,9 @@ class _AccountFormSheetState extends ConsumerState<AccountFormSheet> {
   );
 
   late String _kind = widget.account?.kind ?? 'bank';
+
+  /// 新建默认家庭基准币；有流水后服务端不让改（409 currency_locked，错误照常显示）。
+  late String _currency = widget.account?.currency ?? ref.read(baseCurrencyProvider);
   late String? _owner = widget.account?.ownerMemberId;
   late String? _icon = widget.account?.icon;
   late String? _color = widget.account?.color;
@@ -102,6 +105,8 @@ class _AccountFormSheetState extends ConsumerState<AccountFormSheet> {
       'kind': _kind,
       'ownerMemberId': _owner,
       'initialBalanceCents': cents,
+      // 币种只在不是基准币（新建）或真改了（编辑）时才发：请求干净，也不会因为原样带回去碰到「有流水不能改」。
+      if (_isNew ? _currency != ref.read(baseCurrencyProvider) : _currency != widget.account!.currency) 'currency': _currency,
       'icon': _icon,
       'color': _color,
       'matchHints': hints,
@@ -220,17 +225,39 @@ class _AccountFormSheetState extends ConsumerState<AccountFormSheet> {
         ),
         ManageField(
           label: '初始余额',
-          child: TextField(
-            controller: _balance,
-            keyboardType: const TextInputType.numberWithOptions(
-              decimal: true,
-              signed: true,
-            ),
-            decoration: InputDecoration(
-              prefixText: '${Money.symbol} ',
-              hintText: '0.00',
-              helperText: _kind == 'credit' ? '信用卡已欠的钱填负数' : '开始记账那天这个账户里有多少',
-            ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _balance,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                    signed: true,
+                  ),
+                  decoration: InputDecoration(
+                    prefixText: '${Money.symbolFor(_currency).trim()} ',
+                    hintText: '0.00',
+                    helperText: [
+                      _kind == 'credit' ? '信用卡已欠的钱填负数' : '开始记账那天这个账户里有多少',
+                      // 有流水后服务端不让改币种（409 currency_locked，错误照常显示）。
+                      if (!_isNew) '记过流水后币种不能改',
+                    ].join('；'),
+                    helperMaxLines: 2,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: CurrencyDropdown(
+                  key: const ValueKey('account-currency'),
+                  value: _currency,
+                  keyPrefix: 'account-currency',
+                  onChanged: (c) => setState(() => _currency = c),
+                ),
+              ),
+            ],
           ),
         ),
         ManageIconPicker(

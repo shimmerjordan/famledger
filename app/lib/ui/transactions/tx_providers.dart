@@ -148,12 +148,20 @@ class TxDayGroup {
     required this.items,
     required this.expenseCents,
     required this.incomeCents,
+    this.expense = const CurrencyAmounts(),
+    this.income = const CurrencyAmounts(),
   });
 
   final DateTime date;
   final List<Transaction> items;
+
+  /// 当天的支出 / 收入（所有币种的分直接加，只在单币种时有意义；显示用 [expense] / [income]）。
   final int expenseCents;
   final int incomeCents;
+
+  /// 当天的支出 / 收入，按币种分开。
+  final CurrencyAmounts expense;
+  final CurrencyAmounts income;
 }
 
 /// 按自然日切段，顺序沿用传入的顺序（服务端已按时间倒序）。
@@ -181,6 +189,12 @@ List<TxDayGroup> groupByDay(List<Transaction> items) {
         incomeCents: groups[key]!
             .where((tx) => tx.isIncome && tx.status != 'void')
             .fold(0, (sum, tx) => sum + tx.amountCents),
+        expense: groups[key]!
+            .where((tx) => tx.isExpense && tx.status != 'void')
+            .fold(const CurrencyAmounts(), (sum, tx) => sum.add(tx.currency, tx.amountCents)),
+        income: groups[key]!
+            .where((tx) => tx.isIncome && tx.status != 'void')
+            .fold(const CurrencyAmounts(), (sum, tx) => sum.add(tx.currency, tx.amountCents)),
       ),
   ];
 }

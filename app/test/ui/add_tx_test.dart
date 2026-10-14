@@ -96,6 +96,13 @@ Future<void> tapKeys(WidgetTester tester, String keys) async {
   }
 }
 
+/// req1：保存失败时错误文案要出现在键盘上方的底部错误条（key: save-tx-error）里，
+/// 不只是控制台。字段行内也会显示同一条，所以这里精确定位底部那一条。
+Finder bottomError(String message) => find.descendant(
+  of: find.byKey(const ValueKey('save-tx-error')),
+  matching: find.text(message),
+);
+
 /// 带路由的版本：用来测「保存」之后真正发出去的草稿长什么样。
 Future<void> pumpAddTxRouted(
   WidgetTester tester,
@@ -167,7 +174,7 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('save-tx')));
     await tester.pump();
 
-    expect(find.text('请选择一个基金'), findsOneWidget);
+    expect(bottomError('请选择一个板块'), findsOneWidget);
   });
 
   testWidgets('没输金额就点保存，提示先输金额', (tester) async {
@@ -176,7 +183,7 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('save-tx')));
     await tester.pump();
 
-    expect(find.text('请输入金额'), findsOneWidget);
+    expect(bottomError('请输入金额'), findsOneWidget);
   });
 
   testWidgets('选了基金之后校验提示就不再出现', (tester) async {
@@ -185,12 +192,12 @@ void main() {
     await tapKeys(tester, '35.5');
     await tester.tap(find.byKey(const ValueKey('save-tx')));
     await tester.pump();
-    expect(find.text('请选择一个基金'), findsOneWidget);
+    expect(bottomError('请选择一个板块'), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('fund-f1')));
     await tester.pump();
 
-    expect(find.text('请选择一个基金'), findsNothing);
+    expect(find.text('请选择一个板块'), findsNothing);
   });
 
   testWidgets('默认基金会自动选中', (tester) async {
@@ -363,7 +370,7 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('save-tx')));
     await tester.pump();
 
-    expect(find.text('基金只填了一边：两边都填，或者都留空'), findsOneWidget);
+    expect(bottomError('板块只填了一边：两边都填，或者都留空'), findsOneWidget);
   });
 
   testWidgets('芯片再点一下可以取消选择', (tester) async {
@@ -387,7 +394,7 @@ void main() {
     await tapKeys(tester, '10');
     await tester.tap(find.byKey(const ValueKey('save-tx')));
     await tester.pump();
-    expect(find.text('请选择一个基金'), findsOneWidget);
+    expect(bottomError('请选择一个板块'), findsOneWidget);
   });
 
   testWidgets('转账模式两对都没填时说清楚要填什么', (tester) async {
@@ -399,7 +406,7 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('save-tx')));
     await tester.pump();
 
-    expect(find.text('至少填一对：账户→账户，或基金→基金'), findsOneWidget);
+    expect(bottomError('至少填一对：账户→账户，或板块→板块'), findsOneWidget);
   });
 
   testWidgets('大字号（1.3×）：金额区、类别格、键盘在 360 宽上都不溢出，键盘还能点', (tester) async {

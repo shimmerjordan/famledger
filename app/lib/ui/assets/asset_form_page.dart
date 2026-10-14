@@ -44,6 +44,9 @@ class _AssetFormPageState extends ConsumerState<AssetFormPage> {
 
   String _category = 'digital';
 
+  /// 买价是什么币（美元买的就记美元，估值也按美元算）；新建默认家庭基准币。
+  late String _currency = ref.read(baseCurrencyProvider);
+
   /// 默认「今天」取 [assetClockProvider]，和估值用的是同一个时钟（测试里是固定的那天）。
   late DateTime _purchasedOn = ref.read(assetClockProvider)();
   bool _record = true;
@@ -78,6 +81,7 @@ class _AssetFormPageState extends ConsumerState<AssetFormPage> {
     _expected.text = asset.expectedDays?.toString() ?? '';
     _note.text = asset.note ?? '';
     _category = Asset.categories.contains(asset.category) ? asset.category : 'other';
+    _currency = asset.currency;
     _purchasedOn = localDate(asset.purchasedOn) ?? ref.read(assetClockProvider)();
     _valuation.bind(asset);
   }
@@ -150,6 +154,7 @@ class _AssetFormPageState extends ConsumerState<AssetFormPage> {
           expectedDays: expected,
           note: note,
           valuation: valuation.input,
+          currency: _currency == ledger.asset(widget.id)?.currency ? null : _currency,
         );
       } else {
         await repo.create(
@@ -160,6 +165,7 @@ class _AssetFormPageState extends ConsumerState<AssetFormPage> {
           expectedDays: expected,
           note: note,
           valuation: valuation.input,
+          currency: _currency == ref.read(baseCurrencyProvider) ? null : _currency,
           record: _record && price > 0
               ? AssetRecord(
                   accountId: _accountId,
@@ -256,12 +262,29 @@ class _AssetFormPageState extends ConsumerState<AssetFormPage> {
             ),
             PickerField(
               label: '买价',
-              child: TextField(
-                key: const ValueKey('asset-price'),
-                controller: _price,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                onChanged: (_) => setState(() {}),
-                decoration: const InputDecoration(prefixText: '¥ ', hintText: '5999'),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      key: const ValueKey('asset-price'),
+                      controller: _price,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      onChanged: (_) => setState(() {}),
+                      decoration: InputDecoration(prefixText: '${Money.symbolFor(_currency).trim()} ', hintText: '5999'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  // 海外买的按当地币记；换了币种，原来选的付款账户不一定还是同币种的。
+                  CurrencyDropdown(
+                    key: const ValueKey('asset-currency'),
+                    value: _currency,
+                    keyPrefix: 'asset-currency',
+                    onChanged: (c) => setState(() {
+                      _currency = c;
+                      _accountId = null;
+                    }),
+                  ),
+                ],
               ),
             ),
             PickerField(
@@ -357,6 +380,7 @@ class _AssetFormPageState extends ConsumerState<AssetFormPage> {
                 RecordTargetFields(
                   ledger: ledger,
                   income: false,
+                  currency: _currency,
                   accountId: _accountId,
                   fundId: _resolvedFund(ledger),
                   categoryId: _categoryId,

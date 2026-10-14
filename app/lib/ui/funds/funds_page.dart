@@ -4,10 +4,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../widgets/widgets.dart';
 import 'funds_tab.dart';
 
-/// 「我的 › 基金」：家庭公共、育儿、旅行这些钱袋子——每笔流水都落在其中一个上，它们不是一类资产，
+/// 「我的 › 财富」：家庭公共、育儿、旅行这些钱袋子——每笔流水都落在其中一个上，它们不是一类资产，
 /// 所以不在资产页；资产页的理财里另有「基金」品类（公募基金），和股票、定期平级。
 ///
-/// 首页的基金卡片、「基金余额」的「全部」都到这里。新建：手机是右下角的按钮，宽屏在顶栏。
+/// 一个钱袋子叫一个「板块」。首页的板块卡片、「财富余额」的「全部」都到这里。新建：手机是右下角的按钮，宽屏在顶栏。
 class FundsPage extends ConsumerWidget {
   const FundsPage({super.key});
 
@@ -16,12 +16,13 @@ class FundsPage extends ConsumerWidget {
     final inAppBar = addButtonInAppBar(context);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('基金'),
+        title: const Text('财富'),
         actions: [
+          const CurrencyMenuButton(),
           if (inAppBar)
             AppBarAddButton(
               key: const ValueKey('funds-add'),
-              label: '新建基金',
+              label: '新建板块',
               onPressed: () => startNewFund(context, ref),
             ),
         ],
@@ -32,7 +33,7 @@ class FundsPage extends ConsumerWidget {
               key: const ValueKey('funds-add'),
               onPressed: () => startNewFund(context, ref),
               icon: const Icon(Icons.add),
-              label: const Text('新建基金'),
+              label: const Text('新建板块'),
             ),
       body: const FundsTab(),
     );

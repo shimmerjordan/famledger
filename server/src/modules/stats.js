@@ -44,6 +44,7 @@ const { rowToJson } = require('../lib/db');
 const v = require('../lib/validate');
 const sql = require('../lib/stats_sql');
 const valuation = require('../lib/valuation');
+const fxlib = require('../lib/fx');
 const settings = require('./settings');
 
 const TREND_DEFAULT_MONTHS = 12;
@@ -68,6 +69,38 @@ function shiftMonth(month, n) {
   const year = Math.floor(total / 12);
   const m = total - year * 12 + 1;
   return `${String(year).padStart(4, '0')}-${String(m).padStart(2, '0')}`;
+}
+
+/** 家庭基准币（默认 CNY）：所有跨实体的聚合都折到它。 */
+function baseCurrency(db) {
+  return settings.currentSettings(db).currency || 'CNY';
+}
+
+/**
+ * 建一个「把各币种金额折到基准币」的折算器，供 stats_sql 的跨实体聚合与实物估值用。
+ * 一次把 base 的汇率读进内存，之后每笔查表折算（rate_e6 整数运算集中在 lib/fx.js）。
+ * 缺某一对时绝不臆造：那部分金额按 0 计入基准币合计（各实体条目里的原生币金额照常显示），
+ * 并把币种记进 `missing`，随 `overview.fx` 暴露给客户端标「汇率缺失」。
+ * @returns {{(amount:number, currency?:string): number, base:string, rates:object, asOf:string|null, missing:Set<string>}}
+ */
+function makeConverter(db, base) {
+  const { rates, asOf } = fxlib.ratesForBase(db, base);
+  const missing = new Set();
+  const conv = (amount, currency) => {
+    const c = String(currency || base || 'CNY').toUpperCase();
+    if (c === base) return amount;
+    const rate = rates[c];
+    if (rate === undefined) {
+      missing.add(c);
+      return 0;
+    }
+    return fxlib.toBase(amount, rate);
+  };
+  conv.base = base;
+  conv.rates = rates;
+  conv.asOf = asOf;
+  conv.missing = missing;
+  return conv;
 }
 
 /**
@@ -114,10 +147,10 @@ function budgetFor(db, month, scope, refId) {
  * 实物估值汇总（口径见文件头第 5 条）。`counted` 是家庭设置里的全局开关。
  * @returns {{valueCents: number, includedCents: number, count: number, counted: boolean}}
  */
-function physicalOverview(db) {
+function physicalOverview(db, conv) {
   const rows = db.all('SELECT * FROM assets WHERE deleted_at IS NULL AND archived = 0').map((r) => rowToJson(r));
   return {
-    ...valuation.summarizePhysical(rows, valuation.localToday()),
+    ...valuation.summarizePhysical(rows, valuation.localToday(), conv ? (v, a) => conv(v, a.currency) : null),
     counted: settings.currentSettings(db).assets.netWorthIncludesPhysical !== false,
   };
 }
@@ -127,22 +160,70 @@ function physicalOverview(db) {
  * @param {object} db lib/db.js 的句柄
  * @param {string} [month] `YYYY-MM`，默认服务器本地时区的当前月
  */
+/** 实物估值按币种分开（原生金额，不折算）：各币种一份 {valueCents, includedCents, count}。 */
+function physicalByCurrency(db) {
+  const rows = db.all('SELECT * FROM assets WHERE deleted_at IS NULL AND archived = 0').map((r) => rowToJson(r));
+  const groups = new Map();
+  for (const r of rows) {
+    const cur = r.currency || 'CNY';
+    if (!groups.has(cur)) groups.set(cur, []);
+    groups.get(cur).push(r);
+  }
+  const out = new Map();
+  for (const [cur, list] of groups) out.set(cur, valuation.summarizePhysical(list, valuation.localToday()));
+  return out;
+}
+
+/** 总览发现缺汇率时的钩子（modules/fx.js 在 statsModule 里接上 ctx.fx.kick）；默认什么都不做。 */
+const statsHooks = { onMissingRates: () => {} };
+
 function computeOverview(db, month = currentMonth()) {
+  const base = baseCurrency(db);
+  const conv = makeConverter(db, base);
   const accountDelta = sql.deltaMap(db, 'account');
-  const fundDelta = sql.deltaMap(db, 'fund');
+  const fundBalances = sql.fundBalancesByCurrency(db);
+
+  /**
+   * 每个币种一份原生金额的分项（不折算）：客户端按币种分行显示合计，人民币、美元常驻、其他收起。
+   * 折成基准币的老字段（netWorthCents 等）照旧给，= Σ conv(各币种)。
+   */
+  const buckets = new Map();
+  const bucket = (cur) => {
+    if (!buckets.has(cur)) {
+      buckets.set(cur, {
+        assetsCents: 0, liabilitiesCents: 0, cashCents: 0, investAccountsCents: 0, investNetCents: 0,
+        investMarketCents: 0, investCostCents: 0, physicalValueCents: 0, physicalIncludedCents: 0,
+        debts: { receivableCents: 0, payableCents: 0, countedReceivableCents: 0, countedPayableCents: 0 },
+        monthExpenseCents: 0, monthIncomeCents: 0,
+      });
+    }
+    return buckets.get(cur);
+  };
 
   // 归档的也给 —— 归档只是「别在记账时挑到它」，钱还在里面。债务的内部账户（kind = 'debt'）也在列，
   // App 靠它的余额算每笔债务还剩多少。
   const accountRows = db.all(
-    'SELECT id, kind, initial_balance_cents FROM accounts WHERE deleted_at IS NULL ORDER BY sort_order, created_at',
+    'SELECT id, kind, currency, initial_balance_cents FROM accounts WHERE deleted_at IS NULL ORDER BY sort_order, created_at',
   );
+  // 每个账户的 balanceCents 是它自己币种的原生值（流水就记在这个币种里）；只在往折成基准币的分项累加时才用 conv。
   const accounts = accountRows.map((r) => ({
     accountId: r.id,
+    currency: r.currency || base,
     balanceCents: (Number(r.initial_balance_cents) || 0) + (accountDelta.get(r.id) || 0),
   }));
+  // 板块没有币种：余额按币种分开（balances，原生），balanceCents 是折成基准币的合计（预算、进度条用）。
   const funds = db
     .all('SELECT id FROM funds WHERE deleted_at IS NULL ORDER BY sort_order, created_at')
-    .map((r) => ({ fundId: r.id, balanceCents: fundDelta.get(r.id) || 0 }));
+    .map((r) => {
+      const byCur = fundBalances.get(r.id) || new Map();
+      let total = 0;
+      const balances = {};
+      for (const [cur, cents] of byCur) {
+        balances[cur] = cents;
+        total += conv(cents, cur);
+      }
+      return { fundId: r.id, balanceCents: total, balances };
+    });
 
   // 债务账户 → 它那笔债务（方向、计不计入净资产）。账户在、债务被删了的不会有（删债务连账户一起删）。
   const debtByAccount = new Map(
@@ -154,7 +235,7 @@ function computeOverview(db, month = currentMonth()) {
   // 正余额是资产，负余额（通常是信用卡的欠款）取绝对值进负债。信用卡还成正数
   // 了（多还了钱）就照样是资产 —— 按余额的正负分，不按账户类型分。
   // 分项：现金流 = 非投资、非债务账户；投资账户单列（证券户里的钱算理财）；债务按方向分应收、应付，
-  // 只有「计入净资产」的进资产负债（人情默认不计）。
+  // 只有「计入净资产」的进资产负债（人情默认不计）。原生金额进各币种的桶，折算后进基准币的合计。
   let assetsCents = 0;
   let liabilitiesCents = 0;
   let cashCents = 0;
@@ -162,24 +243,33 @@ function computeOverview(db, month = currentMonth()) {
   const debts = { receivableCents: 0, payableCents: 0, countedReceivableCents: 0, countedPayableCents: 0, count: 0 };
   for (const a of accounts) {
     const kind = kindById.get(a.accountId);
+    const b = bucket(a.currency);
+    const native = a.balanceCents;
+    const bal = conv(native, a.currency);
     if (kind === 'debt') {
       const d = debtByAccount.get(a.accountId);
       if (!d) continue;
       debts.count++;
-      const receivable = Math.max(0, a.balanceCents);
-      const payable = Math.max(0, -a.balanceCents);
-      debts.receivableCents += receivable;
-      debts.payableCents += payable;
+      debts.receivableCents += Math.max(0, bal);
+      debts.payableCents += Math.max(0, -bal);
+      b.debts.receivableCents += Math.max(0, native);
+      b.debts.payableCents += Math.max(0, -native);
       if (!d.counted) continue;
-      debts.countedReceivableCents += receivable;
-      debts.countedPayableCents += payable;
+      debts.countedReceivableCents += Math.max(0, bal);
+      debts.countedPayableCents += Math.max(0, -bal);
+      b.debts.countedReceivableCents += Math.max(0, native);
+      b.debts.countedPayableCents += Math.max(0, -native);
     } else if (kind === 'invest') {
-      investAccountsCents += a.balanceCents;
+      investAccountsCents += bal;
+      b.investAccountsCents += native;
     } else {
-      cashCents += a.balanceCents;
+      cashCents += bal;
+      b.cashCents += native;
     }
-    if (a.balanceCents >= 0) assetsCents += a.balanceCents;
-    else liabilitiesCents -= a.balanceCents;
+    if (bal >= 0) assetsCents += bal;
+    else liabilitiesCents -= bal;
+    if (native >= 0) b.assetsCents += native;
+    else b.liabilitiesCents -= native;
   }
 
   // 挂的账户被删了，成本也跟着从余额里消失了，只能按没挂账户整份算。调整记在资产一侧，
@@ -191,32 +281,51 @@ function computeOverview(db, month = currentMonth()) {
   /** @type {Map<string, {kind: string, valueCents: number, costCents: number, count: number}>} */
   const byKind = new Map();
   for (const p of sql.investPositions(db, valuation.localToday())) {
-    investMarketCents += p.marketCents;
-    investCostCents += p.costCents;
-    const net = p.accountId && liveAccounts.has(p.accountId) ? p.marketCents - p.costCents : p.marketCents;
+    const market = conv(p.marketCents, p.currency);
+    const cost = conv(p.costCents, p.currency);
+    investMarketCents += market;
+    investCostCents += cost;
+    const linked = p.accountId && liveAccounts.has(p.accountId);
+    const net = linked ? market - cost : market;
     investNetCents += net;
     assetsCents += net;
+    const b = bucket(p.currency);
+    const nativeNet = linked ? p.marketCents - p.costCents : p.marketCents;
+    b.investMarketCents += p.marketCents;
+    b.investCostCents += p.costCents;
+    b.investNetCents += nativeNet;
+    b.assetsCents += nativeNet;
     const k = byKind.get(p.kind) || { kind: p.kind, valueCents: 0, costCents: 0, count: 0 };
-    k.valueCents += p.marketCents;
-    k.costCents += p.costCents;
+    k.valueCents += market;
+    k.costCents += cost;
     k.count++;
     byKind.set(p.kind, k);
   }
 
   const netWorthExPhysicalCents = assetsCents - liabilitiesCents;
-  const physical = physicalOverview(db);
+  const physical = physicalOverview(db, conv);
   if (physical.counted) assetsCents += physical.includedCents;
+  for (const [cur, s] of physicalByCurrency(db)) {
+    const b = bucket(cur);
+    b.physicalValueCents += s.valueCents;
+    b.physicalIncludedCents += s.includedCents;
+  }
 
-  const totals = sql.monthSums(db, month);
-  const fundSpent = new Map(sql.expenseByColumn(db, month, 'fund_id').map((r) => [r.ref, r.expenseCents]));
-  const categorySpent = new Map(sql.expenseByColumn(db, month, 'category_id').map((r) => [r.ref, r.expenseCents]));
+  const totals = sql.monthSums(db, month, undefined, conv);
+  for (const m of sql.monthSumsByCurrency(db, month)) {
+    const b = bucket(m.currency);
+    b.monthExpenseCents += m.expenseCents;
+    b.monthIncomeCents += m.incomeCents;
+  }
+  const fundSpent = new Map(sql.expenseByColumn(db, month, 'fund_id', undefined, conv).map((r) => [r.ref, r.expenseCents]));
+  const categorySpent = new Map(sql.expenseByColumn(db, month, 'category_id', undefined, conv).map((r) => [r.ref, r.expenseCents]));
 
   const budgets = resolvedBudgets(db, month).map((b) => ({
     ...b,
     spentCents: (b.scope === 'fund' ? fundSpent.get(b.refId) : categorySpent.get(b.refId)) || 0,
   }));
-  // 只在基金上填了「月预算」、没单独建预算行的，也要出现在这张表里：客户端的
-  // 基金卡片靠它画进度条。
+  // 只在板块上填了「月预算」、没单独建预算行的，也要出现在这张表里：客户端的
+  // 板块卡片靠它画进度条。
   const hasBudgetRow = new Set(budgets.map((b) => `${b.scope}/${b.refId}`));
   for (const f of db.all(
     'SELECT id, monthly_budget_cents FROM funds WHERE deleted_at IS NULL AND monthly_budget_cents IS NOT NULL',
@@ -235,6 +344,20 @@ function computeOverview(db, month = currentMonth()) {
     "SELECT COUNT(*) AS n FROM transactions WHERE deleted_at IS NULL AND status = 'pending'",
   );
 
+  // 各币种的净资产 = 资产 − 负债（+ 计入的实物）。全是 0 的币种不给（建过又清空的美元户不该占一行）。
+  const byCurrency = {};
+  for (const [cur, b] of [...buckets.entries()].sort((x, y) => cmp(x[0], y[0]))) {
+    const netWorthExPhysicalCents = b.assetsCents - b.liabilitiesCents;
+    const netWorthCents = netWorthExPhysicalCents + (physical.counted ? b.physicalIncludedCents : 0);
+    const all = [netWorthCents, b.cashCents, b.investAccountsCents, b.investNetCents, b.investMarketCents,
+      b.physicalValueCents, b.monthExpenseCents, b.monthIncomeCents, b.debts.receivableCents, b.debts.payableCents];
+    if (all.every((x) => x === 0)) continue;
+    byCurrency[cur] = { ...b, netWorthExPhysicalCents, netWorthCents };
+  }
+
+  // 用到的币种没有汇率：后台补抓一次（折成基准币的合计里那部分暂按 0）。
+  if (conv.missing.size > 0) statsHooks.onMissingRates();
+
   return {
     netWorthCents: assetsCents - liabilitiesCents,
     assetsCents,
@@ -250,25 +373,28 @@ function computeOverview(db, month = currentMonth()) {
     debts,
     netWorthExPhysicalCents,
     physical,
+    byCurrency,
     month: {
       expenseCents: totals.expenseCents,
       incomeCents: totals.incomeCents,
-      byFund: sql.totalsByColumn(db, month, 'fund_id').map((r) => ({
+      byFund: sql.totalsByColumn(db, month, 'fund_id', undefined, conv).map((r) => ({
         fundId: r.ref,
         expenseCents: r.expenseCents,
         incomeCents: r.incomeCents,
       })),
       byCategory: sql
-        .expenseByColumn(db, month, 'category_id')
+        .expenseByColumn(db, month, 'category_id', undefined, conv)
         .map((r) => ({ categoryId: r.ref, expenseCents: r.expenseCents })),
       byMember: sql
-        .expenseByColumn(db, month, 'member_id')
+        .expenseByColumn(db, month, 'member_id', undefined, conv)
         .map((r) => ({ memberId: r.ref, expenseCents: r.expenseCents })),
       budgets,
     },
     pendingCount: Number(pending && pending.n) || 0,
     funds,
     accounts,
+    // 内嵌汇率：客户端拿它做与服务端一致的折算，杜绝两边数字对不上；missing 是抓不到汇率的币种。
+    fx: { base, asOf: conv.asOf, rates: conv.rates, missing: [...conv.missing] },
   };
 }
 
@@ -285,7 +411,9 @@ function computeTrend(db, { months = TREND_DEFAULT_MONTHS, fundId = null, catego
   const end = endMonth || currentMonth();
   const from = shiftMonth(end, -(n - 1));
 
-  const found = new Map(sql.monthlyTotals(db, from, end, { fundId, categoryId }).map((r) => [r.month, r]));
+  // 趋势是跨币种、跨月的支出/收入合计，一律折到基准币再画柱子。
+  const conv = makeConverter(db, baseCurrency(db));
+  const found = new Map(sql.monthlyTotals(db, from, end, { fundId, categoryId }, conv).map((r) => [r.month, r]));
   const series = [];
   for (let i = 0; i < n; i++) {
     const m = shiftMonth(from, i);
@@ -300,28 +428,38 @@ function computeTrend(db, { months = TREND_DEFAULT_MONTHS, fundId = null, catego
 }
 
 /**
- * 基金详情页要的一切。`recent` 不限月份也不限状态（待确认的正是要在这里被看到
+ * 板块详情页要的一切。`recent` 不限月份也不限状态（待确认的正是要在这里被看到
  * 并确认的），其余数字都只算这个月、只算确认的流水。
- * @throws {HttpError} 404 not_found —— 基金不存在或已软删
+ * @throws {HttpError} 404 not_found —— 板块不存在或已软删
  */
 function computeFundStats(db, fundId, month = currentMonth()) {
   const fund = db.get('SELECT * FROM funds WHERE id = ? AND deleted_at IS NULL', fundId);
-  if (!fund) throw new HttpError(404, 'not_found', '基金不存在');
+  if (!fund) throw new HttpError(404, 'not_found', '板块不存在');
 
-  const totals = sql.monthSums(db, month, { fundId });
+  const base = baseCurrency(db);
+  const conv = makeConverter(db, base);
+  // 余额按币种分开（balances，原生）；balanceCents 和月度支出、分类是折成基准币的合计。
+  const totals = sql.monthSums(db, month, { fundId }, conv);
   const monthlyBudgetCents = fund.monthly_budget_cents === null ? null : Number(fund.monthly_budget_cents);
   const budgetRow = budgetFor(db, month, 'fund', fundId);
+  const balances = {};
+  let balanceCents = 0;
+  for (const [cur, cents] of sql.fundBalancesByCurrency(db, fundId).get(fundId) || new Map()) {
+    balances[cur] = cents;
+    balanceCents += conv(cents, cur);
+  }
 
   return {
     fundId,
-    balanceCents: sql.deltaMap(db, 'fund', fundId).get(fundId) || 0,
+    balanceCents,
+    balances,
     targetCents: fund.target_cents === null ? null : Number(fund.target_cents),
     monthlyBudgetCents,
     budgetCents: budgetRow === null ? monthlyBudgetCents : budgetRow,
     monthExpenseCents: totals.expenseCents,
     monthIncomeCents: totals.incomeCents,
     byCategory: sql
-      .expenseByColumn(db, month, 'category_id', { fundId })
+      .expenseByColumn(db, month, 'category_id', { fundId }, conv)
       .map((r) => ({ categoryId: r.ref, expenseCents: r.expenseCents })),
     recent: db
       .all(
@@ -335,11 +473,15 @@ function computeFundStats(db, fundId, month = currentMonth()) {
 
 /** 日历热力图：只给有流水的那几天，按日期升序。 */
 function computeCalendar(db, month = currentMonth()) {
-  return { days: sql.dailyTotals(db, month) };
+  // 每天的热力值也是跨币种合计，折到基准币。
+  const conv = makeConverter(db, baseCurrency(db));
+  return { days: sql.dailyTotals(db, month, undefined, conv) };
 }
 
 function statsModule(ctx) {
   const { db } = ctx;
+  // 缺汇率时让汇率模块后台补抓（fx.js 按字母序先加载，ctx.fx 这时已经在了）。
+  statsHooks.onMissingRates = () => ctx.fx?.kick?.();
 
   /** 缺省即当前月；给了就必须是 `YYYY-MM`（`2026-13` 这种也拦掉）。 */
   const monthParam = (query, name = 'month') =>
@@ -395,5 +537,6 @@ module.exports.computeFundStats = computeFundStats;
 module.exports.computeCalendar = computeCalendar;
 module.exports.currentMonth = currentMonth;
 module.exports.shiftMonth = shiftMonth;
+module.exports.statsHooks = statsHooks;
 module.exports.budgetFor = budgetFor;
 module.exports.resolvedBudgets = resolvedBudgets;

@@ -16,6 +16,7 @@ class MoneyText extends StatelessWidget {
     this.showSymbol = true,
     this.color,
     this.muted = false,
+    this.currency = 'CNY',
   });
 
   final int cents;
@@ -30,6 +31,9 @@ class MoneyText extends StatelessWidget {
 
   /// 次要信息（用 muted 色）。
   final bool muted;
+
+  /// 金额的币种（决定符号，默认 CNY）。
+  final String currency;
 
   /// 与 [MoneyText] 同一套字号与配色，给需要把金额拼进 [TextSpan] 的地方用。
   static TextStyle styleFor(
@@ -60,7 +64,7 @@ class MoneyText extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Text(
-    Money.format(cents, signed: signed, showSymbol: showSymbol),
+    Money.format(cents, currency: currency, signed: signed, showSymbol: showSymbol),
     style: styleFor(context, cents, signed: signed, size: size, color: color, muted: muted),
     maxLines: 1,
     overflow: TextOverflow.ellipsis,

@@ -110,6 +110,7 @@ class HoldingsRepo {
     String? maturesOn,
     int? valueCents,
     int? realizedCents,
+    String? currency,
     String? note,
     String? fromAccountId,
     String? clientId,
@@ -139,6 +140,7 @@ class HoldingsRepo {
     if (Holding.modeOf(resolved) != InvestMode.balance && realizedCents != null && realizedCents > 0) {
       body['realizedCents'] = realizedCents;
     }
+    putIfNotNull(body, 'currency', currency);
     if (note != null && note.isNotEmpty) body['note'] = note;
     if (fromAccountId != null) {
       body['recordTransaction'] = {'fromAccountId': fromAccountId};

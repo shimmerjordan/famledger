@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../app/providers.dart';
 import '../../app/theme.dart';
 import '../../core/money.dart';
 import '../../data/models/models.dart';
@@ -49,17 +51,18 @@ class FundProgress {
   int get percent => (ratio * 100).round();
 
   /// 进度条下面那行字。
-  String get label {
+  String get label => labelWith(Money.format);
+
+  /// 同 [label]，金额怎么写由 [fmt] 决定（这里的数都是基准币；「换算」时折成别的币种再写）。
+  String labelWith(String Function(int cents) fmt) {
     if (hasTarget) {
-      return '目标 ${Money.format(targetCents!)} · $percent%';
+      return '目标 ${fmt(targetCents!)} · $percent%';
     }
     if (hasBudget) {
       final remain = budgetCents! - monthExpenseCents;
-      return remain >= 0
-          ? '本月预算还剩 ${Money.format(remain)}'
-          : '超预算 ${Money.format(-remain)}';
+      return remain >= 0 ? '本月预算还剩 ${fmt(remain)}' : '超预算 ${fmt(-remain)}';
     }
-    return '本月支出 ${Money.format(monthExpenseCents)}';
+    return '本月支出 ${fmt(monthExpenseCents)}';
   }
 }
 
@@ -94,8 +97,8 @@ FundProgress fundProgressOf(Fund fund, StatsOverview? stats) {
 }
 
 /// 进度条 + 一行说明。超预算用 error 色，接近上限用 warning 色，
-/// 但文字自己也说得清（不靠颜色单独承载信息）。
-class FundProgressBar extends StatelessWidget {
+/// 但文字自己也说得清（不靠颜色单独承载信息）。说明里的金额跟着「换算」走。
+class FundProgressBar extends ConsumerWidget {
   const FundProgressBar({
     super.key,
     required this.progress,
@@ -110,9 +113,19 @@ class FundProgressBar extends StatelessWidget {
   final bool showLabel;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final ledger = LedgerColors.of(context);
+    final base = ref.watch(baseCurrencyProvider);
+    final target = ref.watch(displayCurrencyOverrideProvider);
+    final fx = ref.watch(fxRatesProvider);
+    String fmt(int cents) {
+      if (target != null && target.toUpperCase() != base.toUpperCase()) {
+        final v = fx.convert(cents, base, target);
+        if (v != null) return Money.format(v, currency: target);
+      }
+      return Money.format(cents, currency: base);
+    }
     final bar = progress.isOver
         ? theme.colorScheme.error
         : (progress.isNear ? ledger.warning : color);
@@ -132,7 +145,7 @@ class FundProgressBar extends StatelessWidget {
         if (showLabel) ...[
           if (progress.hasBar) const SizedBox(height: 6),
           Text(
-            progress.label,
+            progress.labelWith(fmt),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: theme.textTheme.bodySmall?.copyWith(

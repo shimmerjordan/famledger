@@ -439,7 +439,7 @@ test('通用模板：名称精确匹配与 hint、负数当支出、日期格式
 
   assert.deepEqual([salary.type, salary.amountCents, salary.occurredAt, salary.categoryId], ['income', 800000, '2026-09-13T18:30:00+08:00', cat('工资', 'income')]);
   assert.deepEqual([weird.type, weird.amountCents, weird.fundId, weird.accountId], ['expense', 1250, null, null], '负数金额一律当支出');
-  assert.equal(weird.hint, '类别「不存在的类别」不存在；基金「没这个基金」不存在；账户「没这个账户」不存在');
+  assert.equal(weird.hint, '类别「不存在的类别」不存在；板块「没这个基金」不存在；账户「没这个账户」不存在');
   assert.equal(weird.categoryId, cat('餐饮', 'expense'), '写的类别对不上就交给模型：备注「早餐」种子认得');
   assert.ok(weird.confidence > 0 && weird.confidence <= 1);
   assert.equal(interest.categoryId, cat('其他', 'income'), '同名类别按收支挑');
@@ -548,7 +548,7 @@ test('GET /import/template.csv：无需登录、带 BOM、下载头；拿回来�
   const bytes = Buffer.from(await r.arrayBuffer());
   assert.deepEqual([...bytes.subarray(0, 3)], [0xef, 0xbb, 0xbf]);
   const lines = bytes.subarray(3).toString('utf8').split('\r\n').filter(Boolean);
-  assert.equal(lines[0], '日期,收支,金额,类别,基金,账户,备注');
+  assert.equal(lines[0], '日期,收支,金额,类别,板块,账户,备注');
   assert.equal(lines.length, 3, '表头 + 两行示例');
 
   const back = await preview(h, 'famledger-template.csv', bytes);

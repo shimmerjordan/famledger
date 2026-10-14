@@ -150,7 +150,7 @@ class _ImportPageState extends ConsumerState<ImportPage> {
           const SizedBox(height: 6),
           Text(
             '从别的记账软件搬过来？按模板一行一笔填好：日期、收支、金额，'
-            '类别、基金、账户写名字就行。',
+            '类别、板块、账户写名字就行。',
             style: theme.textTheme.bodyMedium,
           ),
           const SizedBox(height: 4),

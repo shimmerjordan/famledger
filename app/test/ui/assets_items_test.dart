@@ -153,7 +153,7 @@ void main() {
       );
       expect(record.value, isTrue);
       expect(find.text('从哪个账户付的'), findsOneWidget);
-      expect(find.text('基金'), findsOneWidget);
+      expect(find.text('板块'), findsOneWidget);
       expect(find.text('类别'), findsOneWidget);
 
       await tester.enterText(find.byKey(const ValueKey('asset-name')), 'MacBook');

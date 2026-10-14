@@ -144,13 +144,6 @@ module.exports = (ctx) => {
       ? v.enumOf(b.status, 'status', isNew ? CREATE_STATUSES : STATUSES)
       : (row ? row.status : 'confirmed');
     const source = given('source') ? v.enumOf(b.source, 'source', SOURCES) : (row ? row.source : 'manual');
-    const currency = given('currency')
-      ? (() => {
-          const c = v.str(b.currency, 'currency', { min: 3, max: 3 }).toUpperCase();
-          if (!/^[A-Z]{3}$/.test(c)) v.bad('currency', '币种必须是 3 个字母的代码');
-          return c;
-        })()
-      : (row ? row.currency : db.meta('currency', 'CNY'));
 
     /**
      * 引用列。客户端这次传了才校验「指到的东西还在不在」—— 已归档可以指，
@@ -168,8 +161,8 @@ module.exports = (ctx) => {
 
     let accountId = ref('accountId', 'account_id', 'accounts', '账户');
     let toAccountId = ref('toAccountId', 'to_account_id', 'accounts', '转入账户');
-    let fundId = ref('fundId', 'fund_id', 'funds', '基金');
-    let toFundId = ref('toFundId', 'to_fund_id', 'funds', '转入基金');
+    let fundId = ref('fundId', 'fund_id', 'funds', '板块');
+    let toFundId = ref('toFundId', 'to_fund_id', 'funds', '转入板块');
 
     if (type === 'transfer') {
       // 一对要么都有要么都没有：只填了一半，钱就会从一边消失而没有落点。
@@ -178,27 +171,48 @@ module.exports = (ctx) => {
         throw new HttpError(400, 'invalid_transfer', '账户转账要同时填 accountId 和 toAccountId');
       }
       if (!fundId !== !toFundId) {
-        throw new HttpError(400, 'invalid_transfer', '基金拨款要同时填 fundId 和 toFundId');
+        throw new HttpError(400, 'invalid_transfer', '板块拨款要同时填 fundId 和 toFundId');
       }
       if (!accountId && !fundId) {
-        throw new HttpError(400, 'invalid_transfer', '转账至少要填一对：账户→账户，或基金→基金');
+        throw new HttpError(400, 'invalid_transfer', '转账至少要填一对：账户→账户，或板块→板块');
       }
       if (accountId && accountId === toAccountId) v.bad('toAccountId', '转出和转入不能是同一个账户');
-      if (fundId && fundId === toFundId) v.bad('toFundId', '转出和转入不能是同一个基金');
+      if (fundId && fundId === toFundId) v.bad('toFundId', '转出和转入不能是同一个板块');
     } else {
       // 支出/收入只有单边；对手方留着会让余额算两遍。
       toAccountId = null;
       toFundId = null;
       if (!fundId) {
         fundId = fallbackFundId();
-        if (!fundId) v.bad('fundId', '请先建一个基金，或在请求里指定 fundId');
+        if (!fundId) v.bad('fundId', '请先建一个板块，或在请求里指定 fundId');
       }
+    }
+
+    // 币种跟账户走：有账户就是账户的币种（客户端传了别的也以账户为准 —— 美元户里记的就是美元）；
+    // 没账户（纯板块拨款、没挂账户的支出）用传来的，再没有就沿用旧值 / 家庭基准币。
+    const base = db.meta('currency', 'CNY');
+    const currencyOf = (id) => (id ? db.get('SELECT currency FROM accounts WHERE id = ?', id)?.currency || base : null);
+    const currency = currencyOf(accountId)
+      || (given('currency') ? v.currency(b.currency, 'currency') : (row ? row.currency : base));
+    // 跨币种转账：转入账户的币种不同就必须说到账多少（按转入账户的币种）；同币种不存这两列。
+    let toAmountCents = null;
+    let toCurrency = null;
+    const toCur = type === 'transfer' ? currencyOf(toAccountId) : null;
+    if (toCur && toCur !== currency) {
+      const raw = given('toAmountCents') ? b.toAmountCents : (row ? row.to_amount_cents : undefined);
+      if (v.isMissing(raw)) {
+        throw new HttpError(400, 'invalid_toAmountCents', `两个账户币种不同（${currency} → ${toCur}），要填到账多少`);
+      }
+      toAmountCents = v.int(raw, 'toAmountCents', { min: 0, max: MAX_AMOUNT });
+      toCurrency = toCur;
     }
 
     return {
       type,
       amount_cents: amountCents,
       currency,
+      to_amount_cents: toAmountCents,
+      to_currency: toCurrency,
       occurred_at: occurredAt,
       account_id: accountId,
       to_account_id: toAccountId,

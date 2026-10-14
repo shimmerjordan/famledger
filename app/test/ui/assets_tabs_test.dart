@@ -54,7 +54,7 @@ void main() {
     expect(find.byTooltip('智能导入'), findsNothing, reason: '智能导入只在物品段');
   });
 
-  testWidgets('老地址 ?tab=funds 转到「我的 › 基金」那一页', (tester) async {
+  testWidgets('老地址 ?tab=funds 转到「我的 › 财富」那一页', (tester) async {
     await pumpAssetsAt(tester, bootAssets(AssetsBackend()), '/assets?tab=funds');
     expect(find.byType(FundsPage), findsOneWidget);
     expect(find.byType(AssetsPage), findsNothing);

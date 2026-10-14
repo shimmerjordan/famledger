@@ -476,8 +476,8 @@ class _CapturePageState extends ConsumerState<CapturePage> with WidgetsBindingOb
           ),
         ),
         ListTile(
-          title: const Text('默认基金'),
-          subtitle: const Text('模型拿不准归哪个基金时用它'),
+          title: const Text('默认板块'),
+          subtitle: const Text('模型拿不准归哪个板块时用它'),
           trailing: DropdownButton<String?>(
             value: fundValue,
             hint: const Text('自动'),

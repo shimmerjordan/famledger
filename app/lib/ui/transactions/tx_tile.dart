@@ -79,8 +79,10 @@ class TxTile extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.end,
         mainAxisSize: MainAxisSize.min,
         children: [
-          MoneyText(
+          // 按这笔自己的币种显示（美元户的就是 $）；「换算」时折过去。
+          MultiCurrencyAmount(
             tx.isExpense ? -tx.amountCents : tx.amountCents,
+            currency: tx.currency,
             signed: tx.isIncome,
             color: tx.status == 'void' ? theme.colorScheme.onSurfaceVariant : null,
           ),

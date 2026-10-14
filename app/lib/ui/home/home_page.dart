@@ -58,7 +58,7 @@ class _HomePageState extends ConsumerState<HomePage> {
           onChanged: (next) =>
               ref.read(homeMonthProvider.notifier).state = next,
         ),
-        actions: const [ThemeModeButton()],
+        actions: const [CurrencyMenuButton(), ThemeModeButton()],
       ),
       body: AdaptiveTwoPane(
         main: RefreshIndicator(
@@ -82,7 +82,11 @@ class _HomePageState extends ConsumerState<HomePage> {
                 loading: const MonthSummarySkeleton(),
                 onRetry: () => ref.invalidate(statsProvider(month)),
                 errorPadding: const EdgeInsets.all(LedgerLayout.pagePadding),
-                data: (value) => MonthSummary(stats: value.month),
+                data: (value) => MonthSummary(
+                  stats: value.month,
+                  expense: value.amountsBy((b) => b.monthExpenseCents),
+                  income: value.amountsBy((b) => b.monthIncomeCents),
+                ),
               ),
               // 宽屏主栏够宽，资产概览五格一行排在本月合计下面；手机放在待确认、会员提醒后面。
               if (wide) const AssetsHomeCard(),
@@ -106,7 +110,7 @@ class _HomePageState extends ConsumerState<HomePage> {
                 children: [
                   ..._perkAlerts(context, data, padding: EdgeInsets.zero),
                   SectionHeader(
-                    '基金余额',
+                    '财富余额',
                     padding: const EdgeInsets.only(bottom: 8),
                     actionLabel: '全部',
                     onAction: () => context.push('/funds'),
@@ -153,7 +157,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     StatsOverview? stats,
   ) => [
     SectionHeader(
-      '基金',
+      '财富',
       actionLabel: '全部',
       onAction: () => context.push('/funds'),
     ),
@@ -336,7 +340,7 @@ class _BudgetAlertRow extends StatelessWidget {
         children: [
           Expanded(
             child: Text(
-              name ?? (isFund ? '某个基金' : '某个类别'),
+              name ?? (isFund ? '某个板块' : '某个类别'),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: theme.textTheme.bodyMedium,
@@ -364,11 +368,11 @@ class _NoFunds extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => EmptyState(
-    title: '还没有基金',
+    title: '还没有板块',
     message: '先从模板建一个，钱才有地方归。',
     icon: Icons.savings_outlined,
     compact: compact,
-    actionLabel: '新建基金',
+    actionLabel: '新建板块',
     onAction: () => context.push('/funds/new'),
   );
 }

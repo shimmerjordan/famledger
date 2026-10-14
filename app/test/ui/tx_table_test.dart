@@ -290,7 +290,7 @@ void main() {
     testWidgets('表头七列，一笔一行，金额颜色照 MoneyText', (tester) async {
       await pumpPage(tester, repo: TableRepo());
 
-      for (final label in ['日期', '类别', '商户 / 备注', '基金', '账户', '成员', '金额']) {
+      for (final label in ['日期', '类别', '商户 / 备注', '板块', '账户', '成员', '金额']) {
         expect(find.text(label), findsOneWidget, reason: label);
       }
       for (final id in ['t1', 't2', 't3', 't4']) {
@@ -373,7 +373,7 @@ void main() {
 
       await select(tester, ['t1']);
       expect(find.text('已选 1 笔'), findsOneWidget);
-      for (final label in ['改类别', '改基金', '删除', '取消']) {
+      for (final label in ['改类别', '改板块', '删除', '取消']) {
         expect(find.text(label), findsOneWidget, reason: label);
       }
       expect(find.text('日期'), findsNothing, reason: '工具条顶替了表头');
@@ -464,13 +464,13 @@ void main() {
 
       await select(tester, ['t1', 't2']);
       expect(buttonOf(tester, '改类别').onPressed, isNull);
-      expect(buttonOf(tester, '改基金').onPressed, isNotNull, reason: '基金不分收支');
+      expect(buttonOf(tester, '改板块').onPressed, isNotNull, reason: '板块不分收支');
 
       await tester.tap(find.text('取消'));
       await tester.pump();
       await select(tester, ['t3']);
       expect(buttonOf(tester, '改类别').onPressed, isNull);
-      expect(buttonOf(tester, '改基金').onPressed, isNull);
+      expect(buttonOf(tester, '改板块').onPressed, isNull);
       expect(buttonOf(tester, '删除').onPressed, isNotNull);
     });
 
@@ -479,7 +479,7 @@ void main() {
       await pumpPage(tester, repo: repo);
       await select(tester, ['t1', 't2']);
 
-      await tester.tap(find.text('改基金'));
+      await tester.tap(find.text('改板块'));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('bulk-fund-f2')));
       await tester.pump();
@@ -531,7 +531,7 @@ void main() {
       await pumpPage(tester, repo: repo);
       await select(tester, ['t1', 't2']);
 
-      await tester.tap(find.text('改基金'));
+      await tester.tap(find.text('改板块'));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('bulk-fund-f2')));
       await tester.pump();

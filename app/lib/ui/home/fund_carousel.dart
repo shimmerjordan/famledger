@@ -5,7 +5,7 @@ import '../../data/models/models.dart';
 import '../funds/fund_progress.dart';
 import '../widgets/widgets.dart';
 
-/// 首页的基金卡片横滑（DESIGN.md 只给了卡片两处用武之地，这是其一）。
+/// 首页「财富」一节的板块卡片横滑（DESIGN.md 只给了卡片两处用武之地，这是其一）。
 class FundCarousel extends StatelessWidget {
   const FundCarousel({
     super.key,
@@ -30,13 +30,14 @@ class FundCarousel extends StatelessWidget {
         fund: funds[index],
         index: index,
         progress: fundProgressOf(funds[index], stats),
+        balances: stats?.fundBalances(funds[index].id) ?? const CurrencyAmounts(),
         onTap: () => onTap(funds[index]),
       ),
     ),
   );
 }
 
-/// 一张基金卡：名字 + 余额 + 目标/预算进度。
+/// 一张板块卡：名字 + 余额 + 目标/预算进度。
 class FundCard extends StatelessWidget {
   const FundCard({
     super.key,
@@ -44,12 +45,16 @@ class FundCard extends StatelessWidget {
     required this.index,
     required this.progress,
     required this.onTap,
+    this.balances = const CurrencyAmounts(),
     this.width = 200,
   });
 
   final Fund fund;
   final int index;
   final FundProgress progress;
+
+  /// 余额按币种分开（板块没有币种）。
+  final CurrencyAmounts balances;
   final VoidCallback onTap;
   final double width;
 
@@ -83,7 +88,7 @@ class FundCard extends StatelessWidget {
                     ),
                   ],
                 ),
-                MoneyText(progress.balanceCents, size: MoneySize.title),
+                CurrencyTotal(balances, size: MoneySize.title),
                 FundProgressBar(progress: progress, color: color),
               ],
             ),
@@ -94,7 +99,7 @@ class FundCard extends StatelessWidget {
   }
 }
 
-/// 宽屏侧栏里的「基金余额」：同样的数据，竖着排一条条。
+/// 宽屏侧栏里的「财富余额」：同样的数据，竖着排一条条。
 class FundBalanceList extends StatelessWidget {
   const FundBalanceList({
     super.key,
@@ -135,7 +140,10 @@ class FundBalanceList extends StatelessWidget {
                   width: amountWidth,
                   child: Align(
                     alignment: Alignment.centerRight,
-                    child: MoneyText(progress.balanceCents),
+                    child: CurrencyTotal(
+                      stats?.fundBalances(fund.id) ?? const CurrencyAmounts(),
+                      alignEnd: true,
+                    ),
                   ),
                 ),
               );

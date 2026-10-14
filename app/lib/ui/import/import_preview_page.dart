@@ -412,7 +412,7 @@ class _ImportPreviewPageState extends ConsumerState<ImportPreviewPage> {
             children: [
               Text('用这批账单训练自动识别', style: theme.textTheme.bodyMedium),
               Text(
-                taught > 0 ? '你改过类别或基金的 $taught 笔会拿去学' : '只学你改过类别或基金的那些',
+                taught > 0 ? '你改过类别或板块的 $taught 笔会拿去学' : '只学你改过类别或板块的那些',
                 style: theme.textTheme.bodySmall,
               ),
             ],
@@ -483,7 +483,7 @@ class _ImportPreviewPageState extends ConsumerState<ImportPreviewPage> {
           ),
           _BarAction(
             icon: Icons.savings_outlined,
-            label: '改基金',
+            label: '改板块',
             onTap: any
                 ? () => showBatchFundSheet(
                     context,
@@ -726,7 +726,7 @@ class _RowTile extends StatelessWidget {
                   fund: fund,
                   index: ledger.fundIndex(fund.id),
                 ),
-          label: fund?.name ?? '默认基金',
+          label: fund?.name ?? '默认板块',
           color: draft.fundChanged(index) ? theme.colorScheme.primary : null,
         ),
       ],

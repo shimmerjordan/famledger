@@ -134,13 +134,13 @@ class _AllocateSheetState extends ConsumerState<_AllocateSheet> {
               ),
             ),
             PickerField(
-              label: '拨给哪个基金',
+              label: '拨给哪个板块',
               contentPadding: EdgeInsets.zero,
               child: FundPicker(
                 funds: targets,
                 keyPrefix: 'to-fund',
                 selectedId: _toFundId,
-                emptyHint: '只有这一个基金，先去建第二个',
+                emptyHint: '只有这一个板块，先去建第二个',
                 onSelected: (id) => setState(() {
                   _toFundId = id;
                   _error = null;

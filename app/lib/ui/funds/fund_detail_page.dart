@@ -7,6 +7,7 @@ import '../../app/providers.dart';
 import '../../app/shell.dart';
 import '../../app/theme.dart';
 import '../../core/colors.dart';
+import '../../core/money.dart';
 import '../../data/models/models.dart';
 import '../../data/repos/ledger_repo.dart';
 import '../analysis/trend_chart.dart' show compactYuan;
@@ -31,8 +32,8 @@ class FundDetailPage extends ConsumerWidget {
 
     if (ledger != null && fund == null) {
       return Scaffold(
-        appBar: AppBar(title: const Text('基金')),
-        body: const InlineError(message: '这个基金已经不在了。'),
+        appBar: AppBar(title: const Text('财富')),
+        body: const InlineError(message: '这个板块已经不在了。'),
       );
     }
 
@@ -47,7 +48,7 @@ class FundDetailPage extends ConsumerWidget {
             const SizedBox(width: 8),
             Flexible(
               child: Text(
-                fund?.name ?? '基金',
+                fund?.name ?? '板块',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
@@ -177,7 +178,7 @@ class FundDetailPage extends ConsumerWidget {
   }
 }
 
-class _Balance extends StatelessWidget {
+class _Balance extends ConsumerWidget {
   const _Balance({required this.color, this.fund, this.stats});
 
   final Fund? fund;
@@ -185,8 +186,13 @@ class _Balance extends StatelessWidget {
   final Color color;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
+    // 余额按币种分开（板块没有币种）；本月支出/收入是跨实体聚合，服务端已折到基准币。
+    final base = ref.watch(baseCurrencyProvider);
+    final ledger = ref.watch(ledgerProvider).valueOrNull;
+    final f = fund;
+    final incomeAccount = f != null && f.hasMonthlyIncome ? ledger?.account(f.incomeAccountId) : null;
     return Padding(
       padding: const EdgeInsets.fromLTRB(
         LedgerLayout.pagePadding,
@@ -202,21 +208,44 @@ class _Balance extends StatelessWidget {
           if (stats == null)
             const Skeleton(width: 180, height: 30)
           else
-            MoneyText(stats!.balanceCents, size: MoneySize.display),
+            CurrencyTotal(stats!.amounts(base), size: MoneySize.display),
           const SizedBox(height: LedgerLayout.itemGap),
           Row(
             children: [
               Text('本月支出 ', style: theme.textTheme.bodySmall),
-              MoneyText(-(stats?.monthExpenseCents ?? 0), size: MoneySize.small),
+              MultiCurrencyAmount(
+                -(stats?.monthExpenseCents ?? 0),
+                currency: base,
+                size: MoneySize.small,
+              ),
               const SizedBox(width: LedgerLayout.pagePadding),
               Text('收入 ', style: theme.textTheme.bodySmall),
-              MoneyText(
+              MultiCurrencyAmount(
                 stats?.monthIncomeCents ?? 0,
+                currency: base,
                 size: MoneySize.small,
                 signed: true,
               ),
             ],
           ),
+          if (f != null && f.hasMonthlyIncome) ...[
+            const SizedBox(height: 8),
+            Row(
+              key: const ValueKey('fund-income-rule'),
+              children: [
+                Icon(Icons.autorenew, size: 14, color: theme.colorScheme.onSurfaceVariant),
+                const SizedBox(width: 4),
+                Flexible(
+                  child: Text(
+                    '每月 ${f.incomeDay ?? 1} 号自动进账 '
+                    '${Money.format(f.monthlyIncomeCents!, currency: incomeAccount?.currency ?? base)}'
+                    '${incomeAccount == null ? '' : ' → ${incomeAccount.name}'}',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ),
+              ],
+            ),
+          ],
           if (fund?.description != null && fund!.description!.isNotEmpty) ...[
             const SizedBox(height: 8),
             Text(fund!.description!, style: theme.textTheme.bodySmall),
@@ -228,15 +257,16 @@ class _Balance extends StatelessWidget {
 }
 
 /// 本月支出的类别构成：环形 + 图例（图例带金额，不靠猜颜色）。
-class _CategoryDonut extends StatelessWidget {
+class _CategoryDonut extends ConsumerWidget {
   const _CategoryDonut({required this.stats, this.ledger});
 
   final AsyncValue<FundStats> stats;
   final LedgerData? ledger;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
+    final base = ref.watch(baseCurrencyProvider);
     final data = stats.valueOrNull;
     if (data == null) {
       return const Padding(
@@ -249,7 +279,7 @@ class _CategoryDonut extends StatelessWidget {
     if (rows.isEmpty) {
       return const EmptyState(
         title: '本月还没有支出',
-        message: '这个基金这个月一分没动。',
+        message: '这个板块这个月一分没动。',
         compact: true,
       );
     }
@@ -313,7 +343,7 @@ class _CategoryDonut extends StatelessWidget {
                             style: theme.textTheme.bodyMedium,
                           ),
                         ),
-                        MoneyText(slice.$2, size: MoneySize.small),
+                        MultiCurrencyAmount(slice.$2, currency: base, size: MoneySize.small),
                         const SizedBox(width: 6),
                         SizedBox(
                           width: 34,
@@ -486,7 +516,7 @@ class _Recent extends StatelessWidget {
     if (data == null) return const SkeletonList(rows: 3);
     if (data.recent.isEmpty) {
       return const EmptyState(
-        title: '这个基金还没有流水',
+        title: '这个板块还没有流水',
         message: '记一笔时选中它就会出现在这里。',
         compact: true,
       );

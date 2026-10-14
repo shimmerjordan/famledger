@@ -95,7 +95,7 @@ class _RuleFormSheetState extends ConsumerState<RuleFormSheet> {
         _fundId == null &&
         _accountId == null &&
         _memberId == null) {
-      setState(() => _error = '命中之后要填什么？至少选一个类别、基金、账户或成员。');
+      setState(() => _error = '命中之后要填什么？至少选一个类别、板块、账户或成员。');
       return;
     }
 
@@ -270,7 +270,7 @@ class _RuleFormSheetState extends ConsumerState<RuleFormSheet> {
           onChanged: (value) => setState(() => _categoryId = value),
         ),
         ManagePicker<String>(
-          label: '基金',
+          label: '板块',
           value: _fundId,
           options: [
             (null, '不改'),

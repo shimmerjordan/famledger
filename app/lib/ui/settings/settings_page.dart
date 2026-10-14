@@ -15,6 +15,7 @@ import 'backup_page.dart';
 import 'budgets_page.dart';
 import 'capture_page.dart';
 import 'categories_page.dart';
+import 'currency_page.dart';
 import 'members_page.dart';
 import '../funds/funds_page.dart';
 import 'rules_page.dart';
@@ -48,9 +49,10 @@ class SettingsPage extends ConsumerWidget {
         // 导入账单只留账单页右上角那一个入口。
         _Group('家庭', [
           _Entry(Icons.people_outline, '成员', '/settings/members', selected: selected),
-          _Entry(Icons.savings_outlined, '基金', '/funds', selected: selected),
+          _Entry(Icons.savings_outlined, '财富', '/funds', selected: selected),
           _Entry(Icons.local_offer_outlined, '类别', '/settings/categories', selected: selected),
           _Entry(Icons.pie_chart_outline, '预算', '/settings/budgets', selected: selected),
+          _Entry(Icons.currency_exchange, '币种与汇率', '/settings/currency', selected: selected),
         ]),
         _Group('自动记账', [
           _Entry(Icons.auto_awesome_outlined, '自动记账', '/settings/capture', selected: selected),
@@ -94,6 +96,7 @@ final selectedSettingsProvider = StateProvider<String>((ref) => '/settings/membe
 /// 路由路径 → 子页（和 app/router.dart 里的一一对应，这里只是不经路由直接嵌进右栏）。
 Widget settingsPageFor(String path) => switch (path) {
   '/funds' => const FundsPage(),
+  '/settings/currency' => const CurrencyPage(),
   '/settings/categories' => const CategoriesPage(),
   '/settings/budgets' => const BudgetsPage(),
   '/settings/capture' => const CapturePage(),

@@ -62,6 +62,9 @@ class _HoldingFormPageState extends ConsumerState<HoldingFormPage> {
   bool _record = true;
   String? _fromAccountId;
 
+  /// 这笔理财是什么币（美股、港股按当地币记）；新建默认家庭基准币，选了投资账户就跟着它。
+  late String _currency = ref.read(baseCurrencyProvider);
+
   /// 编辑前挂着、而且账户还在的那个；账户删了就当没挂（服务端也这么算）。
   String? _boundAccountId;
   bool _bound = false;
@@ -123,6 +126,7 @@ class _HoldingFormPageState extends ConsumerState<HoldingFormPage> {
     if (_bound) return;
     _bound = true;
     _kind = h.kind;
+    _currency = h.currency;
     _institution.text = h.institution ?? '';
     _rate.text = h.rateE6 == null ? '' : formatRateE6(h.rateE6!).replaceAll('%', '');
     _rateMax.text = h.rateMaxE6 == null ? '' : formatRateE6(h.rateMaxE6!).replaceAll('%', '');
@@ -180,6 +184,28 @@ class _HoldingFormPageState extends ConsumerState<HoldingFormPage> {
 
   void _fail(String message) => setState(() => _error = message);
 
+  /// 金额输入框前面的币种符号。
+  String get _sym => Money.symbolFor(_currency).trim();
+
+  /// 成本 / 本金那一栏：右边带币种下拉（美股、港股按当地币记），和金额同一行，不多占地方。
+  /// 换了币种，原来选的账户不一定还是同币种的，清掉重选。
+  Widget _withCurrency(Widget field) => Row(
+    children: [
+      Expanded(child: field),
+      const SizedBox(width: 12),
+      CurrencyDropdown(
+        key: const ValueKey('holding-currency'),
+        value: _currency,
+        keyPrefix: 'holding-currency',
+        onChanged: (c) => setState(() {
+          _currency = c;
+          _accountId = null;
+          _fromAccountId = null;
+        }),
+      ),
+    ],
+  );
+
   /// 「已领分红 / 已领利息」：基金、股票（黄金没有分红）和定期类才有；按金额记的当前金额就是全部。
   bool get _hasRealized => switch (_mode) {
     InvestMode.unit => _kind != Holding.kindGold,
@@ -201,7 +227,7 @@ class _HoldingFormPageState extends ConsumerState<HoldingFormPage> {
       key: const ValueKey('holding-realized'),
       controller: _realized,
       keyboardType: const TextInputType.numberWithOptions(decimal: true),
-      decoration: const InputDecoration(prefixText: '¥ ', hintText: '没有就空着；不另记账'),
+      decoration: InputDecoration(prefixText: '$_sym ', hintText: '没有就空着；不另记账'),
     ),
   );
 
@@ -322,6 +348,7 @@ class _HoldingFormPageState extends ConsumerState<HoldingFormPage> {
         maturesOn: maturesOn,
         valueCents: value,
         realizedCents: realized,
+        currency: _currency == ref.read(baseCurrencyProvider) ? null : _currency,
         note: note,
         fromAccountId: _record ? _fromAccountId : null,
         clientId: _clientId,
@@ -437,12 +464,12 @@ class _HoldingFormPageState extends ConsumerState<HoldingFormPage> {
           key: const ValueKey('holding-field-cost'),
           label: '成本',
           trailing: Text('总共花了多少，含手续费', style: theme.textTheme.bodySmall),
-          child: TextField(
+          child: _withCurrency(TextField(
             key: const ValueKey('holding-cost'),
             controller: _cost,
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            decoration: const InputDecoration(prefixText: '¥ ', hintText: '10000'),
-          ),
+            decoration: InputDecoration(prefixText: '$_sym ', hintText: '10000'),
+          )),
         ),
         if (!gold) _realizedField(theme),
       ],
@@ -463,12 +490,12 @@ class _HoldingFormPageState extends ConsumerState<HoldingFormPage> {
         PickerField(
           key: const ValueKey('holding-field-cost'),
           label: '本金',
-          child: TextField(
+          child: _withCurrency(TextField(
             key: const ValueKey('holding-cost'),
             controller: _cost,
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            decoration: const InputDecoration(prefixText: '¥ ', hintText: '50000'),
-          ),
+            decoration: InputDecoration(prefixText: '$_sym ', hintText: '50000'),
+          )),
         ),
       PickerField(
         label: structured ? '年化（保底 ~ 最高）' : repo ? '年化' : '年利率',
@@ -546,12 +573,12 @@ class _HoldingFormPageState extends ConsumerState<HoldingFormPage> {
         key: const ValueKey('holding-field-cost'),
         label: _kind == Holding.kindInsurance ? '已交保费' : '本金',
         trailing: Text(_kind == Holding.kindInsurance ? '到今天一共交了多少' : '存了多少', style: theme.textTheme.bodySmall),
-        child: TextField(
+        child: _withCurrency(TextField(
           key: const ValueKey('holding-cost'),
           controller: _cost,
           keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          decoration: const InputDecoration(prefixText: '¥ ', hintText: '10000'),
-        ),
+          decoration: InputDecoration(prefixText: '$_sym ', hintText: '10000'),
+        )),
       ),
       PickerField(
         label: _kind == Holding.kindInsurance ? '现金价值（选填）' : '当前金额（选填）',
@@ -560,7 +587,7 @@ class _HoldingFormPageState extends ConsumerState<HoldingFormPage> {
           key: const ValueKey('holding-value'),
           controller: _value,
           keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          decoration: const InputDecoration(prefixText: '¥ ', hintText: '10230.55'),
+          decoration: InputDecoration(prefixText: '$_sym ', hintText: '10230.55'),
         ),
       ),
     ],
@@ -601,11 +628,13 @@ class _HoldingFormPageState extends ConsumerState<HoldingFormPage> {
       );
     }
 
+    // 钱要从同币种的账户走（服务端也这么拦）：投资账户、转出账户都只列这个币种的。
+    bool sameCur(Account a) => a.currency.toUpperCase() == _currency.toUpperCase();
     final investAccounts = ledger.activeAccounts
-        .where((a) => a.kind == 'invest')
+        .where((a) => a.kind == 'invest' && (_editing || sameCur(a)))
         .toList();
     final fromAccounts = ledger.activeAccounts
-        .where((a) => a.kind != 'invest' && a.id != _accountId)
+        .where((a) => a.kind != 'invest' && a.id != _accountId && sameCur(a))
         .toList();
     final change = _changeFor(holding);
     // 有成本、挂着还在的账户：再点一下选中的芯片不是解绑，只能换到另一个。

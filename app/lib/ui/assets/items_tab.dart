@@ -5,7 +5,6 @@ import 'package:go_router/go_router.dart';
 import '../../app/providers.dart';
 import '../../app/shell.dart';
 import '../../app/theme.dart';
-import '../../core/money.dart';
 import '../../data/models/models.dart';
 import '../../data/repos/ledger_repo.dart';
 import '../widgets/widgets.dart';
@@ -98,7 +97,7 @@ class _ItemsTabState extends ConsumerState<ItemsTab> {
               padding: (twoPane ? EdgeInsets.zero : readableInsets(box.maxWidth)).copyWith(bottom: 96),
               children: [
                 banner,
-                _Summary(summary: summarizeAssets(assets, now)),
+                _Summary(summary: summarizeAssets(assets, now), byCurrency: summarizeAssetsByCurrency(assets, now)),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(
                     LedgerLayout.pagePadding,
@@ -144,29 +143,47 @@ class _ItemsTabState extends ConsumerState<ItemsTab> {
   }
 }
 
-class _Summary extends StatelessWidget {
-  const _Summary({required this.summary});
+class _Summary extends ConsumerWidget {
+  const _Summary({required this.summary, required this.byCurrency});
 
   final AssetSummary summary;
 
+  /// 每个币种一份小结（美元买的按美元算，不折算）。
+  final Map<String, AssetSummary> byCurrency;
+
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
+    final base = ref.watch(baseCurrencyProvider);
+    final convertTo = ref.watch(displayCurrencyOverrideProvider);
+    final fx = ref.watch(fxRatesProvider);
+    String f(CurrencyAmounts a) => formatAmounts(a, base: base, convertTo: convertTo, fx: fx);
+    final held = {for (final e in byCurrency.entries) if (!e.value.isEmpty) e.key: e.value};
+    CurrencyAmounts by(int Function(AssetSummary a) pick) => CurrencyAmounts({for (final e in held.entries) e.key: pick(e.value)});
+    final single = held.length <= 1;
     return SegmentSummary(
       label: '每天花费',
       value: summary.isEmpty
           ? Text('东西都退役或卖掉了', style: theme.textTheme.titleMedium)
-          : DailyMoney(summary.dailyCents, size: MoneySize.title),
+          : single
+          ? DailyMoney(summary.dailyCents, size: MoneySize.title, currency: held.keys.firstOrNull ?? base)
+          : Wrap(
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                CurrencyTotal(by((a) => a.dailyCents.round()), size: MoneySize.title),
+                Text('/天', style: theme.textTheme.bodySmall),
+              ],
+            ),
       lines: [
         Text(
           summary.isEmpty
               ? '在用的物品每天花多少，会在这里合计'
-              : '在用和闲置 ${summary.count} 件 · 原价合计 ${Money.format(summary.priceCents)}',
+              : '在用和闲置 ${summary.count} 件 · 原价合计 ${f(by((a) => a.priceCents))}',
           style: theme.textTheme.bodySmall,
         ),
         if (!summary.isEmpty)
           Text(
-            _valuationLine(summary),
+            _valuationLine(by((a) => a.valueCents), by((a) => a.depreciationCents), f),
             key: const ValueKey('assets-valuation-summary'),
             style: theme.textTheme.bodySmall,
           ),
@@ -175,11 +192,11 @@ class _Summary extends StatelessWidget {
   }
 }
 
-/// 「估值 ¥X · 已折旧 ¥Z」；手动估值抬过原价时改说「比原价高」，不写「已折旧 −¥…」。
-String _valuationLine(AssetSummary summary) {
-  final lost = summary.depreciationCents;
-  final tail = lost >= 0 ? '已折旧 ${Money.format(lost)}' : '比原价高 ${Money.format(-lost)}';
-  return '估值 ${Money.format(summary.valueCents)} · $tail';
+/// 「估值 ¥X · 已折旧 ¥Z」；手动估值抬过原价时改说「比原价高」，不写「已折旧 −¥…」。多币种时各写各的。
+String _valuationLine(CurrencyAmounts value, CurrencyAmounts lost, String Function(CurrencyAmounts) f) {
+  final rising = lost.nonZero.values.every((v) => v < 0) && lost.nonZero.isNotEmpty;
+  final tail = rising ? '比原价高 ${f(lost.scale(-1))}' : '已折旧 ${f(lost)}';
+  return '估值 ${f(value)} · $tail';
 }
 
 /// 一件物品：分类图标、名字、用了几天、估值、每天多少钱、状态。
@@ -256,7 +273,7 @@ class AssetTile extends StatelessWidget {
           ],
         ),
       ),
-      trailing: DailyMoney(usage.dailyCents, muted: asset.isEnded),
+      trailing: DailyMoney(usage.dailyCents, muted: asset.isEnded, currency: asset.currency),
     );
   }
 }

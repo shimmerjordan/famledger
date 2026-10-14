@@ -4,21 +4,48 @@
 class Money {
   const Money._();
 
-  /// 人民币符号。
+  /// 人民币符号（向后兼容用；多币种场景请用 [symbolFor]）。
   static const String symbol = '¥';
 
   /// 排版减号 U+2212（比 ASCII '-' 与数字等宽）。
   static const String minus = '−';
 
-  /// `123456` → `¥1,234.56`；[signed] 时正数带 `+`；[showSymbol] 关掉货币符号。
-  static String format(int cents, {bool signed = false, bool showSymbol = true}) {
+  /// 币种符号。认不出的回退成「CODE 」（尾随一个空格，跟数字隔开）。
+  /// CNY 与 JPY 同用 ¥（符号同形，靠币种代码/上下文区分）。
+  static String symbolFor(String currency) {
+    switch (currency.toUpperCase()) {
+      case 'CNY':
+        return '¥';
+      case 'USD':
+        return '\$';
+      case 'EUR':
+        return '€';
+      case 'GBP':
+        return '£';
+      case 'JPY':
+        return '¥';
+      case 'KRW':
+        return '₩';
+      default:
+        return '${currency.toUpperCase()} ';
+    }
+  }
+
+  /// `123456` → `¥1,234.56`；[currency] 决定符号（默认 CNY，向后兼容）；
+  /// [signed] 时正数带 `+`；[showSymbol] 关掉货币符号。
+  static String format(
+    int cents, {
+    String currency = 'CNY',
+    bool signed = false,
+    bool showSymbol = true,
+  }) {
     final abs = cents.abs();
     final digits = _group('${abs ~/ 100}');
     final frac = (abs % 100).toString().padLeft(2, '0');
     final sign = cents < 0
         ? minus
         : (signed && cents > 0 ? '+' : '');
-    return '$sign${showSymbol ? symbol : ''}$digits.$frac';
+    return '$sign${showSymbol ? symbolFor(currency) : ''}$digits.$frac';
   }
 
   /// 只要「1,234.56」这一段，用于输入框回显。

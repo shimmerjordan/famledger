@@ -189,7 +189,7 @@ void main() {
     await pumpHomeAt(tester, AssetsBackend(perks: acceptanceFixture()), size: const Size(1400, 1000));
     final side = tester.getTopLeft(find.byKey(const ValueKey('home-perks')));
     expect(side.dx, greaterThan(800), reason: '在右栏');
-    expect(side.dy, lessThan(tester.getTopLeft(find.text('基金余额')).dy));
+    expect(side.dy, lessThan(tester.getTopLeft(find.text('财富余额')).dy));
   });
 
   testWidgets('验收：在首页点一下 ✓，本期计数和回本条跟着变', (tester) async {

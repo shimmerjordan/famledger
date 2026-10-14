@@ -10,6 +10,8 @@ class Transaction {
     required this.amountCents,
     required this.occurredAt,
     this.currency = 'CNY',
+    this.toAmountCents,
+    this.toCurrency,
     this.accountId,
     this.toAccountId,
     this.fundId,
@@ -67,6 +69,10 @@ class Transaction {
   final String type;
   final int amountCents;
   final String currency;
+
+  /// 跨币种转账：转入一侧到账多少、什么币（转入账户的币种）。同币种转账是 null。
+  final int? toAmountCents;
+  final String? toCurrency;
   final DateTime occurredAt;
   final String? accountId;
   final String? toAccountId;
@@ -125,6 +131,8 @@ class Transaction {
     type: jsonString(json['type'], typeExpense),
     amountCents: jsonInt(json['amountCents']),
     currency: jsonString(json['currency'], 'CNY'),
+    toAmountCents: jsonIntOrNull(json['toAmountCents']),
+    toCurrency: jsonStringOrNull(json['toCurrency']),
     occurredAt: jsonDate(json['occurredAt']),
     accountId: jsonStringOrNull(json['accountId']),
     toAccountId: jsonStringOrNull(json['toAccountId']),
@@ -162,6 +170,8 @@ class Transaction {
       'currency': currency,
       'occurredAt': Dates.isoLocal(occurredAt),
     };
+    putIfNotNull(json, 'toAmountCents', toAmountCents);
+    putIfNotNull(json, 'toCurrency', toCurrency);
     putIfNotNull(json, 'accountId', accountId);
     putIfNotNull(json, 'toAccountId', toAccountId);
     putIfNotNull(json, 'fundId', fundId);
@@ -213,6 +223,8 @@ class Transaction {
     type: type ?? this.type,
     amountCents: amountCents ?? this.amountCents,
     currency: currency,
+    toAmountCents: toAmountCents,
+    toCurrency: toCurrency,
     occurredAt: occurredAt ?? this.occurredAt,
     accountId: accountId ?? this.accountId,
     toAccountId: toAccountId ?? this.toAccountId,
@@ -248,6 +260,8 @@ class TransactionDraft {
     required this.amountCents,
     required this.occurredAt,
     this.currency = 'CNY',
+    this.toAmountCents,
+    this.toCurrency,
     this.accountId,
     this.toAccountId,
     this.fundId,
@@ -270,6 +284,10 @@ class TransactionDraft {
   final int amountCents;
   final DateTime occurredAt;
   final String currency;
+
+  /// 跨币种转账的到账金额（按转入账户的币种）；同币种不发。
+  final int? toAmountCents;
+  final String? toCurrency;
   final String? accountId;
   final String? toAccountId;
   final String? fundId;
@@ -295,6 +313,8 @@ class TransactionDraft {
       // 本地墙上时间 + 偏移：服务端按字符串前缀算月/日归属。
       'occurredAt': Dates.isoLocal(occurredAt),
     };
+    putIfNotNull(json, 'toAmountCents', toAmountCents);
+    putIfNotNull(json, 'toCurrency', toCurrency);
     putIfNotNull(json, 'accountId', accountId);
     putIfNotNull(json, 'toAccountId', toAccountId);
     putIfNotNull(json, 'fundId', fundId);
@@ -319,6 +339,8 @@ class TransactionDraft {
     amountCents: jsonInt(json['amountCents']),
     occurredAt: jsonDate(json['occurredAt']),
     currency: jsonString(json['currency'], 'CNY'),
+    toAmountCents: jsonIntOrNull(json['toAmountCents']),
+    toCurrency: jsonStringOrNull(json['toCurrency']),
     accountId: jsonStringOrNull(json['accountId']),
     toAccountId: jsonStringOrNull(json['toAccountId']),
     fundId: jsonStringOrNull(json['fundId']),
@@ -343,6 +365,8 @@ class TransactionDraft {
     type: type,
     amountCents: amountCents,
     currency: currency,
+    toAmountCents: toAmountCents,
+    toCurrency: toCurrency,
     occurredAt: occurredAt,
     accountId: accountId,
     toAccountId: toAccountId,

@@ -123,9 +123,9 @@ void main() {
   testWidgets('合计 = 各基金余额之和', (tester) async {
     await pumpFunds(tester);
 
-    expect(find.text('基金合计'), findsOneWidget);
+    expect(find.text('财富合计'), findsOneWidget);
     expect(find.text('¥18,200.00'), findsOneWidget);
-    expect(find.text('本月支出 ¥1,800.00 · 2 个基金'), findsOneWidget);
+    expect(find.text('本月支出 ¥1,800.00 · 2 个板块'), findsOneWidget);
   });
 
   testWidgets('预算进度与目标进度各画各的', (tester) async {
@@ -148,7 +148,7 @@ void main() {
   testWidgets('一个基金都没有时教一句并给主操作', (tester) async {
     await pumpFunds(tester, data: const LedgerData());
 
-    expect(find.text('还没有基金'), findsOneWidget);
+    expect(find.text('还没有板块'), findsOneWidget);
     expect(find.widgetWithText(FilledButton, '从模板新建'), findsOneWidget);
   });
 
@@ -188,7 +188,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('同步失败：连不上服务器'), findsOneWidget);
-    expect(find.text('还没有基金'), findsOneWidget);
+    expect(find.text('还没有板块'), findsOneWidget);
   });
 
   testWidgets('宽屏用卡片网格，右栏嵌着选中基金的详情；点另一张卡右栏跟着换', (tester) async {

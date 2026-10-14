@@ -400,6 +400,8 @@ class _MembershipFormPageState extends ConsumerState<MembershipFormPage> {
                 RecordTargetFields(
                   ledger: ledger,
                   income: false,
+                  // 续费价按家庭基准币记，扣款账户也只列基准币的。
+                  currency: ref.watch(baseCurrencyProvider),
                   accountId: _recordAccountId,
                   fundId: _fundTouched ? _fundId : defaultFundId(ledger),
                   categoryId: _categoryId,

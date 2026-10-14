@@ -760,7 +760,7 @@ class CapturePipeline {
     if (patch.isEmpty) {
       return CaptureActionResult(
         title: '未识别的修改',
-        body: '可以回复基金名、类别名、金额或备注',
+        body: '可以回复板块名、类别名、金额或备注',
         draft: record.draft,
       );
     }

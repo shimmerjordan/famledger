@@ -197,7 +197,7 @@ void main() {
     expect(find.byType(NavigationBar), findsOneWidget);
   });
 
-  testWidgets('/funds 是「我的 › 基金」那一页；老地址 /assets?tab=funds 也转过去；「我的」里有入口', (tester) async {
+  testWidgets('/funds 是「我的 › 财富」那一页；老地址 /assets?tab=funds 也转过去；「我的」里有入口', (tester) async {
     final container = await boot(baseUrl: 'https://ledger.example.com', loggedIn: true);
     await pumpApp(tester, container);
     container.read(routerProvider).go('/assets?tab=funds');

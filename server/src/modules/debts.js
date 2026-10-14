@@ -19,7 +19,7 @@
 const crypto = require('node:crypto');
 
 const { HttpError, sendJson } = require('../lib/router');
-const { makeCrud } = require('../lib/crud');
+const { makeCrud, currencyColumns, requireSameCurrency } = require('../lib/crud');
 const { rowToJson } = require('../lib/db');
 const { logActivity } = require('../lib/activity');
 const idem = require('../lib/idempotency');
@@ -62,10 +62,11 @@ module.exports = (ctx) => {
   const realAccount = (id) =>
     db.get("SELECT id FROM accounts WHERE id = ? AND deleted_at IS NULL AND kind != 'debt'", id);
 
-  /** 钱从哪个真账户走：必须存在、不能是另一笔债务的内部账户。 */
-  function moneyAccount(raw, field) {
+  /** 钱从哪个真账户走：必须存在、不能是另一笔债务的内部账户、和债务同币种。 */
+  function moneyAccount(raw, field, currency) {
     const id = v.str(raw, field, { max: 64 });
     if (!realAccount(id)) v.bad(field, '账户不存在');
+    requireSameCurrency(db, id, currency, field, '这笔债务');
     return id;
   }
 
@@ -185,13 +186,16 @@ module.exports = (ctx) => {
         // 人情是情分不是钱：默认不进净资产。
         out.counted = body.kind === 'favor' ? 0 : 1;
       }
+      // 币种只在新建时定：内部账户上的往来都是这个币种，改了就是两种钱混着加。
+      if (isPatch && !v.isMissing(body.currency)) v.bad('currency', '债务的币种建好后不能改，删了重记');
+      Object.assign(out, currencyColumns(db, body, isPatch));
       if (!isPatch) {
         const rt = recordSpec(body.recordTransaction);
         const settled = v.isMissing(body.settledCents)
           ? 0
           : v.int(body.settledCents, 'settledCents', { min: 0, max: MAX_AMOUNT });
         if (settled > out.amount_cents) v.bad('settledCents', '已经收回的不能比总数还多');
-        pendingCreate.set(body, { accountId: rt ? moneyAccount(rt.accountId, 'accountId') : null, settled });
+        pendingCreate.set(body, { accountId: rt ? moneyAccount(rt.accountId, 'accountId', out.currency) : null, settled });
       }
       return out;
     },
@@ -219,7 +223,7 @@ module.exports = (ctx) => {
         'INSERT INTO accounts(id, name, kind, owner_member_id, initial_balance_cents, currency, icon, color, sort_order,' +
           ' archived, match_hints, created_at, updated_at, seq) VALUES(?, ?, ?, ?, 0, ?, NULL, NULL, ?, 0, ?, ?, ?, ?)',
         id, accountName(row.direction, row.kind, row.counterparty), 'debt', row.member_id,
-        db.meta('currency', 'CNY'), (typeof sort?.m === 'number' ? sort.m : -1) + 1, '{}', now, now, db.nextSeq(),
+        row.currency, (typeof sort?.m === 'number' ? sort.m : -1) + 1, '{}', now, now, db.nextSeq(),
       );
       db.run('UPDATE debts SET account_id = ? WHERE id = ?', id, row.id);
       const account = db.get('SELECT * FROM accounts WHERE id = ?', id);
@@ -285,7 +289,7 @@ module.exports = (ctx) => {
       const d = crud.mustExist(reqCtx.params.id);
       const account = d.account_id && db.get('SELECT * FROM accounts WHERE id = ? AND deleted_at IS NULL', d.account_id);
       if (!account) throw new HttpError(409, 'debt_account_missing', '这笔债务的内部账户不见了，删了重记吧');
-      const accountId = v.isMissing(b.accountId) ? null : moneyAccount(b.accountId, 'accountId');
+      const accountId = v.isMissing(b.accountId) ? null : moneyAccount(b.accountId, 'accountId', d.currency);
 
       const sign = d.direction === 'lend' ? 1 : -1;
       const outstanding = sign * balanceOf(account);

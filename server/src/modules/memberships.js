@@ -15,7 +15,7 @@
 // 不再是确认过的支出时按 null 存（悬空的指针没有意义，不能因此把整个撤销拒掉）。
 
 const { HttpError, sendJson } = require('../lib/router');
-const { makeCrud } = require('../lib/crud');
+const { makeCrud, requireSameCurrency } = require('../lib/crud');
 const { rowToJson } = require('../lib/db');
 const idem = require('../lib/idempotency');
 const v = require('../lib/validate');
@@ -70,6 +70,10 @@ module.exports = (ctx) => {
     const out = {};
     for (const k of RECORD_KEYS) if (raw[k] !== undefined) out[k] = raw[k];
     if (out.memberId === undefined && row.member_id && alive('members', row.member_id)) out.memberId = row.member_id;
+    // 会员的续费价没有币种，按家庭基准币算：扣款账户也得是基准币的。
+    if (typeof out.accountId === 'string') {
+      requireSameCurrency(db, out.accountId, db.meta('currency', 'CNY'), 'accountId', '会员费');
+    }
     return out;
   }
 

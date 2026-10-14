@@ -146,7 +146,7 @@ class DryRunResultPanel extends StatelessWidget {
       ('渠道', SourceProfile.displayNameOfChannel(payment.channel)),
       if (payment.cardTail != null) ('卡尾号', payment.cardTail!),
       if (draft != null) ('类别', ledger?.category(draft.categoryId)?.name ?? '未分类'),
-      if (draft != null) ('基金', ledger?.fund(draft.fundId)?.name ?? '未指定'),
+      if (draft != null) ('板块', ledger?.fund(draft.fundId)?.name ?? '未指定'),
       if (draft != null) ('账户', ledger?.account(draft.accountId)?.name ?? '未指定'),
       if (draft != null) ('置信度', '${(draft.confidence * 100).round()}%'),
     ];

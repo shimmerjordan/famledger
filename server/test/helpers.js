@@ -65,6 +65,9 @@ async function startServer(env = {}) {
       // 的用例就会在本地和 CI 之间跑出不同结果——钉在这里而不是逐个测试里设，
       // 是因为所有测试都经这一个函数起服务端，钉一处即可，且仍可被 `env` 覆盖。
       TZ: 'Asia/Shanghai',
+      // 汇率在服务启动时就会去抓：测试默认指到一个没人监听的本地端口，跑测试不出网
+      // （要测汇率的用例自己传 FX_BASE 指到假上游 fx_upstream.js）。
+      FX_BASE: 'http://127.0.0.1:9',
       ...env,
     },
     stdio: ['ignore', 'pipe', 'pipe'],

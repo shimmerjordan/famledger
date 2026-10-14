@@ -244,7 +244,7 @@ class _AssetDetailPageState extends ConsumerState<AssetDetailPage> {
       final gain = disposalGain(asset);
       final endedAt = endedValue(asset);
       if (gain == null || endedAt == null) return const [];
-      final at = Money.format(endedAt);
+      final at = Money.format(endedAt, currency: asset.currency);
       final String how;
       if (asset.status == Asset.statusSold) {
         how = '卖出价 − 卖出那天的估值 $at，只展示，不记账';
@@ -255,7 +255,7 @@ class _AssetDetailPageState extends ConsumerState<AssetDetailPage> {
       }
       return [
         const SectionHeader('估值'),
-        InfoRow('处置盈亏', MoneyText(gain, signed: true)),
+        InfoRow('处置盈亏', MultiCurrencyAmount(gain, currency: asset.currency, signed: true)),
         note(how),
         const SizedBox(height: LedgerLayout.itemGap),
       ];
@@ -284,7 +284,7 @@ class _AssetDetailPageState extends ConsumerState<AssetDetailPage> {
           children: [
             if (valuationUncertain(asset)) const TagLabel('估值不确定', tone: TagTone.warning),
             if (change != null) Text(change, style: theme.textTheme.bodySmall),
-            MoneyText(value),
+            MultiCurrencyAmount(value, currency: asset.currency),
           ],
         ),
       ),
@@ -309,7 +309,7 @@ class _AssetDetailPageState extends ConsumerState<AssetDetailPage> {
           ),
         ),
       for (var i = 0; i < forecast.length; i++)
-        InfoRow('${i + 1} 年后', MoneyText(forecast[i], muted: true)),
+        InfoRow('${i + 1} 年后', MultiCurrencyAmount(forecast[i], currency: asset.currency, muted: true)),
       InfoRow('计入净资产', InfoText(netWorthLabel(asset, switchOn: switchOn))),
       if (!switchOn && countsInNetWorth(asset))
         note(
@@ -344,7 +344,7 @@ class _AssetDetailPageState extends ConsumerState<AssetDetailPage> {
     return [
       const SectionHeader('明细'),
       InfoRow(asset.isEnded ? '用了' : '已用', InfoText('${usage.days} 天')),
-      InfoRow('买价', _withDot(asset, MoneyText(asset.priceCents), 'priceCents')),
+      InfoRow('买价', _withDot(asset, MultiCurrencyAmount(asset.priceCents, currency: asset.currency), 'priceCents')),
       if (purchased != null) InfoRow('买入', _withDot(asset, InfoText(Dates.dayLabel(purchased)), 'purchasedOn')),
       if (asset.expectedDays != null)
         InfoRow('打算用', InfoText('${asset.expectedDays} 天')),
@@ -354,7 +354,7 @@ class _AssetDetailPageState extends ConsumerState<AssetDetailPage> {
           InfoText(Dates.dayLabel(ended)),
         ),
       if (asset.saleCents != null)
-        InfoRow('卖出价', MoneyText(asset.saleCents!)),
+        InfoRow('卖出价', MultiCurrencyAmount(asset.saleCents!, currency: asset.currency)),
       if (asset.note != null && asset.note!.isNotEmpty)
         InfoRow('备注', InfoText(asset.note!)),
       if (asset.transactionId != null)
@@ -421,7 +421,7 @@ class _Hero extends StatelessWidget {
             style: theme.textTheme.bodySmall,
           ),
           const SizedBox(height: 2),
-          DailyMoney(usage.dailyCents, size: MoneySize.display),
+          DailyMoney(usage.dailyCents, size: MoneySize.display, currency: asset.currency),
           if (usage.dailyCents < 0) ...[
             const SizedBox(height: 4),
             Text('卖得比买得贵，这件是赚的', style: theme.textTheme.bodySmall),
@@ -440,8 +440,8 @@ class _Hero extends StatelessWidget {
             const SizedBox(height: 4),
             Text(
               progress >= 1
-                  ? '已经用够预期的 ${asset.expectedDays} 天，目标 ${dailyLabel(target)}'
-                  : '用到预期 ${(progress * 100).floor()}% · 用满时 ${dailyLabel(target)}',
+                  ? '已经用够预期的 ${asset.expectedDays} 天，目标 ${dailyLabel(target, currency: asset.currency)}'
+                  : '用到预期 ${(progress * 100).floor()}% · 用满时 ${dailyLabel(target, currency: asset.currency)}',
               style: theme.textTheme.bodySmall,
             ),
           ],

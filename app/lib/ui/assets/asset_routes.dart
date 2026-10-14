@@ -71,7 +71,7 @@ GoRoute assetsTabRoute({GlobalKey<NavigatorState>? pagesOn}) {
 
   return GoRoute(
     path: '/assets',
-    // 老地址 `/assets?tab=funds`（首页、书签、旧版通知）：基金段挪到了「我的 › 基金」。
+    // 老地址 `/assets?tab=funds`（首页、书签、旧版通知）：基金段挪到了「我的 › 财富」。
     redirect: (context, state) =>
         state.uri.path == '/assets' && state.uri.queryParameters['tab'] == 'funds' ? '/funds' : null,
     builder: (context, state) {

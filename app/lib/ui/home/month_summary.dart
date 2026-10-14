@@ -38,10 +38,15 @@ class MonthSwitcher extends StatelessWidget {
 }
 
 /// 本月支出（大字）+ 收入 / 结余。一屏的第一眼就是钱（DESIGN.md）。
+/// 有外币流水时按币种分开（[expense] / [income]，人民币、美元常驻，其他收起）；没给就是单币种的老样子。
 class MonthSummary extends StatelessWidget {
-  const MonthSummary({super.key, required this.stats});
+  const MonthSummary({super.key, required this.stats, this.expense, this.income});
 
   final MonthStats stats;
+
+  /// 按币种分开的本月支出 / 收入（原生，不折算）。
+  final CurrencyAmounts? expense;
+  final CurrencyAmounts? income;
 
   @override
   Widget build(BuildContext context) {
@@ -58,20 +63,28 @@ class MonthSummary extends StatelessWidget {
         children: [
           Text('本月支出', style: theme.textTheme.bodySmall),
           const SizedBox(height: 2),
-          MoneyText(stats.expenseCents, size: MoneySize.display),
+          if (expense == null)
+            MoneyText(stats.expenseCents, size: MoneySize.display)
+          else
+            CurrencyTotal(expense!, size: MoneySize.display),
           const SizedBox(height: LedgerLayout.itemGap),
           Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(
                 child: _Cell(
                   label: '收入',
-                  child: MoneyText(stats.incomeCents, signed: true),
+                  child: income == null
+                      ? MoneyText(stats.incomeCents, signed: true)
+                      : CurrencyTotal(income!, signed: true),
                 ),
               ),
               Expanded(
                 child: _Cell(
                   label: '结余',
-                  child: MoneyText(stats.netCents, signed: true),
+                  child: income == null || expense == null
+                      ? MoneyText(stats.netCents, signed: true)
+                      : CurrencyTotal(income! - expense!, signed: true),
                 ),
               ),
             ],

@@ -266,10 +266,10 @@ void main() {
       size: const Size(1400, 1000),
     );
 
-    expect(find.text('基金余额'), findsOneWidget);
+    expect(find.text('财富余额'), findsOneWidget);
     expect(find.text('待确认 1'), findsOneWidget);
-    // 主栏不再放基金卡片横滑。
-    expect(find.text('基金'), findsNothing);
+    // 主栏不再放模块卡片横滑（窄屏那段「财富」标题只在 !wide 时出现）。
+    expect(find.text('财富'), findsNothing);
   });
 
   testWidgets('长辈的大字号（1.3×）：手机宽度上基金卡、预算提醒、待确认都不溢出', (tester) async {

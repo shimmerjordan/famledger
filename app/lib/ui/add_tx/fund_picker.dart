@@ -15,7 +15,7 @@ class FundPicker extends StatelessWidget {
     required this.selectedId,
     required this.onSelected,
     this.keyPrefix = 'fund',
-    this.emptyHint = '还没有基金',
+    this.emptyHint = '还没有板块',
   });
 
   final List<Fund> funds;

@@ -4,7 +4,7 @@
 // 它永远是 initialBalanceCents + Σ流水，由 stats 现算。
 
 const { HttpError } = require('../lib/router');
-const { makeCrud } = require('../lib/crud');
+const { makeCrud, currencyColumns } = require('../lib/crud');
 const v = require('../lib/validate');
 
 const KINDS = ['cash', 'bank', 'alipay', 'wechat', 'credit', 'invest', 'other'];
@@ -30,13 +30,20 @@ module.exports = (ctx) => {
 
     // `currency` is not a plain field: a new account inherits the household's
     // currency rather than the column default, and it is always upper-cased.
-    fromBody(body, isPatch) {
-      if (body.currency === undefined || body.currency === null) {
-        return isPatch ? {} : { currency: db.meta('currency', 'CNY') };
+    // 币种建好后有了流水就锁定：旧流水记的是旧币种，改了余额就是两种钱混着加。
+    fromBody(body, isPatch, row) {
+      const out = currencyColumns(db, body, isPatch);
+      if (isPatch && out.currency && out.currency !== row.currency) {
+        if (row.kind === 'debt') v.bad('currency', '债务的内部账户跟着债务走，不能单独改币种');
+        const used = db.get(
+          'SELECT 1 AS ok FROM transactions WHERE deleted_at IS NULL AND (account_id = ? OR to_account_id = ?) LIMIT 1',
+          row.id, row.id,
+        );
+        if (used) {
+          throw new HttpError(409, 'currency_locked', '这个账户已经有流水了，不能改币种；换币种请新建一个账户');
+        }
       }
-      const cur = v.str(body.currency, 'currency', { min: 3, max: 3 }).toUpperCase();
-      if (!/^[A-Z]{3}$/.test(cur)) v.bad('currency', '币种必须是 3 个字母的代码');
-      return { currency: cur };
+      return out;
     },
 
     canDelete(row) {

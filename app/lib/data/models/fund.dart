@@ -1,6 +1,7 @@
 import 'json_utils.dart';
 
-/// 基金/模块：钱「归谁、干什么用」。余额 = Σ流水。
+/// 板块（「我的 › 财富」里的一项；代码里叫 Fund）：钱「归谁、干什么用」。余额 = Σ流水，按币种分开算。
+/// 可以挂「每月固定进账」：每月 [incomeDay] 号往 [incomeAccountId] 记一笔真的收入（服务端 fund_income.js 生成）。
 class Fund {
   const Fund({
     required this.id,
@@ -11,6 +12,11 @@ class Fund {
     this.color,
     this.targetCents,
     this.monthlyBudgetCents,
+    this.monthlyIncomeCents,
+    this.incomeDay,
+    this.incomeAccountId,
+    this.incomeCategoryId,
+    this.incomeStartMonth,
     this.description,
     this.sortOrder = 0,
     this.archived = false,
@@ -39,6 +45,24 @@ class Fund {
   final String? color;
   final int? targetCents;
   final int? monthlyBudgetCents;
+
+  /// 「每月固定进账」金额（分，按进账账户的币种）；空或 0 = 不自动进账。
+  final int? monthlyIncomeCents;
+
+  /// 每月几号到账（1–28）。
+  final int? incomeDay;
+
+  /// 进哪个账户（开着进账时必有）。
+  final String? incomeAccountId;
+
+  /// 记成什么收入类别；空 = 服务端用「工资」。
+  final String? incomeCategoryId;
+
+  /// 从哪个月起 `YYYY-MM`（含）。
+  final String? incomeStartMonth;
+
+  /// 开着每月固定进账。
+  bool get hasMonthlyIncome => (monthlyIncomeCents ?? 0) > 0 && incomeAccountId != null;
   final String? description;
   final int sortOrder;
   final bool archived;
@@ -55,6 +79,11 @@ class Fund {
     color: jsonStringOrNull(json['color']),
     targetCents: jsonIntOrNull(json['targetCents']),
     monthlyBudgetCents: jsonIntOrNull(json['monthlyBudgetCents']),
+    monthlyIncomeCents: jsonIntOrNull(json['monthlyIncomeCents']),
+    incomeDay: jsonIntOrNull(json['incomeDay']),
+    incomeAccountId: jsonStringOrNull(json['incomeAccountId']),
+    incomeCategoryId: jsonStringOrNull(json['incomeCategoryId']),
+    incomeStartMonth: jsonStringOrNull(json['incomeStartMonth']),
     description: jsonStringOrNull(json['description']),
     sortOrder: jsonInt(json['sortOrder']),
     archived: jsonBool(json['archived']),
@@ -68,6 +97,11 @@ class Fund {
     putIfNotNull(json, 'color', color);
     putIfNotNull(json, 'targetCents', targetCents);
     putIfNotNull(json, 'monthlyBudgetCents', monthlyBudgetCents);
+    putIfNotNull(json, 'monthlyIncomeCents', monthlyIncomeCents);
+    putIfNotNull(json, 'incomeDay', incomeDay);
+    putIfNotNull(json, 'incomeAccountId', incomeAccountId);
+    putIfNotNull(json, 'incomeCategoryId', incomeCategoryId);
+    putIfNotNull(json, 'incomeStartMonth', incomeStartMonth);
     putIfNotNull(json, 'description', description);
     json['sortOrder'] = sortOrder;
     json['archived'] = archived;

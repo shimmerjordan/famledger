@@ -94,15 +94,15 @@ class _AnalysisPageState extends ConsumerState<AnalysisPage> {
           emptyMessage: '记一笔之后，这里按成员比一比。',
         ),
       const SizedBox(height: LedgerLayout.groupGap),
-      const SectionHeader('基金占比'),
+      const SectionHeader('板块占比'),
       if (overview == null)
         const SkeletonList(rows: 3)
       else
         ShareBars(
           items: _fundSlices(context, ledger, overview),
           totalCents: overview.month.expenseCents,
-          emptyTitle: '这个月各基金都没动',
-          emptyMessage: '支出记到基金上，才看得出哪个模块花得多。',
+          emptyTitle: '这个月各板块都没动',
+          emptyMessage: '支出记到板块上，才看得出哪个板块花得多。',
         ),
       const SizedBox(height: 32),
     ];
@@ -375,7 +375,7 @@ List<AnalysisSlice> _fundSlices(
         final index = ledger.fundIndex(row.fundId);
         return AnalysisSlice(
           id: row.fundId,
-          label: fund?.name ?? '未指定基金',
+          label: fund?.name ?? '未指定板块',
           cents: row.expenseCents,
           color: fundColorOf(context, fund, index < 0 ? 0 : index),
           icon: fund?.icon,

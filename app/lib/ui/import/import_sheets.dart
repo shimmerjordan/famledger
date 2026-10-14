@@ -100,7 +100,7 @@ Future<void> showRowEditSheet(
               ),
             ),
             PickerField(
-              label: '基金',
+              label: '板块',
               contentPadding: EdgeInsets.zero,
               child: FundPicker(
                 keyPrefix: 'sheet-fund',
@@ -116,7 +116,7 @@ Future<void> showRowEditSheet(
                 LedgerLayout.pagePadding,
                 0,
               ),
-              child: Text('不选就记进默认基金', style: theme.textTheme.bodySmall),
+              child: Text('不选就记进默认板块', style: theme.textTheme.bodySmall),
             ),
             Padding(
               padding: const EdgeInsets.fromLTRB(
@@ -290,13 +290,13 @@ Future<void> showBatchFundSheet(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SectionHeader(
-            '给选中的 ${indices.length} 笔改基金',
+            '给选中的 ${indices.length} 笔改板块',
             padding: const EdgeInsets.symmetric(
               horizontal: LedgerLayout.pagePadding,
             ),
             trailing: TextButton(
               onPressed: () => apply(null),
-              child: const Text('用默认基金'),
+              child: const Text('用默认板块'),
             ),
           ),
           const SizedBox(height: LedgerLayout.itemGap),

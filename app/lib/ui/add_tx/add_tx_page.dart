@@ -60,6 +60,9 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
   final TextEditingController _merchant = TextEditingController();
   final TextEditingController _note = TextEditingController();
 
+  /// 跨币种转账的到账金额（按转入账户的币种）。空着就按今日汇率算（输入框里的提示就是那个数）。
+  final TextEditingController _toAmount = TextEditingController();
+
   /// 实体键盘（网页、平板外接键盘）：数字和小数点直接进金额，Backspace 退格，Delete 清空，
   /// Enter 保存。焦点在商户/备注输入框里时不出手（那时 [FocusNode.hasPrimaryFocus] 为假）。
   final FocusNode _keys = FocusNode(debugLabel: 'add-tx-keys');
@@ -89,6 +92,7 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
   void dispose() {
     _merchant.dispose();
     _note.dispose();
+    _toAmount.dispose();
     _keys.dispose();
     _amountField.dispose();
     _amountFocus.dispose();
@@ -172,6 +176,11 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
   int get _cents => Money.tryParse(_raw) ?? 0;
 
   bool get _isTransfer => _type == Transaction.typeTransfer;
+
+  /// 挡住保存的那个错误（本地校验或保存失败）。保存键在屏幕下半区，只在顶部刷
+  /// 一行等于没提示（体感「点不动」），底部键盘上方再内联说一次，见 [_BottomError]。
+  String? get _blockingError =>
+      _amountError ?? _fundError ?? _transferError ?? _saveError;
 
   void _onDigit(String ch) {
     setState(() {
@@ -303,7 +312,37 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
     return _existing(ids, [memory.memberId, ref.read(sessionProvider)?.me.id]);
   }
 
+  /// 转账两头的账户币种不同时，转入账户的币种；否则 null。
+  String? _crossCurrency(LedgerData ledger, String? accountId) {
+    if (!_isTransfer || accountId == null || _toAccountId == null) return null;
+    final from = ledger.account(accountId)?.currency;
+    final to = ledger.account(_toAccountId)?.currency;
+    if (from == null || to == null || from.toUpperCase() == to.toUpperCase()) return null;
+    return to;
+  }
+
+  /// 到账金额的建议值：按今日汇率把转出金额折成转入币种；没汇率是 null。
+  int? _suggestedToAmount(LedgerData ledger, String accountId, String toCurrency) {
+    final String base = ref.read(baseCurrencyProvider);
+    final String from = ledger.account(accountId)?.currency ?? base;
+    return ref.read(fxRatesProvider).convert(_cents, from, toCurrency);
+  }
+
+  /// 保存：准备阶段（挑默认板块、账户、组请求体）出了意外也要说出来 —— 不能只进控制台、按钮点了没反应。
   Future<void> _save(LedgerData ledger) async {
+    try {
+      await _saveInner(ledger);
+    } catch (e) {
+      if (!mounted) return;
+      HapticFeedback.mediumImpact();
+      setState(() {
+        _saving = false;
+        _saveError = describeError(e);
+      });
+    }
+  }
+
+  Future<void> _saveInner(LedgerData ledger) async {
     final memory = ref.read(addTxMemoryProvider).forType(_type);
     final categories = _type == Transaction.typeIncome
         ? ledger.incomeCategories()
@@ -328,18 +367,32 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
           !accountPair && (accountId != null || _toAccountId != null);
       final fundHalf = !fundPair && (fundId != null || _toFundId != null);
       if (!accountPair && !fundPair) {
-        transferError = '至少填一对：账户→账户，或基金→基金';
+        transferError = '至少填一对：账户→账户，或板块→板块';
       } else if (fundHalf) {
-        fundError = '基金只填了一边：两边都填，或者都留空';
+        fundError = '板块只填了一边：两边都填，或者都留空';
       } else if (accountHalf) {
         transferError = '账户只填了一边：两边都填，或者都留空';
       } else if (accountPair && accountId == _toAccountId) {
         transferError = '转出和转入不能是同一个账户';
       } else if (fundPair && fundId == _toFundId) {
-        transferError = '转出和转入不能是同一个基金';
+        transferError = '转出和转入不能是同一个板块';
       }
     } else if (fundId == null) {
-      fundError = '请选择一个基金';
+      fundError = '请选择一个板块';
+    }
+
+    // 跨币种转账：到账多少按转入账户的币种。没填就按今日汇率；没汇率又没填，就得让人填。
+    int? toAmount;
+    final toCurrency = transferError == null ? _crossCurrency(ledger, accountId) : null;
+    if (toCurrency != null) {
+      final raw = _toAmount.text.trim();
+      final typed = raw.isEmpty ? null : Money.tryParse(raw);
+      if (raw.isNotEmpty && (typed == null || typed < 0)) {
+        transferError = '到账金额填得不对，例如 669.40';
+      } else {
+        toAmount = typed ?? _suggestedToAmount(ledger, accountId!, toCurrency);
+        if (toAmount == null) transferError = '两边币种不同，还没有汇率：填一下到账多少';
+      }
     }
 
     setState(() {
@@ -349,13 +402,22 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
       _saveError = null;
       _saveNotice = null;
     });
-    if (amountError != null || fundError != null || transferError != null) return;
+    if (amountError != null || fundError != null || transferError != null) {
+      HapticFeedback.mediumImpact();
+      return;
+    }
 
+    // 币种跟着账户走（转账看转出账户）；没选账户就用家庭基准币。
+    final base = ref.read(baseCurrencyProvider);
+    final currency = ledger.account(accountId)?.currency ?? base;
     final draft = TransactionDraft(
       clientId: newClientId(),
       type: _type,
       amountCents: _cents,
       occurredAt: _occurredAt,
+      currency: currency,
+      toAmountCents: toAmount,
+      toCurrency: toCurrency,
       fundId: fundId,
       toFundId: _isTransfer ? _toFundId : null,
       accountId: accountId,
@@ -399,7 +461,7 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
           content: Text(
             saved.pendingSync
                 ? '已离线保存，联网后自动上传'
-                : '已记下 ${Money.format(saved.amountCents)}',
+                : '已记下 ${Money.format(saved.amountCents, currency: currency)}',
           ),
         ),
       );
@@ -410,9 +472,11 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
       }
     } on ApiException catch (e) {
       if (!mounted) return;
+      HapticFeedback.mediumImpact();
       setState(() => _saveError = e.message);
     } catch (e) {
       if (!mounted) return;
+      HapticFeedback.mediumImpact();
       setState(() => _saveError = describeError(e));
     } finally {
       if (mounted) setState(() => _saving = false);
@@ -450,10 +514,10 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
           loading: const SkeletonList(rows: 6),
           data: (data) => data.activeFunds.isEmpty
               ? EmptyState(
-                  title: '还没有基金',
-                  message: '每一笔钱都要落到一个基金里，先建一个再记账。',
+                  title: '还没有板块',
+                  message: '每一笔钱都要落到一个板块里，先建一个再记账。',
                   icon: Icons.savings_outlined,
-                  actionLabel: '新建基金',
+                  actionLabel: '新建板块',
                   onAction: () => context.push('/funds/new'),
                 )
               : switch (width) {
@@ -470,19 +534,31 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
     );
   }
 
-  Widget _header(LedgerData data) => _AmountHeader(
-    type: _type,
-    onType: _setType,
-    cents: _cents,
-    error: _amountError,
-    saveError: _saveError,
-    notice: _saveNotice,
-    onTap: _focusKeys,
-    amountField: _desktop ? _amountInput(data) : null,
-  );
+  Widget _header(LedgerData data) {
+    final currency = _effectiveCurrency(data);
+    return _AmountHeader(
+      type: _type,
+      onType: _setType,
+      cents: _cents,
+      currency: currency,
+      error: _amountError,
+      saveError: _saveError,
+      notice: _saveNotice,
+      onTap: _focusKeys,
+      amountField: _desktop ? _amountInput(data, currency) : null,
+    );
+  }
+
+  /// 这笔的币种：跟着选中的账户走（转账看转出账户）；没选账户就用家庭基准币。
+  String _effectiveCurrency(LedgerData ledger) {
+    final memory = ref.read(addTxMemoryProvider).forType(_type);
+    final accountId = _isTransfer ? _accountId : _resolvedAccount(ledger, memory);
+    final base = ref.watch(baseCurrencyProvider);
+    return ledger.account(accountId)?.currency ?? base;
+  }
 
   /// 桌面的金额框：大字、自动聚焦，回车就保存。
-  Widget _amountInput(LedgerData data) => TextField(
+  Widget _amountInput(LedgerData data, String currency) => TextField(
     key: const ValueKey('amount-field'),
     controller: _amountField,
     focusNode: _amountFocus,
@@ -494,7 +570,7 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
       if (!_saving) _save(data);
     },
     style: Theme.of(context).textTheme.displaySmall,
-    decoration: const InputDecoration(prefixText: '¥ ', hintText: '0.00'),
+    decoration: InputDecoration(prefixText: '${Money.symbolFor(currency)} ', hintText: '0.00'),
   );
 
   /// 桌面没有九宫格，金额框下面直接一个保存键（顶栏那个太远）。
@@ -537,6 +613,7 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
     children: [
       _header(data),
       Expanded(child: _form(data)),
+      if (_blockingError != null) _BottomError(_blockingError!),
       if (_desktop) _desktopSave(data) else if (!systemKeyboard) _keypad(data),
     ],
   );
@@ -554,6 +631,7 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
           child: Column(
             children: [
               _header(data),
+              if (_blockingError != null) _BottomError(_blockingError!),
               if (_desktop) _desktopSave(data) else if (!systemKeyboard) _keypad(data),
             ],
           ),
@@ -586,10 +664,10 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
             ),
           ),
         PickerField(
-          label: _isTransfer ? '从哪个基金转出' : '基金',
+          label: _isTransfer ? '从哪个板块转出' : '板块',
           error: _fundError,
           contentPadding: EdgeInsets.zero,
-          trailing: _FieldHint(text: '这笔钱归哪个模块', show: !_isTransfer),
+          trailing: _FieldHint(text: '这笔钱归哪个板块', show: !_isTransfer),
           child: FundPicker(
             funds: ledger.activeFunds,
             selectedId: fundId,
@@ -602,7 +680,7 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
         ),
         if (_isTransfer)
           PickerField(
-            label: '转入哪个基金',
+            label: '转入哪个板块',
             topGap: LedgerLayout.itemGap,
             contentPadding: EdgeInsets.zero,
             child: FundPicker(
@@ -640,6 +718,24 @@ class _AddTxPageState extends ConsumerState<AddTxPage> {
                 _picked[_kToAccount] = id;
                 _transferError = null;
               }),
+            ),
+          ),
+        if (_crossCurrency(ledger, accountId) case final toCurrency?)
+          PickerField(
+            label: '到账金额',
+            topGap: LedgerLayout.itemGap,
+            trailing: Text('两边币种不同；空着就按今日汇率', style: Theme.of(context).textTheme.bodySmall),
+            child: TextField(
+              key: const ValueKey('to-amount'),
+              controller: _toAmount,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: InputDecoration(
+                prefixText: '${Money.symbolFor(toCurrency).trim()} ',
+                hintText: switch (_suggestedToAmount(ledger, accountId!, toCurrency)) {
+                  final v? => '约 ${Money.plain(v)}（按今日汇率）',
+                  null => '还没有汇率，填一下到账多少',
+                },
+              ),
             ),
           ),
         PickerField(
@@ -703,6 +799,7 @@ class _AmountHeader extends StatelessWidget {
     required this.type,
     required this.onType,
     required this.cents,
+    this.currency = 'CNY',
     this.error,
     this.saveError,
     this.notice,
@@ -713,6 +810,9 @@ class _AmountHeader extends StatelessWidget {
   final String type;
   final ValueChanged<String> onType;
   final int cents;
+
+  /// 这笔金额的币种（跟着选中的账户）：决定大金额的货币符号。
+  final String currency;
   final String? error;
   final String? saveError;
 
@@ -764,7 +864,7 @@ class _AmountHeader extends StatelessWidget {
             const SizedBox(height: 12),
             amountField ??
                 Text(
-                  Money.format(cents),
+                  Money.format(cents, currency: currency),
                   style: theme.textTheme.displaySmall?.copyWith(
                     color: error != null ? theme.colorScheme.error : null,
                   ),
@@ -792,6 +892,41 @@ class _AmountHeader extends StatelessWidget {
               ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// 底部保存键正上方的行内错误横幅（DESIGN.md：错误用行内说明，不用错误 Snackbar）。
+/// 保存键在屏幕下半区，错误只在顶部刷出来用户看不到，体感就是「点不动」。
+class _BottomError extends StatelessWidget {
+  const _BottomError(this.message);
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final error = theme.colorScheme.error;
+    return Container(
+      key: const ValueKey('save-tx-error'),
+      width: double.infinity,
+      color: error.withValues(alpha: 0.12),
+      padding: const EdgeInsets.symmetric(
+        horizontal: LedgerLayout.pagePadding,
+        vertical: 10,
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.error_outline, size: 18, color: error),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              message,
+              style: theme.textTheme.bodyMedium?.copyWith(color: error),
+            ),
+          ),
+        ],
       ),
     );
   }

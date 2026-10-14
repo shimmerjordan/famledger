@@ -36,6 +36,9 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
   final TextEditingController _note = TextEditingController();
 
   String _direction = Debt.lend;
+
+  /// 这笔债是什么币；只在新建时定（服务端建好后不让改）。钱经过的账户只列同币种的。
+  late String _currency = ref.read(baseCurrencyProvider);
   String _kind = Debt.kindLoan;
   late DateTime _startedOn = _today();
   DateTime? _dueOn;
@@ -158,6 +161,7 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
         note: _note.text.trim(),
         accountId: _record ? _accountId : null,
         settledCents: settled,
+        currency: _currency == ref.read(baseCurrencyProvider) ? null : _currency,
         clientId: _clientId,
       );
       refreshMoneyViews(ref);
@@ -274,11 +278,28 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
           if (!_editing)
             PickerField(
               label: _favor ? '礼金' : '金额',
-              child: TextField(
-                key: const ValueKey('debt-amount'),
-                controller: _amount,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(prefixText: '¥ ', hintText: '5000'),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      key: const ValueKey('debt-amount'),
+                      controller: _amount,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: InputDecoration(prefixText: '${Money.symbolFor(_currency).trim()} ', hintText: '5000'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  // 币种只在新建时定（建好后不能改）；换了币种，原来选的账户不一定还是同币种的。
+                  CurrencyDropdown(
+                    key: const ValueKey('debt-currency'),
+                    value: _currency,
+                    keyPrefix: 'debt-currency',
+                    onChanged: (c) => setState(() {
+                      _currency = c;
+                      _accountId = null;
+                    }),
+                  ),
+                ],
               ),
             ),
           if (!_editing)
@@ -291,7 +312,7 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
                 controller: _settled,
                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
                 decoration: InputDecoration(
-                  prefixText: '¥ ',
+                  prefixText: '${Money.symbolFor(_currency).trim()} ',
                   hintText: _direction == Debt.lend ? '以前收回过一部分就填' : '以前还过一部分就填',
                 ),
               ),
@@ -367,7 +388,10 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
                 topGap: LedgerLayout.itemGap,
                 child: AccountPicker(
                   keyPrefix: 'debt-account',
-                  accounts: ledger.activeAccounts,
+                  accounts: [
+                    for (final a in ledger.activeAccounts)
+                      if (a.currency.toUpperCase() == _currency.toUpperCase()) a,
+                  ],
                   selectedId: _accountId,
                   emptyHint: '还没有账户',
                   onSelected: (id) => setState(() => _accountId = id),

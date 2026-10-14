@@ -19,6 +19,8 @@ class StatsOverview {
     this.serverInvestNetCents,
     this.investByKind = const [],
     this.debts,
+    this.fx = const FxRates(),
+    this.byCurrency = const {},
   });
 
   /// 按家庭设置含不含实物，由服务端 stats.js 决定。
@@ -55,6 +57,37 @@ class StatsOverview {
   /// 债务汇总；老服务端不给时是 null。
   final DebtSummary? debts;
 
+  /// 内嵌汇率：与服务端一致的折算表（客户端「换算」按钮用）。老服务端不给时是空表。
+  final FxRates fx;
+
+  /// 每个币种一份原生金额的分项（不折算）；老服务端不给时是空的，[buckets] 拿折成基准币的老字段顶上。
+  final Map<String, CurrencyBucket> byCurrency;
+
+  /// 各币种的分项：服务端给了 byCurrency 就用它；老服务端（单币种时代）整份当基准币。
+  Map<String, CurrencyBucket> get buckets => byCurrency.isNotEmpty
+      ? byCurrency
+      : {
+          fx.base: CurrencyBucket(
+            netWorthCents: netWorthCents,
+            netWorthExPhysicalCents: netWorthExPhysicalCents ?? netWorthCents,
+            assetsCents: assetsCents,
+            liabilitiesCents: liabilitiesCents,
+            cashCents: cashFlowCents,
+            investAccountsCents: investAccountsCents ?? 0,
+            investNetCents: investNetCents,
+            investMarketCents: investMarketCents ?? 0,
+            physicalValueCents: physical?.valueCents ?? 0,
+            physicalIncludedCents: physical?.includedCents ?? 0,
+            debts: debts ?? const DebtSummary(),
+            monthExpenseCents: month.expenseCents,
+            monthIncomeCents: month.incomeCents,
+          ),
+        };
+
+  /// 某个分项按币种分开，例如 `o.amountsBy((b) => b.cashCents)`。
+  CurrencyAmounts amountsBy(int Function(CurrencyBucket b) pick) =>
+      CurrencyAmounts({for (final e in buckets.entries) e.key: pick(e.value)});
+
   /// 全部账户余额合计（含投资账户和债务的内部账户）。
   int get accountsNetCents => accounts.fold<int>(0, (sum, a) => sum + a.balanceCents);
 
@@ -86,6 +119,22 @@ class StatsOverview {
     return 0;
   }
 
+  /// 板块按币种分开的余额（原生）；不在列表里是空的。
+  CurrencyAmounts fundBalances(String fundId) {
+    for (final f in funds) {
+      if (f.fundId == fundId) return f.amounts(fx.base);
+    }
+    return const CurrencyAmounts();
+  }
+
+  /// 某个账户的币种；不在列表里按基准币。
+  String accountCurrency(String accountId) {
+    for (final a in accounts) {
+      if (a.accountId == accountId) return a.currency;
+    }
+    return fx.base;
+  }
+
   int accountBalance(String accountId) {
     for (final a in accounts) {
       if (a.accountId == accountId) return a.balanceCents;
@@ -111,6 +160,11 @@ class StatsOverview {
     serverInvestNetCents: jsonIntOrNull(json['investNetCents']),
     investByKind: jsonList(json['investByKind'], InvestKindTotal.fromJson),
     debts: json['debts'] is Map ? DebtSummary.fromJson(jsonMap(json['debts'])) : null,
+    fx: json['fx'] is Map ? FxRates.fromJson(jsonMap(json['fx'])) : const FxRates(),
+    byCurrency: {
+      for (final e in jsonMap(json['byCurrency']).entries)
+        if (e.value is Map) e.key.toUpperCase(): CurrencyBucket.fromJson(jsonMap(e.value)),
+    },
   );
 
   Map<String, dynamic> toJson() => {
@@ -130,6 +184,232 @@ class StatsOverview {
     if (serverInvestNetCents != null) 'investNetCents': serverInvestNetCents,
     'investByKind': investByKind.map((e) => e.toJson()).toList(),
     if (debts != null) 'debts': debts!.toJson(),
+    'fx': fx.toJson(),
+    if (byCurrency.isNotEmpty) 'byCurrency': {for (final e in byCurrency.entries) e.key: e.value.toJson()},
+  };
+}
+
+/// 按币种分开的金额（原生，不折算）：一组「币种 → 分」。合计（净资产、本月支出、板块余额……）都用它，
+/// 界面上人民币、美元常驻、其他收起，「换算」时才按今日汇率合成一个数（[convert]）。
+class CurrencyAmounts {
+  const CurrencyAmounts([this.values = const {}]);
+
+  CurrencyAmounts.single(String currency, int cents) : values = {currency.toUpperCase(): cents};
+
+  final Map<String, int> values;
+
+  /// 非 0 的那些（显示用）。
+  Map<String, int> get nonZero => {for (final e in values.entries) if (e.value != 0) e.key: e.value};
+
+  bool get isZero => values.values.every((v) => v == 0);
+
+  int of(String currency) => values[currency.toUpperCase()] ?? 0;
+
+  CurrencyAmounts add(String currency, int cents) {
+    if (cents == 0) return this;
+    final c = currency.toUpperCase();
+    return CurrencyAmounts({...values, c: (values[c] ?? 0) + cents});
+  }
+
+  CurrencyAmounts operator +(CurrencyAmounts other) {
+    final out = {...values};
+    other.values.forEach((c, v) => out[c] = (out[c] ?? 0) + v);
+    return CurrencyAmounts(out);
+  }
+
+  CurrencyAmounts operator -(CurrencyAmounts other) => this + other.scale(-1);
+
+  CurrencyAmounts scale(int k) => CurrencyAmounts({for (final e in values.entries) e.key: e.value * k});
+
+  /// 每个币种各自套 [f]（比如只取正数）。
+  CurrencyAmounts map(int Function(int cents) f) => CurrencyAmounts({for (final e in values.entries) e.key: f(e.value)});
+
+  /// 按今日汇率合成 [target] 一个数；缺汇率的币种不臆造，放进 missing（合计里那部分不算）。
+  ({int cents, List<String> missing}) convert(FxRates fx, String target) {
+    var total = 0;
+    final missing = <String>[];
+    for (final e in nonZero.entries) {
+      final v = fx.convert(e.value, e.key, target);
+      if (v == null) {
+        missing.add(e.key);
+      } else {
+        total += v;
+      }
+    }
+    return (cents: total, missing: missing);
+  }
+
+  /// 一组「币种 → 分」：老服务端只给一个数时整份当 [fallbackCurrency]。
+  factory CurrencyAmounts.fromJson(Object? json, {int? fallbackCents, String fallbackCurrency = 'CNY'}) {
+    if (json is Map) {
+      return CurrencyAmounts({for (final e in json.entries) e.key.toString().toUpperCase(): jsonInt(e.value)});
+    }
+    return fallbackCents == null ? const CurrencyAmounts() : CurrencyAmounts.single(fallbackCurrency, fallbackCents);
+  }
+
+  Map<String, dynamic> toJson() => {...values};
+
+  @override
+  bool operator ==(Object other) =>
+      other is CurrencyAmounts && other.nonZero.length == nonZero.length && nonZero.entries.every((e) => other.of(e.key) == e.value);
+
+  @override
+  int get hashCode => Object.hashAllUnordered(nonZero.entries.map((e) => Object.hash(e.key, e.value)));
+
+  @override
+  String toString() => 'CurrencyAmounts($nonZero)';
+}
+
+/// 服务端 `overview.byCurrency[币种]`：这一个币种的原生分项。getter 和 [StatsOverview] 的同名口径一致。
+class CurrencyBucket {
+  const CurrencyBucket({
+    this.netWorthCents = 0,
+    this.netWorthExPhysicalCents = 0,
+    this.assetsCents = 0,
+    this.liabilitiesCents = 0,
+    this.cashCents = 0,
+    this.investAccountsCents = 0,
+    this.investNetCents = 0,
+    this.investMarketCents = 0,
+    this.investCostCents = 0,
+    this.physicalValueCents = 0,
+    this.physicalIncludedCents = 0,
+    this.debts = const DebtSummary(),
+    this.monthExpenseCents = 0,
+    this.monthIncomeCents = 0,
+  });
+
+  final int netWorthCents;
+  final int netWorthExPhysicalCents;
+  final int assetsCents;
+  final int liabilitiesCents;
+  final int cashCents;
+  final int investAccountsCents;
+  final int investNetCents;
+  final int investMarketCents;
+  final int investCostCents;
+  final int physicalValueCents;
+  final int physicalIncludedCents;
+  final DebtSummary debts;
+  final int monthExpenseCents;
+  final int monthIncomeCents;
+
+  /// 理财对净资产的贡献 = 投资账户里的钱 + 投资补差。
+  int get investTotalCents => investAccountsCents + investNetCents;
+
+  /// 计入净资产的债务净额。
+  int get debtsNetCents => debts.countedNetCents;
+
+  factory CurrencyBucket.fromJson(Map<String, dynamic> json) => CurrencyBucket(
+    netWorthCents: jsonInt(json['netWorthCents']),
+    netWorthExPhysicalCents: jsonInt(json['netWorthExPhysicalCents']),
+    assetsCents: jsonInt(json['assetsCents']),
+    liabilitiesCents: jsonInt(json['liabilitiesCents']),
+    cashCents: jsonInt(json['cashCents']),
+    investAccountsCents: jsonInt(json['investAccountsCents']),
+    investNetCents: jsonInt(json['investNetCents']),
+    investMarketCents: jsonInt(json['investMarketCents']),
+    investCostCents: jsonInt(json['investCostCents']),
+    physicalValueCents: jsonInt(json['physicalValueCents']),
+    physicalIncludedCents: jsonInt(json['physicalIncludedCents']),
+    debts: json['debts'] is Map ? DebtSummary.fromJson(jsonMap(json['debts'])) : const DebtSummary(),
+    monthExpenseCents: jsonInt(json['monthExpenseCents']),
+    monthIncomeCents: jsonInt(json['monthIncomeCents']),
+  );
+
+  Map<String, dynamic> toJson() => {
+    'netWorthCents': netWorthCents,
+    'netWorthExPhysicalCents': netWorthExPhysicalCents,
+    'assetsCents': assetsCents,
+    'liabilitiesCents': liabilitiesCents,
+    'cashCents': cashCents,
+    'investAccountsCents': investAccountsCents,
+    'investNetCents': investNetCents,
+    'investMarketCents': investMarketCents,
+    'investCostCents': investCostCents,
+    'physicalValueCents': physicalValueCents,
+    'physicalIncludedCents': physicalIncludedCents,
+    'debts': debts.toJson(),
+    'monthExpenseCents': monthExpenseCents,
+    'monthIncomeCents': monthIncomeCents,
+  };
+}
+
+/// 汇率表：与服务端 `overview.fx` / `GET /fx/rates` 同形状。
+///
+/// `rates[X]` 是「1 基准币 = rates[X] / 1e6 个 X」的 ×1e6 整数（与服务端 `rate_e6` 一致）。
+/// 折算走 double 再四舍五入到分：这是**显示层**的换算（「换算」按钮），不改任何存量金额；
+/// 缺某一对汇率时 [convert] 返回 null，调用方据此只显示原生币、标「汇率缺失」，绝不臆造。
+class FxRates {
+  const FxRates({
+    this.base = 'CNY',
+    this.rates = const {},
+    this.asOf,
+    this.missing = const [],
+  });
+
+  /// 家庭基准币。
+  final String base;
+
+  /// 相对 [base] 的汇率：`{ 'USD': 149388 }` 表示 1 CNY = 0.149388 USD。
+  final Map<String, int> rates;
+
+  /// 最近一次刷新时间（服务端给的字符串）；从没刷新过是 null。
+  final String? asOf;
+
+  /// 服务端聚合时抓不到汇率的币种（已按 0 计入基准币合计）。
+  final List<String> missing;
+
+  static const double _e6 = 1e6;
+
+  bool get isEmpty => rates.isEmpty;
+
+  /// 有没有 [currency] 相对基准币的汇率（同币恒有）。
+  bool hasRate(String currency) {
+    final c = currency.toUpperCase();
+    return c == base || rates.containsKey(c);
+  }
+
+  /// `from` → `to` 折算到分；缺任一对汇率返回 null。先折到基准币再折到目标币。
+  int? convert(int cents, String from, String to) {
+    final f = from.toUpperCase();
+    final t = to.toUpperCase();
+    if (f == t) return cents;
+    final viaBase = _toBase(cents, f);
+    if (viaBase == null) return null;
+    return _fromBase(viaBase, t);
+  }
+
+  int? _toBase(int cents, String c) {
+    if (c == base) return cents;
+    final r = rates[c];
+    if (r == null || r == 0) return null;
+    return (cents * (_e6 / r)).round(); // c → base：除以 (r/1e6)
+  }
+
+  int? _fromBase(int baseCents, String c) {
+    if (c == base) return baseCents;
+    final r = rates[c];
+    if (r == null) return null;
+    return (baseCents * (r / _e6)).round(); // base → c：乘以 (r/1e6)
+  }
+
+  factory FxRates.fromJson(Map<String, dynamic> json) {
+    final rates = <String, int>{};
+    jsonMap(json['rates']).forEach((k, val) => rates[k.toUpperCase()] = jsonInt(val));
+    return FxRates(
+      base: jsonString(json['base'], 'CNY').toUpperCase(),
+      rates: rates,
+      asOf: jsonStringOrNull(json['asOf']),
+      missing: jsonStringList(json['missing']).map((e) => e.toUpperCase()).toList(),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'base': base,
+    'rates': rates,
+    if (asOf != null) 'asOf': asOf,
+    'missing': missing,
   };
 }
 
@@ -352,34 +632,51 @@ class BudgetProgress {
   };
 }
 
+/// 板块的余额。板块没有币种：[balances] 是按币种分开的原生余额，[balanceCents] 是折成基准币的合计
+/// （预算、目标进度用）。老服务端只给一个数时 [balances] 是空的，[amounts] 拿它当基准币。
 class FundBalance {
-  const FundBalance({required this.fundId, required this.balanceCents});
+  const FundBalance({required this.fundId, required this.balanceCents, this.balances = const CurrencyAmounts()});
 
   final String fundId;
   final int balanceCents;
+  final CurrencyAmounts balances;
+
+  /// 按币种分开的余额；老服务端（只给 balanceCents）整份当 [base]。
+  CurrencyAmounts amounts(String base) =>
+      balances.values.isNotEmpty || balanceCents == 0 ? balances : CurrencyAmounts.single(base, balanceCents);
 
   factory FundBalance.fromJson(Map<String, dynamic> json) => FundBalance(
     fundId: jsonString(json['fundId']),
     balanceCents: jsonInt(json['balanceCents']),
+    balances: CurrencyAmounts.fromJson(json['balances']),
   );
 
-  Map<String, dynamic> toJson() => {'fundId': fundId, 'balanceCents': balanceCents};
+  Map<String, dynamic> toJson() => {
+    'fundId': fundId,
+    'balanceCents': balanceCents,
+    if (balances.values.isNotEmpty) 'balances': balances.toJson(),
+  };
 }
 
 class AccountBalance {
-  const AccountBalance({required this.accountId, required this.balanceCents});
+  const AccountBalance({required this.accountId, required this.balanceCents, this.currency = 'CNY'});
 
   final String accountId;
   final int balanceCents;
 
+  /// 这个账户余额的原生币种（老服务端不给时按 CNY）。
+  final String currency;
+
   factory AccountBalance.fromJson(Map<String, dynamic> json) => AccountBalance(
     accountId: jsonString(json['accountId']),
     balanceCents: jsonInt(json['balanceCents']),
+    currency: jsonString(json['currency'], 'CNY'),
   );
 
   Map<String, dynamic> toJson() => {
     'accountId': accountId,
     'balanceCents': balanceCents,
+    'currency': currency,
   };
 }
 
@@ -391,6 +688,7 @@ class FundStats {
     this.monthExpenseCents = 0,
     this.monthIncomeCents = 0,
     this.budgetCents,
+    this.balances = const CurrencyAmounts(),
     this.byCategory = const [],
     this.recent = const [],
   });
@@ -400,8 +698,14 @@ class FundStats {
   final int monthExpenseCents;
   final int monthIncomeCents;
   final int? budgetCents;
+
+  /// 按币种分开的余额（原生）；老服务端不给时是空的，[amounts] 拿 [balanceCents] 当基准币。
+  final CurrencyAmounts balances;
   final List<CategoryAmount> byCategory;
   final List<Transaction> recent;
+
+  CurrencyAmounts amounts(String base) =>
+      balances.values.isNotEmpty || balanceCents == 0 ? balances : CurrencyAmounts.single(base, balanceCents);
 
   /// 目标进度 0..1（没目标就是 0）。
   double get targetProgress {
@@ -423,6 +727,7 @@ class FundStats {
     monthExpenseCents: jsonInt(json['monthExpenseCents']),
     monthIncomeCents: jsonInt(json['monthIncomeCents']),
     budgetCents: jsonIntOrNull(json['budgetCents']),
+    balances: CurrencyAmounts.fromJson(json['balances']),
     byCategory: jsonList(json['byCategory'], CategoryAmount.fromJson),
     recent: jsonList(json['recent'], Transaction.fromJson),
   );

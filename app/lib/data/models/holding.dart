@@ -41,6 +41,7 @@ class Holding {
     this.note,
     this.sortOrder = 0,
     this.archived = false,
+    this.currency = 'CNY',
   });
 
   static const String kindFund = 'fund';
@@ -184,6 +185,9 @@ class Holding {
   final int sortOrder;
   final bool archived;
 
+  /// 这笔持仓的币种（ISO-4217，默认 CNY）；成本、估值都是这个币。
+  final String currency;
+
   InvestMode get mode => modeOf(kind);
   bool get isUnit => mode == InvestMode.unit;
   bool get isAuto => priceSource == sourceAuto;
@@ -228,6 +232,7 @@ class Holding {
     note: jsonStringOrNull(json['note']),
     sortOrder: jsonInt(json['sortOrder']),
     archived: jsonBool(json['archived']),
+    currency: jsonString(json['currency'], 'CNY'),
   );
 
   Map<String, dynamic> toJson() {
@@ -256,6 +261,7 @@ class Holding {
     putIfNotNull(json, 'note', note);
     json['sortOrder'] = sortOrder;
     json['archived'] = archived;
+    json['currency'] = currency;
     return json;
   }
 }

@@ -19,7 +19,7 @@ class AiChatPage extends ConsumerStatefulWidget {
   /// 空态里给的三个例子，照着改就知道能问什么。
   static const List<String> examples = [
     '这个月钱主要花在哪儿？',
-    '哪个基金快超预算了？',
+    '哪个板块快超预算了？',
     '和上个月比，多花了什么？',
   ];
 
@@ -242,7 +242,7 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
       EmptyState(
         icon: Icons.auto_awesome_outlined,
         title: '问点什么',
-        message: '它看得到${Dates.monthLabel(_month)}的收支、基金余额和预算，'
+        message: '它看得到${Dates.monthLabel(_month)}的收支、板块余额和预算，'
             '可以让它帮你找花超的地方、解释某个数字，或者给下个月的建议。',
       ),
       Padding(

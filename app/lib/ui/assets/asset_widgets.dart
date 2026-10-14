@@ -197,12 +197,14 @@ class DailyMoney extends StatelessWidget {
     this.size = MoneySize.body,
     this.signed = false,
     this.muted = false,
+    this.currency = 'CNY',
   });
 
   final double cents;
   final MoneySize size;
   final bool signed;
   final bool muted;
+  final String currency;
 
   @override
   Widget build(BuildContext context) {
@@ -211,7 +213,7 @@ class DailyMoney extends StatelessWidget {
       TextSpan(
         children: [
           TextSpan(
-            text: Money.format(whole, signed: signed),
+            text: Money.format(whole, signed: signed, currency: currency),
             style: MoneyText.styleFor(context, whole, signed: signed, size: size, muted: muted),
           ),
           TextSpan(text: '/天', style: Theme.of(context).textTheme.bodySmall),
@@ -223,14 +225,14 @@ class DailyMoney extends StatelessWidget {
   }
 }
 
-String dailyLabel(double cents, {bool signed = false}) =>
-    '${Money.format(cents.round(), signed: signed)}/天';
+String dailyLabel(double cents, {bool signed = false, String currency = 'CNY'}) =>
+    '${Money.format(cents.round(), signed: signed, currency: currency)}/天';
 
 /// 列表行第二行：「估值 ¥5,895.88 · −2%」；较原价不到 1%（或原价 0）只写估值。
 String assetValueLine(Asset asset, DateTime now) {
   final value = currentValue(asset, now);
   final change = valueChangeLabel(value, asset.priceCents);
-  final head = '估值 ${Money.format(value)}';
+  final head = '估值 ${Money.format(value, currency: asset.currency)}';
   return change == null ? head : '$head · $change';
 }
 
@@ -398,7 +400,8 @@ class FormSubmit extends StatelessWidget {
   }
 }
 
-/// 「同时记一笔」的去向：账户、基金、类别。都能不选 —— 基金缺省走默认基金，类别留空也记得进去。
+/// 「同时记一笔」的去向：账户、板块、类别。都能不选 —— 板块缺省走默认板块，类别留空也记得进去。
+/// 给了 [currency] 就只列这个币种的账户（钱要从同币种的账户走，服务端也是这么拦的）。
 class RecordTargetFields extends StatelessWidget {
   const RecordTargetFields({
     super.key,
@@ -410,7 +413,11 @@ class RecordTargetFields extends StatelessWidget {
     required this.onAccount,
     required this.onFund,
     required this.onCategory,
+    this.currency,
   });
+
+  /// 只列这个币种的账户；null = 不限。
+  final String? currency;
 
   final LedgerData ledger;
   final bool income;
@@ -433,16 +440,19 @@ class RecordTargetFields extends StatelessWidget {
           label: income ? '收到哪个账户' : '从哪个账户付的',
           topGap: LedgerLayout.itemGap,
           child: AccountPicker(
-            accounts: ledger.activeAccounts,
+            accounts: [
+              for (final a in ledger.activeAccounts)
+                if (currency == null || a.currency.toUpperCase() == currency!.toUpperCase()) a,
+            ],
             selectedId: accountId,
             onSelected: onAccount,
           ),
         ),
         PickerField(
-          label: '基金',
+          label: '板块',
           contentPadding: EdgeInsets.zero,
           trailing: Text(
-            '不选就记到默认基金',
+            '不选就记到默认板块',
             style: Theme.of(context).textTheme.bodySmall,
           ),
           child: FundPicker(

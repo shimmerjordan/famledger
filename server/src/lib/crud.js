@@ -112,6 +112,34 @@ function coerceFields(fields, body, isPatch = false) {
   return out;
 }
 
+/**
+ * `currency` 列的 fromBody 片段：新建时继承家庭基准币（`meta.currency`，默认 CNY）而不是
+ * 列默认值，改的时候校验成 3 位大写代码；这次没给 currency 就不动那一列（PATCH 保持原值）。
+ * accounts / funds / holdings / assets / debts 共用，别再各抄一遍内联正则。
+ */
+function currencyColumns(db, body, isPatch) {
+  if (body.currency === undefined || body.currency === null) {
+    return isPatch ? {} : { currency: db.meta('currency', 'CNY') };
+  }
+  return { currency: v.currency(body.currency, 'currency') };
+}
+
+/**
+ * 钱要经过的那个真账户必须和这件东西同币种（美元的债务、美元的持仓只能从美元账户走）：不同就 400
+ * `currency_mismatch`。跨币种的钱先在「记一笔」里转账换汇，再从同币种账户走。
+ */
+function requireSameCurrency(db, accountId, currency, field, what) {
+  if (!accountId) return;
+  const acc = db.get('SELECT name, currency FROM accounts WHERE id = ?', accountId);
+  if (acc && acc.currency !== currency) {
+    throw new HttpError(
+      400, 'currency_mismatch',
+      `${what}是 ${currency}，「${acc.name}」是 ${acc.currency}：钱要从同币种的账户走（换汇先在记一笔里转账）`,
+      { field },
+    );
+  }
+}
+
 function makeCrud(opts) {
   const {
     db,
@@ -265,4 +293,4 @@ function makeCrud(opts) {
   return { routes, toJson, byId, mustExist, insert };
 }
 
-module.exports = { makeCrud, coerceFields };
+module.exports = { makeCrud, coerceFields, currencyColumns, requireSameCurrency };

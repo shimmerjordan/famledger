@@ -124,8 +124,9 @@ class _PendingCard extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 8),
-                MoneyText(
+                MultiCurrencyAmount(
                   tx.isExpense ? -tx.amountCents : tx.amountCents,
+                  currency: tx.currency,
                   signed: tx.isIncome,
                 ),
               ],

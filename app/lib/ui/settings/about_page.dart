@@ -60,7 +60,7 @@ class AboutPage extends StatelessWidget {
           ),
           const SizedBox(height: LedgerLayout.groupGap),
           Text(
-            '把家里的钱分成看得见的模块，每一笔支出都知道该归谁、归哪一份。'
+            '把家里的钱分成看得见的板块，每一笔支出都知道该归谁、归哪一份。'
             '自动记账把「记」的成本降到接近零，AI 把「看」的门槛降到一句话。',
             style: theme.textTheme.bodyMedium,
           ),

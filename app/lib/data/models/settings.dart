@@ -120,15 +120,34 @@ class CaptureSettings {
 }
 
 class UiSettings {
-  const UiSettings({this.firstDayOfMonth = 1});
+  const UiSettings({
+    this.firstDayOfMonth = 1,
+    this.displayCurrencies = const ['CNY', 'USD'],
+  });
 
   /// 月账单从每月第几天开始（工资日不是 1 号的家庭会改）。
   final int firstDayOfMonth;
 
-  factory UiSettings.fromJson(Map<String, dynamic> json) =>
-      UiSettings(firstDayOfMonth: jsonInt(json['firstDayOfMonth'], 1));
+  /// 并排显示的币种（默认人民币 + 美元）；其余币种在「更多币种」里展开。基准币另看 [Settings.currency]。
+  final List<String> displayCurrencies;
 
-  Map<String, dynamic> toJson() => {'firstDayOfMonth': firstDayOfMonth};
+  factory UiSettings.fromJson(Map<String, dynamic> json) {
+    final list = jsonStringList(json['displayCurrencies']);
+    return UiSettings(
+      firstDayOfMonth: jsonInt(json['firstDayOfMonth'], 1),
+      displayCurrencies: list.isEmpty ? const ['CNY', 'USD'] : list,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'firstDayOfMonth': firstDayOfMonth,
+    'displayCurrencies': displayCurrencies,
+  };
+
+  UiSettings copyWith({int? firstDayOfMonth, List<String>? displayCurrencies}) => UiSettings(
+    firstDayOfMonth: firstDayOfMonth ?? this.firstDayOfMonth,
+    displayCurrencies: displayCurrencies ?? this.displayCurrencies,
+  );
 }
 
 /// 资产相关的家庭设置（spec §2）。

@@ -155,7 +155,7 @@ class CaptureRuntime {
           result = await pipeline.undo(captureId);
         case 'reply':
           if (text.trim().isEmpty) {
-            return _actionResponse('没有收到修改内容', '回复基金名、类别名、金额或备注', const ['confirm', 'edit', 'undo']);
+            return _actionResponse('没有收到修改内容', '回复板块名、类别名、金额或备注', const ['confirm', 'edit', 'undo']);
           }
           result = await pipeline.applyQuickReply(captureId, text.trim());
         default:

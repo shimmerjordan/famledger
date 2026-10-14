@@ -5,7 +5,6 @@ import 'package:go_router/go_router.dart';
 import '../../app/providers.dart';
 import '../../app/theme.dart';
 import '../../core/dates.dart';
-import '../../core/money.dart';
 import '../../data/models/models.dart';
 import '../assets/asset_providers.dart';
 import '../assets/net_worth_strip.dart';
@@ -29,13 +28,23 @@ class AssetsHomeCard extends ConsumerWidget {
     if (ledger == null) return const SizedBox.shrink();
     final stats = ref.watch(statsProvider(Dates.currentMonth()));
     final overview = stats.valueOrNull;
+    // 合计按币种分开显示（人民币、美元常驻，其他收起）；「换算」时合成一个数。
+    final base = overview?.fx.base ?? 'CNY';
+    // 说明文字里的金额也跟着「换算」走。
+    final convertTo = ref.watch(displayCurrencyOverrideProvider);
+    final fx = ref.watch(fxRatesProvider);
+    String f(CurrencyAmounts a, {bool signed = false}) =>
+        formatAmounts(a, base: base, signed: signed, convertTo: convertTo, fx: fx);
     final now = ref.watch(assetClockProvider)();
     final theme = Theme.of(context);
     final sidePadding = padding ?? const EdgeInsets.symmetric(horizontal: LedgerLayout.pagePadding);
 
     final items = summarizeAssets(ledger.assets, now);
+    final itemsBy = summarizeAssetsByCurrency(ledger.assets, now);
     final itemsRecorded = ledger.activeAssets.isNotEmpty;
     final invest = summarizeHoldings(ledger.holdings, now);
+    final investBy = summarizeHoldingsByCurrency(ledger.holdings, now);
+    CurrencyAmounts by<T>(Map<String, T> m, int Function(T) pick) => CurrencyAmounts({for (final e in m.entries) e.key: pick(e.value)});
     final debts = ledger.activeDebts;
     final cards = perkMemberships(ledger.memberships);
     final toClaim = cards.isEmpty
@@ -56,17 +65,17 @@ class AssetsHomeCard extends ConsumerWidget {
       _Tile(
         key: const ValueKey('home-asset-cash'),
         label: '现金流',
-        value: overview == null ? pending(96) : MoneyText(cashFlowCents(overview)),
-        note: overview == null ? null : '可支配 ${Money.format(disposableCents(overview, ledger.funds))}',
+        value: overview == null ? pending(96) : CurrencyTotal(cashFlowAmounts(overview)),
+        note: overview == null ? null : '可支配 ${f(disposableAmounts(overview, ledger.funds))}',
         onTap: () => context.push('/settings/accounts'),
       ),
       _Tile(
         key: const ValueKey('home-asset-invest'),
         label: '理财',
-        value: invest.isEmpty ? notYet : MoneyText(invest.marketCents),
+        value: invest.isEmpty ? notYet : CurrencyTotal(by(investBy, (p) => p.marketCents)),
         note: invest.isEmpty
             ? '基金、定期、活期……'
-            : '浮动 ${Money.format(invest.gainCents, signed: true)} · ${invest.byKind.length} 类',
+            : '浮动 ${f(by(investBy, (p) => p.gainCents), signed: true)} · ${invest.byKind.length} 类',
         onTap: () => context.go('/assets?tab=invest'),
       ),
       _Tile(
@@ -76,24 +85,24 @@ class AssetsHomeCard extends ConsumerWidget {
             ? notYet
             : overview?.debts == null
             ? pending(96)
-            : MoneyText(overview!.debts!.countedNetCents, signed: true),
+            : CurrencyTotal(overview!.amountsBy((b) => b.debtsNetCents), signed: true),
         note: debts.isEmpty
             ? '借出、借入、人情'
             : overview?.debts == null
             ? null
             // 和净资产条同一个口径：只算计入净资产的（人情默认不算）。
-            : '别人欠 ${Money.format(overview!.debts!.countedReceivableCents)} · 欠别人 ${Money.format(overview.debts!.countedPayableCents)}',
+            : '别人欠 ${f(overview!.amountsBy((b) => b.debts.countedReceivableCents))} · 欠别人 ${f(overview.amountsBy((b) => b.debts.countedPayableCents))}',
         onTap: () => context.go('/assets?tab=debts'),
       ),
       _Tile(
         key: const ValueKey('home-asset-items'),
         label: '物品',
-        value: itemsRecorded ? MoneyText(items.valueCents) : notYet,
+        value: itemsRecorded ? CurrencyTotal(by(itemsBy, (a) => a.valueCents)) : notYet,
         note: !itemsRecorded
             ? '东西每天花多少'
             : items.isEmpty
             ? '都退役或卖掉了'
-            : '每天 ${Money.format(items.dailyCents.round())}',
+            : '每天 ${f(by(itemsBy, (a) => a.dailyCents.round()))}',
         onTap: () => context.go('/assets?tab=items'),
       ),
       _Tile(
@@ -129,7 +138,7 @@ class AssetsHomeCard extends ConsumerWidget {
                   Flexible(
                     child: overview == null
                         ? pending(140)
-                        : MoneyText(overview.netWorthCents, size: MoneySize.title),
+                        : CurrencyTotal(overview.amountsBy((b) => b.netWorthCents), size: MoneySize.title),
                   ),
                 ],
               ),

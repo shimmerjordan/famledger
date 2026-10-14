@@ -177,11 +177,11 @@ class _TxDetailPageState extends ConsumerState<TxDetailPage> {
     if (isTransfer &&
         !(accountId != null && toAccountId != null) &&
         !(fundId != null && toFundId != null)) {
-      setState(() => _error = '转账至少要填一对：账户→账户，或基金→基金');
+      setState(() => _error = '转账至少要填一对：账户→账户，或板块→板块');
       return;
     }
     if (!isTransfer && fundId == null) {
-      setState(() => _error = '请选择一个基金');
+      setState(() => _error = '请选择一个板块');
       return;
     }
 
@@ -218,7 +218,7 @@ class _TxDetailPageState extends ConsumerState<TxDetailPage> {
       builder: (context) => AlertDialog(
         title: const Text('删除这笔流水？'),
         content: Text(
-          '${Money.format(tx.amountCents)} · ${Dates.dateTimeLabel(tx.occurredAt)}\n'
+          '${Money.format(tx.amountCents, currency: tx.currency)} · ${Dates.dateTimeLabel(tx.occurredAt)}\n'
           '删除后不能恢复，余额与统计会跟着变。',
         ),
         actions: [
@@ -345,7 +345,7 @@ class _TxDetailPageState extends ConsumerState<TxDetailPage> {
             ),
           _section(
             key: _kFund,
-            label: isTransfer ? '从哪个基金转出' : '基金',
+            label: isTransfer ? '从哪个板块转出' : '板块',
             value: _fundValue(ledger, fundId),
             flush: true,
             child: FundPicker(
@@ -357,7 +357,7 @@ class _TxDetailPageState extends ConsumerState<TxDetailPage> {
           if (isTransfer)
             _section(
               key: _kToFund,
-              label: '转入哪个基金',
+              label: '转入哪个板块',
               value: _fundValue(ledger, toFundId),
               flush: true,
               child: FundPicker(
@@ -689,8 +689,9 @@ class _Header extends StatelessWidget {
             controller: amount,
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
             style: theme.textTheme.headlineMedium,
-            decoration: const InputDecoration(
-              prefixText: '¥ ',
+            decoration: InputDecoration(
+              // 这笔记的是什么币就写什么符号（美元户的流水是 $）。
+              prefixText: '${Money.symbolFor(tx.currency).trim()} ',
               filled: false,
               contentPadding: EdgeInsets.zero,
               border: InputBorder.none,

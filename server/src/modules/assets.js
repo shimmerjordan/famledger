@@ -9,7 +9,7 @@
 // origin.unverified 里拿掉（「AI 推断」小点跟着消失）。
 
 const { HttpError, sendJson } = require('../lib/router');
-const { makeCrud } = require('../lib/crud');
+const { makeCrud, currencyColumns, requireSameCurrency } = require('../lib/crud');
 const idem = require('../lib/idempotency');
 const v = require('../lib/validate');
 const valuation = require('../lib/valuation');
@@ -63,6 +63,7 @@ module.exports = (ctx) => {
     const out = {};
     for (const k of RECORD_KEYS) if (raw[k] !== undefined) out[k] = raw[k];
     if (out.memberId === undefined && asset.member_id && memberAlive(asset.member_id)) out.memberId = asset.member_id;
+    if (typeof out.accountId === 'string') requireSameCurrency(db, out.accountId, asset.currency, 'accountId', '这件物品');
     return out;
   }
 
@@ -152,6 +153,7 @@ module.exports = (ctx) => {
         const pruned = perks.pruneUnverified(body, row);
         if (pruned) out.origin = pruned;
       }
+      Object.assign(out, currencyColumns(db, body, isPatch));
       return out;
     },
 

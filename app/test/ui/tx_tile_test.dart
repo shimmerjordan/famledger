@@ -20,9 +20,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 
 Widget wrap(Widget child, {Brightness brightness = Brightness.light}) =>
-    MaterialApp(
-      theme: buildTheme(brightness),
-      home: Scaffold(body: child),
+    ProviderScope(
+      child: MaterialApp(
+        theme: buildTheme(brightness),
+        home: Scaffold(body: child),
+      ),
     );
 
 final LedgerData ledger = const LedgerData(

@@ -114,7 +114,7 @@ const FORMATS = [
     label: '通用模板',
     keys: ['日期', '金额'],
     cols: {
-      date: ['日期'], dir: ['收支'], amount: ['金额'], category: ['类别'], fund: ['基金'], account: ['账户'], note: ['备注'],
+      date: ['日期'], dir: ['收支'], amount: ['金额'], category: ['类别'], fund: ['板块', '基金', '模块'], account: ['账户'], note: ['备注'],
     },
   },
 ];
@@ -122,7 +122,7 @@ const FORMATS = [
 // BOM 让 Excel 按 UTF-8 打开；CRLF 是 Excel 自己写 CSV 的换行。
 const TEMPLATE_CSV =
   '﻿' +
-  ['日期,收支,金额,类别,基金,账户,备注', '2026-09-12 12:30,支出,35.00,餐饮,,现金,午饭', '2026-09-10,收入,8000,工资,,,九月工资', ''].join('\r\n');
+  ['日期,收支,金额,类别,板块,账户,备注', '2026-09-12 12:30,支出,35.00,餐饮,,现金,午饭', '2026-09-10,收入,8000,工资,,,九月工资', ''].join('\r\n');
 
 const WHEN_RE = /^(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?(?:[ T]+(\d{1,2}):(\d{1,2})(?::(\d{1,2})(?:\.\d+)?)?)?$/;
 
@@ -297,7 +297,7 @@ module.exports = (ctx) => {
     const categoryName = cell(row, col.category);
     // 「其他」支出、收入各有一个：按这一行的收支挑同类的那个。
     const categoryId = pick(categoryName, '类别', refs.categories, (c) => c.kind === type);
-    const fundId = pick(cell(row, col.fund), '基金', refs.funds);
+    const fundId = pick(cell(row, col.fund), '板块', refs.funds);
     const accountId = pick(cell(row, col.account), '账户', refs.accounts);
     return {
       order: '',

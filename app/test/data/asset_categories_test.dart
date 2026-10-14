@@ -61,6 +61,7 @@ void main() {
         'manualValueCents': 450000,
         'manualValueOn': '2026-09-10',
         'netWorth': 'exclude',
+        'currency': 'CNY',
       };
       expect(Asset.fromJson(json).toJson(), json);
     });

@@ -148,4 +148,4 @@ async function fetchQuotes(items, opts = {}) {
   return out;
 }
 
-module.exports = { fetchQuotes, parseTencent, toE4, quoteKey, QuoteError };
+module.exports = { fetchQuotes, parseTencent, toE4, quoteKey, QuoteError, fetchText };
