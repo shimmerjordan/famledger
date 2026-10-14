@@ -15,6 +15,9 @@
 //   6. 新建可以带 settledCents（已经收回 / 还掉的部分，0..总数）：同一个事务里收回一次，省得建完再去详情里点「收回」。
 //      钱怎么走跟着「同时记账」：记了借出那笔，收回的也经同一个账户记（不然那个账户多出一截、净资产凭空变了）；
 //      没记就只改期初、memo_log 留一行「之前已收回 / 之前已还」。日子记在起始日（哪天收回的不知道，排在起始后面）。
+//   7. 手动微调：总额（amountCents）随时能改；还剩多少（remainingCents）= 校准，差额进内部账户期初、留一行「校准」备忘；
+//      方向、币种在内部账户还没有流水时能改（有流水就是两种钱/两个方向混着算，409）。备忘行能改金额、日期、说明，
+//      也能删：改 / 删会把它当初对期初的影响一起改回来（起始、追加那几行连总额一起改）。
 
 const crypto = require('node:crypto');
 
@@ -147,6 +150,23 @@ module.exports = (ctx) => {
 
   /** 每次新建都是同一个请求体对象，onWrite 靠它拿到 fromBody 里校验过的东西。 */
   const pendingCreate = new WeakMap();
+  /** PATCH 里要在 onWrite 做的：校准还剩多少、翻转方向。键同样是请求体对象。 */
+  const pendingPatch = new WeakMap();
+
+  const parseLog = (raw) => {
+    try {
+      const log = JSON.parse(raw || '[]');
+      return Array.isArray(log) ? log : [];
+    } catch (_) {
+      return [];
+    }
+  };
+
+  /** 内部账户上有没有流水（不管状态）：有就不能改方向、币种。 */
+  const hasFlows = (accountId) => !!(accountId && db.get(
+    'SELECT 1 AS ok FROM transactions WHERE deleted_at IS NULL AND (account_id = ? OR to_account_id = ?) LIMIT 1',
+    accountId, accountId,
+  ));
 
   const crud = makeCrud({
     db,
@@ -168,9 +188,24 @@ module.exports = (ctx) => {
       const out = {};
       const given = (name) => body[name] !== undefined;
       if (isPatch) {
-        if (given('direction')) v.bad('direction', '方向不能改，删了重记');
-        if (given('amountCents')) v.bad('amountCents', '金额经「收回 / 追加」改');
-        if (!v.isMissing(body.settledCents)) v.bad('settledCents', '收回的钱经「收回」记');
+        if (!v.isMissing(body.settledCents)) v.bad('settledCents', '收回的钱经「收回」记；改还剩多少用 remainingCents');
+        if (given('amountCents')) out.amount_cents = v.int(body.amountCents, 'amountCents', { min: 1, max: MAX_AMOUNT });
+        const plan = {};
+        if (given('direction')) {
+          const direction = v.enumOf(body.direction, 'direction', DIRECTIONS);
+          if (direction !== row.direction) {
+            if (hasFlows(row.account_id)) {
+              throw new HttpError(409, 'debt_has_flows', '这笔债务已经有往来流水了，不能改方向；先把流水删了，或者删了重记');
+            }
+            out.direction = direction;
+            plan.flip = true;
+          }
+        }
+        if (!v.isMissing(body.remainingCents)) {
+          plan.remaining = v.int(body.remainingCents, 'remainingCents', { min: -MAX_AMOUNT, max: MAX_AMOUNT });
+          plan.on = v.isMissing(body.remainingOn) ? today() : day(body.remainingOn, 'remainingOn');
+        }
+        if (plan.flip || plan.remaining !== undefined) pendingPatch.set(body, plan);
       } else {
         out.direction = v.enumOf(body.direction, 'direction', DIRECTIONS);
         out.amount_cents = v.int(body.amountCents, 'amountCents', { min: 1, max: MAX_AMOUNT });
@@ -186,9 +221,11 @@ module.exports = (ctx) => {
         // 人情是情分不是钱：默认不进净资产。
         out.counted = body.kind === 'favor' ? 0 : 1;
       }
-      // 币种只在新建时定：内部账户上的往来都是这个币种，改了就是两种钱混着加。
-      if (isPatch && !v.isMissing(body.currency)) v.bad('currency', '债务的币种建好后不能改，删了重记');
+      // 币种：内部账户上的往来都是这个币种，有了流水再改就是两种钱混着加；只记了数（备忘）的随便改。
       Object.assign(out, currencyColumns(db, body, isPatch));
+      if (isPatch && out.currency && out.currency !== row.currency && hasFlows(row.account_id)) {
+        throw new HttpError(409, 'currency_locked', '这笔债务已经有往来流水了，不能改币种；删了重记');
+      }
       if (!isPatch) {
         const rt = recordSpec(body.recordTransaction);
         const settled = v.isMissing(body.settledCents)
@@ -202,15 +239,45 @@ module.exports = (ctx) => {
 
     onWrite(row, { isPatch, body, reqCtx }) {
       if (isPatch) {
-        // 名字、归属、归档跟着债务走：流水里「借给 张三」要跟着改名。
+        // 名字、归属、归档、币种跟着债务走：流水里「借给 张三」要跟着改名。
         const account = row.account_id && db.get('SELECT * FROM accounts WHERE id = ?', row.account_id);
-        if (!account) return;
+        if (!account) {
+          if (pendingPatch.has(body)) throw new HttpError(409, 'debt_account_missing', '这笔债务的内部账户不见了，删了重记吧');
+          return;
+        }
         const name = accountName(row.direction, row.kind, row.counterparty);
-        if (account.name !== name || account.owner_member_id !== row.member_id || account.archived !== row.archived) {
+        if (account.name !== name || account.owner_member_id !== row.member_id || account.archived !== row.archived
+          || account.currency !== row.currency) {
           db.run(
-            'UPDATE accounts SET name = ?, owner_member_id = ?, archived = ?, updated_at = ?, seq = ? WHERE id = ?',
-            name, row.member_id, row.archived, db.now(), db.nextSeq(), account.id,
+            'UPDATE accounts SET name = ?, owner_member_id = ?, archived = ?, currency = ?, updated_at = ?, seq = ? WHERE id = ?',
+            name, row.member_id, row.archived, row.currency, db.now(), db.nextSeq(), account.id,
           );
+        }
+        const plan = pendingPatch.get(body);
+        if (!plan) return;
+        // 翻方向（只有备忘、没有流水时才走到这）：余额正负对调，备忘里的影响也跟着对调。
+        if (plan.flip) {
+          const log = parseLog(row.memo_log).map((m) => ({ ...m, amountCents: -(Number(m.amountCents) || 0) }));
+          db.run(
+            'UPDATE accounts SET initial_balance_cents = -initial_balance_cents, updated_at = ?, seq = ? WHERE id = ?',
+            db.now(), db.nextSeq(), account.id,
+          );
+          db.run('UPDATE debts SET memo_log = ? WHERE id = ?', JSON.stringify(log), row.id);
+        }
+        // 校准还剩多少：差额进期初，留一行「校准」。
+        if (plan.remaining !== undefined) {
+          const fresh = db.get('SELECT * FROM accounts WHERE id = ?', account.id);
+          const sign = row.direction === 'lend' ? 1 : -1;
+          const delta = sign * plan.remaining - balanceOf(fresh);
+          if (delta !== 0) {
+            db.run(
+              'UPDATE accounts SET initial_balance_cents = initial_balance_cents + ?, updated_at = ?, seq = ? WHERE id = ?',
+              delta, db.now(), db.nextSeq(), account.id,
+            );
+            const memo = { on: plan.on, amountCents: delta, note: '校准', recorded: false, action: 'calibrate' };
+            db.run('UPDATE debts SET memo_log = ? WHERE id = ?', appendMemo(row.id, memo), row.id);
+            logActivity(db, { memberId: reqCtx.member.id, action: 'calibrate', entity: 'debt', entityId: row.id });
+          }
         }
         return;
       }
@@ -328,8 +395,69 @@ module.exports = (ctx) => {
     sendJson(res, 200, out);
   }
 
+  /**
+   * 改 / 删一行备忘（`/debts/:id/memo/:index`，index 是 memo_log 里的下标，老的在前）。这行当初改过内部账户期初
+   * （amountCents 带正负号，就是它对余额的影响），改金额就按差额改回期初、删就整个减掉；起始和追加那几行当初还加过
+   * 总额，总额跟着改。人情记过流水的那几行（recorded）只改数，流水另外改。
+   */
+  function memoEdit(remove) {
+    return (req, res, reqCtx) => {
+      const b = remove ? {} : v.body(reqCtx.body);
+      const out = db.tx(() => {
+        const d = crud.mustExist(reqCtx.params.id);
+        const log = parseLog(d.memo_log);
+        const i = Number(reqCtx.params.index);
+        if (!Number.isInteger(i) || i < 0 || i >= log.length) throw new HttpError(404, 'not_found', '这行备忘不存在了，刷新一下');
+        const old = log[i];
+        const oldSigned = Number(old.amountCents) || 0;
+        let newSigned = 0;
+        if (!remove) {
+          const next = { ...old };
+          if (b.amountCents !== undefined) {
+            const abs = v.int(b.amountCents, 'amountCents', { min: 0, max: MAX_AMOUNT });
+            newSigned = (oldSigned < 0 ? -1 : 1) * abs;
+            next.amountCents = newSigned;
+          } else {
+            newSigned = oldSigned;
+          }
+          if (b.on !== undefined) next.on = day(b.on, 'on');
+          if (b.note !== undefined) next.note = v.optStr(b.note, 'note', { max: 200 }) || '';
+          log[i] = next;
+        } else {
+          log.splice(i, 1);
+        }
+        const delta = newSigned - oldSigned;
+        const sets = ['memo_log = ?', 'updated_at = ?', 'seq = ?'];
+        const args = [JSON.stringify(log), db.now(), db.nextSeq()];
+        // 起始（没有 action）和追加（add）当初把总额也抬高了。
+        if (delta !== 0 && (!old.action || old.action === 'add')) {
+          const total = Number(d.amount_cents) + Math.abs(newSigned) - Math.abs(oldSigned);
+          if (total < 1) v.bad('amountCents', '这样总额就没了；整笔不要了就删掉这笔债务');
+          sets.push('amount_cents = ?');
+          args.push(total);
+        }
+        if (delta !== 0) {
+          const account = d.account_id && db.get('SELECT id FROM accounts WHERE id = ? AND deleted_at IS NULL', d.account_id);
+          if (!account) throw new HttpError(409, 'debt_account_missing', '这笔债务的内部账户不见了，删了重记吧');
+          db.run(
+            'UPDATE accounts SET initial_balance_cents = initial_balance_cents + ?, updated_at = ?, seq = ? WHERE id = ?',
+            delta, db.now(), db.nextSeq(), account.id,
+          );
+        }
+        db.run(`UPDATE debts SET ${sets.join(', ')} WHERE id = ?`, ...args, d.id);
+        return { debt: crud.toJson(db.get('SELECT * FROM debts WHERE id = ?', d.id)) };
+      });
+      sendJson(res, 200, out);
+    };
+  }
+
   return {
     name: 'debts',
-    routes: [...crud.routes, { method: 'POST', pattern: '/debts/:id/settle', handler: settle }],
+    routes: [
+      ...crud.routes,
+      { method: 'POST', pattern: '/debts/:id/settle', handler: settle },
+      { method: 'PATCH', pattern: '/debts/:id/memo/:index', handler: memoEdit(false) },
+      { method: 'DELETE', pattern: '/debts/:id/memo/:index', handler: memoEdit(true), maxBody: 0 },
+    ],
   };
 };

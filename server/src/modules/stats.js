@@ -84,7 +84,7 @@ function baseCurrency(db) {
  * @returns {{(amount:number, currency?:string): number, base:string, rates:object, asOf:string|null, missing:Set<string>}}
  */
 function makeConverter(db, base) {
-  const { rates, asOf } = fxlib.ratesForBase(db, base);
+  const { rates, asOf, manual } = fxlib.ratesForBase(db, base);
   const missing = new Set();
   const conv = (amount, currency) => {
     const c = String(currency || base || 'CNY').toUpperCase();
@@ -99,6 +99,7 @@ function makeConverter(db, base) {
   conv.base = base;
   conv.rates = rates;
   conv.asOf = asOf;
+  conv.manual = manual;
   conv.missing = missing;
   return conv;
 }
@@ -394,7 +395,7 @@ function computeOverview(db, month = currentMonth()) {
     funds,
     accounts,
     // 内嵌汇率：客户端拿它做与服务端一致的折算，杜绝两边数字对不上；missing 是抓不到汇率的币种。
-    fx: { base, asOf: conv.asOf, rates: conv.rates, missing: [...conv.missing] },
+    fx: { base, asOf: conv.asOf, rates: conv.rates, missing: [...conv.missing], manual: conv.manual },
   };
 }
 

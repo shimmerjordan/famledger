@@ -2,8 +2,8 @@
 
 // 投资持仓。三件事在这里定死：
 //
-//   1. 份额与成本只能经开仓/加仓/减仓改（移动平均成本），PATCH 碰它们就 400 ——
-//      手改成本会让已实现盈亏凭空多出或少掉一截，而且再也查不出是哪一笔。
+//   1. 份额与成本平时经开仓/加仓/减仓改（移动平均成本）；记错了也能 PATCH 直接改份额、成本、
+//      已实现盈亏（手动校准）——只改持仓上的数，不补记、不回写任何流水：挂着投资账户的，账户余额要另外校准。
 //   2. 「同时记账」一律记成账户间转账：买基金是换个地方存钱，记成支出会把月支出撑爆；
 //      只有卖出时的盈亏才是真正的收入/支出，单记一笔并落到「投资收益/投资亏损」。
 //   3. 行情刷新全局节流：行情是非官方接口，打得太勤会被封 IP，家里谁点都算一次。
@@ -11,7 +11,7 @@
 //      stats.js 的净资产只给它补浮盈，靠的就是这一条。所以有成本的持仓：开仓时挂账户必须同时
 //      记转账；事后挂上要说清成本从哪个账户转进来；换账户自动补一笔移仓转账；不许直接解绑。
 //   5. 开仓、加减仓收 clientId 做幂等（lib/idempotency.js）：回应丢了 App 重发，份额、
-//      移动平均成本和已实现盈亏不能被改第二遍 —— 它们只能经交易改，改错了没法手工改回来。
+//      移动平均成本和已实现盈亏不能被改第二遍。
 //   6. 品类（lib/invest.js）决定怎么记：基金/股票/黄金按「份额 × 价格」；定期、结构性存款、国债、
 //      逆回购按「本金 + 年化 + 到期日」按天计息；活期、银行理财、保险存单、其他按「手动更新的当前金额」。
 //      非份额类的 quantity_e4 恒为 1 份（持有中），清仓置 0；它们没有行情、没有单价。
@@ -166,17 +166,25 @@ module.exports = (ctx) => {
       out.kind = kind;
       const mode = invest.modeOf(kind);
 
-      // 已领的分红 / 利息（记账前就到手的）：只在新建时收，之后经「分红」「付息」记。定期类的估值要扣掉它
-      // （lib/invest.js），份额类只进已实现盈亏；按金额记的（活期、保险）当前金额就是全部，不收。不记流水。
+      // 已领的分红 / 利息（记账前就到手的）：新建时可带，之后经「分红」「付息」记。定期类的估值要扣掉它
+      // （lib/invest.js），份额类只进已实现盈亏；按金额记的（活期、保险）当前金额就是全部，新建时不收。不记流水。
+      // 改的时候（手动校准）什么品类都能改，亏了可以是负数。
       if (!v.isMissing(body.realizedCents)) {
-        if (isPatch) v.bad('realizedCents', '已实现盈亏经加仓/减仓/分红记');
-        if (mode === 'balance') v.bad('realizedCents', '活期、银行理财、保险这类填当前金额就好，不用填已领收益');
-        out.realized_cents = v.int(body.realizedCents, 'realizedCents', { min: 0, max: MAX_AMOUNT });
+        if (isPatch) {
+          out.realized_cents = v.int(body.realizedCents, 'realizedCents', { min: -MAX_AMOUNT, max: MAX_AMOUNT });
+        } else {
+          if (mode === 'balance') v.bad('realizedCents', '活期、银行理财、保险这类填当前金额就好，不用填已领收益');
+          out.realized_cents = v.int(body.realizedCents, 'realizedCents', { min: 0, max: MAX_AMOUNT });
+        }
       }
       if (isPatch) {
-        for (const f of ['quantityE4', 'costCents']) {
-          if (given(f)) v.bad(f, `${f} 只能通过加仓/减仓修改`);
+        // 手动校准份额 / 成本：份额类就是份额；其余品类的份额只是「持有中 / 已结清」的标记。
+        if (given('quantityE4')) {
+          const q = v.int(body.quantityE4, 'quantityE4', { min: 0, max: MAX_QTY_E4 });
+          if (mode !== 'unit' && q !== 0 && q !== invest.HELD_E4) v.bad('quantityE4', '这类理财只有「持有中」和「已结清」');
+          out.quantity_e4 = q;
         }
+        if (given('costCents')) out.cost_cents = v.int(body.costCents, 'costCents', { min: 0, max: MAX_AMOUNT });
       } else if (mode === 'unit') {
         out.quantity_e4 = v.int(body.quantityE4, 'quantityE4', { min: 1, max: MAX_QTY_E4 });
         out.cost_cents = v.int(body.costCents, 'costCents', { min: 0, max: MAX_AMOUNT });
@@ -197,10 +205,20 @@ module.exports = (ctx) => {
       if (!isPatch || given('maturesOn')) {
         out.matures_on = mode === 'unit' || v.isMissing(body.maturesOn) ? null : day(body.maturesOn, 'maturesOn');
       }
+      // 当前金额是哪天的：默认今天，补记以前的也行（不能是将来）。
+      const valueDay = () => {
+        if (v.isMissing(body.valueOn)) return today();
+        const d = day(body.valueOn, 'valueOn');
+        if (d > today()) v.bad('valueOn', '日期不能晚于今天');
+        return d;
+      };
       if (given('valueCents')) {
         if (mode !== 'balance') v.bad('valueCents', '只有活期、银行理财、保险这类按金额记的能直接改当前金额');
         out.value_cents = v.optInt(body.valueCents, 'valueCents', { min: 0, max: MAX_AMOUNT });
-        out.value_on = out.value_cents === null ? null : today();
+        out.value_on = out.value_cents === null ? null : valueDay();
+      } else if (isPatch && !v.isMissing(body.valueOn)) {
+        if (mode !== 'balance' || row.value_cents === null) v.bad('valueOn', '只有更新过当前金额的才有金额日期');
+        out.value_on = valueDay();
       } else if (!isPatch) {
         out.value_cents = null;
         out.value_on = null;

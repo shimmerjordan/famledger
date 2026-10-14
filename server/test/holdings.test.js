@@ -164,7 +164,7 @@ test('quotes：基金与股票分两批问，每批最多 60 个符号', async (
   assert.deepEqual(got.get('sz:000001'), { error: '行情里没有这个代码' });
 });
 
-test('CRUD：校验、份额成本只能经交易改、同步与软删', async (t) => {
+test('CRUD：校验、份额成本能手动校准（不记流水）、同步与软删', async (t) => {
   const h = await investHousehold(t);
   const { a, auth, bank, invest } = h;
 
@@ -201,8 +201,11 @@ test('CRUD：校验、份额成本只能经交易改、同步与软删', async (
   assert.equal(hd.openedOn, '2026-09-01');
   assert.deepEqual(await h.txs(), [], '没要求记账就不记');
 
-  fail(await a.patch(`/holdings/${hd.id}`, { quantityE4: 1 }, auth), 400, 'invalid_quantityE4', 'PATCH 份额');
-  fail(await a.patch(`/holdings/${hd.id}`, { costCents: 1 }, auth), 400, 'invalid_costCents', 'PATCH 成本');
+  const fixedUp = ok(await a.patch(`/holdings/${hd.id}`, { quantityE4: hd.quantityE4 + 1, costCents: hd.costCents + 1 }, auth), 'PATCH 校准份额成本').holding;
+  assert.equal(fixedUp.quantityE4, hd.quantityE4 + 1);
+  assert.equal(fixedUp.costCents, hd.costCents + 1);
+  fail(await a.patch(`/holdings/${hd.id}`, { costCents: -1 }, auth), 400, 'invalid_costCents', 'PATCH 成本为负');
+  ok(await a.patch(`/holdings/${hd.id}`, { quantityE4: hd.quantityE4, costCents: hd.costCents }, auth), '改回去');
   fail(await a.patch(`/holdings/${hd.id}`, { market: 'other' }, auth), 400, 'invalid_priceSource', '自动行情改成 other 市场');
 
   const priced = ok(await a.patch(`/holdings/${hd.id}`, { priceE4: 10500, note: '定投' }, auth), 'PATCH 手动价').holding;

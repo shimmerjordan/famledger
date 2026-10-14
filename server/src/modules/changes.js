@@ -21,7 +21,7 @@ const MAX_LIMIT = 2000;
 const SYNCED = [
   ['members', { omit: ['password_hash'], bools: ['archived'] }],
   ['accounts', { bools: ['archived'], json: ['match_hints'] }],
-  ['funds', { bools: ['archived', 'is_default'] }],
+  ['funds', { bools: ['archived', 'is_default'], json: ['opening_balances'] }],
   ['categories', { bools: ['archived'] }],
   ['transactions', { json: ['tags'] }],
   ['budgets', {}],

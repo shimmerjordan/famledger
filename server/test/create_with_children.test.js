@@ -269,7 +269,7 @@ test('债务带「之前已收回 / 已还」：没记账就改期初留备忘�
   ok(await h.a.patch(`/debts/${lend.id}`, { settledCents: null, note: '备注' }, h.auth), 'PATCH settledCents: null 当没给');
 });
 
-test('理财带已领的分红 / 利息：定期估值扣掉、份额类进已实现盈亏；按金额记的不收；PATCH 不收', async (t) => {
+test('理财带已领的分红 / 利息：定期估值扣掉、份额类进已实现盈亏；按金额记的新建不收；PATCH 能校准（亏了可以是负数）', async (t) => {
   const h = await setup(t);
   const hold = (body) => h.a.post('/holdings', body, h.auth);
 
@@ -291,6 +291,6 @@ test('理财带已领的分红 / 利息：定期估值扣掉、份额类进已�
 
   fail(await hold({ kind: 'demand', name: '余额宝', costCents: 1000, realizedCents: 1 }), 400, 'invalid_realizedCents', '活期不收');
   fail(await hold({ kind: 'fund', name: '负数', quantityE4: 1, costCents: 1, realizedCents: -1 }), 400, 'invalid_realizedCents', '负数');
-  fail(await h.a.patch(`/holdings/${fund.id}`, { realizedCents: 1 }, h.auth), 400, 'invalid_realizedCents', 'PATCH 不收');
+  assert.equal(ok(await h.a.patch(`/holdings/${fund.id}`, { realizedCents: -3000 }, h.auth), 'PATCH 校准成亏损').holding.realizedCents, -3000);
   assert.deepEqual(await h.txs(), [], '都不记流水');
 });

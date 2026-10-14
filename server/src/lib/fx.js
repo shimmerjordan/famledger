@@ -155,18 +155,20 @@ function rateTo(db, base, currency) {
 }
 
 /**
- * 某个 base 的全部汇率 → `{base, asOf, rates:{USD: rateE6, …}}`。asOf 取这批里最新的 updated_at。
+ * 某个 base 的全部汇率 → `{base, asOf, rates:{USD: rateE6, …}, manual:[手填的币种]}`。asOf 取这批里最新的 updated_at。
  */
 function ratesForBase(db, base) {
   const b = String(base || '').toUpperCase();
-  const rows = db.all('SELECT currency, rate_e6, updated_at FROM fx_rates WHERE base = ?', b);
+  const rows = db.all('SELECT currency, rate_e6, updated_at, manual FROM fx_rates WHERE base = ?', b);
   const rates = {};
+  const manual = [];
   let asOf = null;
   for (const r of rows) {
     rates[r.currency] = Number(r.rate_e6);
+    if (r.manual) manual.push(r.currency);
     if (!asOf || r.updated_at > asOf) asOf = r.updated_at;
   }
-  return { base: b, asOf, rates };
+  return { base: b, asOf, rates, manual: manual.sort() };
 }
 
 /**

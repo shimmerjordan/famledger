@@ -113,10 +113,28 @@ function deltaMap(db, side, onlyId = null) {
   return new Map(rows.map((r) => [r.ref, cents(r.delta)]));
 }
 
+/** 板块的期初余额（`funds.opening_balances`，按币种的 JSON）→ `Map<currency, cents>`；坏数据当空。 */
+function parseOpenings(raw) {
+  const out = new Map();
+  let obj = null;
+  try {
+    obj = JSON.parse(raw || '{}');
+  } catch {
+    obj = null;
+  }
+  if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+    for (const [cur, c] of Object.entries(obj)) {
+      const n = Math.trunc(Number(c));
+      if (/^[A-Z]{3}$/.test(cur) && Number.isFinite(n) && n !== 0) out.set(cur, n);
+    }
+  }
+  return out;
+}
+
 /**
- * 各板块按币种分开的余额：`Map<fundId, Map<currency, cents>>`。板块没有币种 —— 美元户的支出挂在
- * 「家庭公共」上，就是家庭公共的美元余额少了，不能和人民币的分直接加。跨币种转账的转入一侧按
- * 到账币种 / 到账金额记（to_currency / to_amount_cents），同币种转账这两列为空。
+ * 各板块按币种分开的余额：`Map<fundId, Map<currency, cents>>` = 期初（`opening_balances`，「校准余额」改的就是它）
+ * + 已确认流水。板块没有币种 —— 美元户的支出挂在「家庭公共」上，就是家庭公共的美元余额少了，不能和人民币的分
+ * 直接加。跨币种转账的转入一侧按到账币种 / 到账金额记（to_currency / to_amount_cents），同币种转账这两列为空。
  */
 function fundBalancesByCurrency(db, onlyId = null) {
   const only = onlyId ? '= ?' : 'IS NOT NULL';
@@ -133,11 +151,21 @@ function fundBalancesByCurrency(db, onlyId = null) {
      ) AS both GROUP BY ref, cur`,
     ...args,
   );
+  const sums = new Map();
+  const add = (ref, cur, v) => {
+    if (!sums.has(ref)) sums.set(ref, new Map());
+    const m = sums.get(ref);
+    m.set(cur, (m.get(cur) || 0) + v);
+  };
+  for (const r of rows) add(r.ref, r.cur || 'CNY', cents(r.delta));
+  const funds = onlyId
+    ? db.all("SELECT id, opening_balances FROM funds WHERE id = ? AND opening_balances != '{}'", onlyId)
+    : db.all("SELECT id, opening_balances FROM funds WHERE deleted_at IS NULL AND opening_balances != '{}'");
+  for (const f of funds) for (const [cur, v] of parseOpenings(f.opening_balances)) add(f.id, cur, v);
   const out = new Map();
-  for (const r of rows) {
-    if (!out.has(r.ref)) out.set(r.ref, new Map());
-    const v = cents(r.delta);
-    if (v !== 0) out.get(r.ref).set(r.cur || 'CNY', v);
+  for (const [ref, m] of sums) {
+    const nonZero = new Map([...m].filter(([, v]) => v !== 0));
+    out.set(ref, nonZero);
   }
   return out;
 }
@@ -308,7 +336,7 @@ function investPositions(db, today) {
 
 module.exports = {
   CONFIRMED, MONTH_OF, DATE_OF, EXPENSE_SUM, INCOME_SUM,
-  nextMonth, monthRange, filterClause, deltaMap, fundBalancesByCurrency, monthSums, monthSumsByCurrency, totalsByColumn,
+  nextMonth, monthRange, filterClause, deltaMap, fundBalancesByCurrency, parseOpenings, monthSums, monthSumsByCurrency, totalsByColumn,
   expenseByColumn, monthlyTotals, dailyTotals,
   marketCents, investPositions,
 };

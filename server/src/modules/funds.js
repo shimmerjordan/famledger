@@ -3,13 +3,31 @@
 // 板块（App 里「我的 › 财富」，代码里仍叫 fund）= 这笔钱「属于哪件事」（家庭公共、个人零花、育儿…）。
 // 账户回答钱在哪，板块回答钱归谁管 —— 一笔支出同时从某个账户和某个板块里扣。
 // 板块可以挂「每月固定进账」规则：每月某天往某个账户记一笔真的收入（工资），生成见 fund_income.js。
+// 余额 = 期初（按币种，opening_balances）+ 流水。「校准余额」= PATCH currentBalances（现在实际有多少），
+// 差额进期初：不多记流水，不进月收支。
 
 const { HttpError, sendJson } = require('../lib/router');
 const { makeCrud } = require('../lib/crud');
+const { rowToJson } = require('../lib/db');
+const sql = require('../lib/stats_sql');
 const v = require('../lib/validate');
 const { FUND_TEMPLATES, PALETTE } = require('./seed');
 
 const KINDS = ['personal', 'shared', 'goal', 'reserve', 'custom'];
+const MAX_AMOUNT = 1e14;
+
+/** `{"CNY": 1200, "USD": -50}` → `Map<币种, 分>`：键是 3 位币种代码，值是 ±1e14 以内的整数分。 */
+function balanceMap(raw, field) {
+  if (!v.isObject(raw)) v.bad(field, `${field} 要写成 {"CNY": 分, …}`);
+  const entries = Object.entries(raw);
+  if (entries.length > 30) v.bad(field, `${field} 币种太多了`);
+  const out = new Map();
+  for (const [k, n] of entries) out.set(v.currency(k, field), v.int(n, field, { min: -MAX_AMOUNT, max: MAX_AMOUNT }));
+  return out;
+}
+
+const openingsJson = (m) =>
+  JSON.stringify(Object.fromEntries([...m].filter(([, c]) => c !== 0).sort((a, b) => (a[0] < b[0] ? -1 : 1))));
 
 module.exports = (ctx) => {
   const { db } = ctx;
@@ -20,6 +38,7 @@ module.exports = (ctx) => {
     resource: 'funds',
     singular: 'fund',
     label: '板块',
+    toJson: (row) => rowToJson(row, { bools: ['archived', 'is_default'], json: ['opening_balances'] }),
     fields: {
       name: { type: 'string', required: true, max: 40 },
       kind: { type: 'enum', values: KINDS, default: 'custom' },
@@ -67,6 +86,22 @@ module.exports = (ctx) => {
           out.income_category_id = id;
         }
       }
+      // 期初余额：openingBalances 整份替换；currentBalances（「现在实际有多少」）只改给了的币种，
+      // 期初 = 目标 − 这个币种的流水合计。两个都给时先替换再校准。
+      if (given('openingBalances') || given('currentBalances')) {
+        const oldOpen = sql.parseOpenings(row?.opening_balances);
+        const open = given('openingBalances') ? balanceMap(body.openingBalances, 'openingBalances') : new Map(oldOpen);
+        if (given('currentBalances')) {
+          const now = row ? sql.fundBalancesByCurrency(db, row.id).get(row.id) || new Map() : new Map();
+          for (const [cur, target] of balanceMap(body.currentBalances, 'currentBalances')) {
+            const flows = (now.get(cur) || 0) - (oldOpen.get(cur) || 0);
+            if (Math.abs(target - flows) > MAX_AMOUNT) v.bad('currentBalances', '差得太多了');
+            open.set(cur, target - flows);
+          }
+        }
+        out.opening_balances = openingsJson(open);
+      }
+
       const amount = given('monthlyIncomeCents') ? Number(body.monthlyIncomeCents) || 0 : Number(row?.monthly_income_cents) || 0;
       if (amount > 0) {
         const account = 'income_account_id' in out ? out.income_account_id : row?.income_account_id;

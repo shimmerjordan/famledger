@@ -92,7 +92,7 @@ test('借出：内部账户 + 转账；收回一部分；收多了 400；净资�
 
   ok(await h.a.patch(`/debts/${d.id}`, { counterparty: '张三丰' }, h.auth), '改名');
   assert.equal((await h.accounts()).find((x) => x.id === d.accountId).name, '借给 张三丰', '内部账户跟着改名');
-  fail(await h.a.patch(`/debts/${d.id}`, { direction: 'borrow' }, h.auth), 400, 'invalid_direction', '方向不能改');
+  fail(await h.a.patch(`/debts/${d.id}`, { direction: 'borrow' }, h.auth), 409, 'debt_has_flows', '有往来流水时方向不能改');
 });
 
 test('借入不记流水：负余额进负债；还清后删得掉、内部账户一起删；同步带 debts', async (t) => {

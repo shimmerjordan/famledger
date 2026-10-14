@@ -5,6 +5,8 @@
 //
 //   GET  /fx/rates?base=CNY   → {base, asOf, rates:{USD: rateE6, …}}   （member；base 省略即家庭基准币）
 //   POST /fx/refresh          → {base, asOf, updated, failed, cached}   （admin；立即重抓，忽略 TTL）
+//   PUT  /fx/rates/:currency  {rateE6}  → 手填一个汇率（admin）：自动抓取不再覆盖它
+//   DELETE /fx/rates/:currency          → 恢复自动（admin）：删掉手填的，马上重抓
 //
 // 基准币来自家庭设置（meta.currency，默认 CNY）。要抓的币种 = 各实体上出现过的 currency
 // ∪ 显示币种，去掉基准币；只对这些抓，别把腾讯没有的冷门对也问一遍。
@@ -88,7 +90,8 @@ module.exports = (ctx) => {
         }
         db.run(
           'INSERT INTO fx_rates(base, currency, rate_e6, updated_at) VALUES(?, ?, ?, ?)' +
-            ' ON CONFLICT(base, currency) DO UPDATE SET rate_e6 = excluded.rate_e6, updated_at = excluded.updated_at',
+            ' ON CONFLICT(base, currency) DO UPDATE SET rate_e6 = excluded.rate_e6, updated_at = excluded.updated_at' +
+            ' WHERE fx_rates.manual = 0',
           base, currency, r.rateE6, now,
         );
         updated++;
@@ -102,7 +105,33 @@ module.exports = (ctx) => {
   function getRates(req, res, c) {
     const base = c.query.base === undefined || c.query.base === '' ? baseCurrency() : v.currency(c.query.base, 'base');
     const out = fx.ratesForBase(db, base);
-    sendJson(res, 200, { base: out.base, asOf: out.asOf || db.meta(LAST_KEY, null), rates: out.rates });
+    sendJson(res, 200, { base: out.base, asOf: out.asOf || db.meta(LAST_KEY, null), rates: out.rates, manual: out.manual });
+  }
+
+  /** 手填汇率：1 单位基准币 = rateE6/1e6 单位这个币。 */
+  function putRate(req, res, c) {
+    const base = baseCurrency();
+    const currency = v.currency(c.params.currency, 'currency');
+    if (currency === base) v.bad('currency', '基准币对自己就是 1');
+    const b = v.body(c.body);
+    const rateE6 = v.int(b.rateE6, 'rateE6', { min: 1, max: 1e15 });
+    db.run(
+      'INSERT INTO fx_rates(base, currency, rate_e6, updated_at, manual) VALUES(?, ?, ?, ?, 1)' +
+        ' ON CONFLICT(base, currency) DO UPDATE SET rate_e6 = excluded.rate_e6, updated_at = excluded.updated_at, manual = 1',
+      base, currency, rateE6, db.now(),
+    );
+    const out = fx.ratesForBase(db, base);
+    sendJson(res, 200, { base, asOf: out.asOf, rates: out.rates, manual: out.manual });
+  }
+
+  /** 恢复自动：删掉手填的那一行，马上重抓（抓不到就暂时缺汇率）。 */
+  async function deleteRate(req, res, c) {
+    const base = baseCurrency();
+    const currency = v.currency(c.params.currency, 'currency');
+    db.run('DELETE FROM fx_rates WHERE base = ? AND currency = ? AND manual = 1', base, currency);
+    await refresh({ force: true });
+    const out = fx.ratesForBase(db, base);
+    sendJson(res, 200, { base, asOf: out.asOf, rates: out.rates, manual: out.manual });
   }
 
   async function postRefresh(req, res) {
@@ -134,6 +163,8 @@ module.exports = (ctx) => {
     routes: [
       { method: 'GET', pattern: '/fx/rates', handler: getRates, maxBody: 0 },
       { method: 'POST', pattern: '/fx/refresh', handler: postRefresh, auth: 'admin', maxBody: 0 },
+      { method: 'PUT', pattern: '/fx/rates/:currency', handler: putRate, auth: 'admin' },
+      { method: 'DELETE', pattern: '/fx/rates/:currency', handler: deleteRate, auth: 'admin', maxBody: 0 },
     ],
     start() {
       const ms = Number(process.env.FX_TICK_MS) > 0 ? Number(process.env.FX_TICK_MS) : DEFAULT_TICK_MS;

@@ -76,7 +76,7 @@ test('板块余额按币种分开：美元支出挂在家庭公共上，就是�
   assert.deepEqual(detail.balances, { CNY: 50000, USD: -2000 });
 });
 
-test('币种锁：账户有流水就不能改币种；没流水可以；债务的币种只在新建时定', async (t) => {
+test('币种锁：账户有流水就不能改币种；没流水可以；债务同理（只记了数的能改，内部账户跟着改）', async (t) => {
   const h = await setup(t);
   ok(await h.tx({ type: 'expense', amountCents: 100, accountId: h.cny.id }), '记一笔');
   fail(await h.a.patch(`/accounts/${h.cny.id}`, { currency: 'USD' }, h.auth), 409, 'currency_locked', '有流水');
@@ -87,7 +87,12 @@ test('币种锁：账户有流水就不能改币种；没流水可以；债务�
   assert.equal(debt.currency, 'USD');
   const inner = (await h.overview()).accounts.find((x) => x.accountId === debt.accountId);
   assert.equal(inner.currency, 'USD', '内部账户跟着债务的币种');
-  fail(await h.a.patch(`/debts/${debt.id}`, { currency: 'CNY' }, h.auth), 400, 'invalid_currency', '改债务币种');
+  ok(await h.a.patch(`/debts/${debt.id}`, { currency: 'CNY' }, h.auth), '没流水的债务改币种');
+  assert.equal((await h.overview()).accounts.find((x) => x.accountId === debt.accountId).currency, 'CNY', '内部账户跟着改');
+  const lent = ok(await h.a.post('/debts', {
+    direction: 'lend', counterparty: '李四', amountCents: 5000, currency: 'USD', recordTransaction: { accountId: h.usd.id },
+  }, h.auth), '经美元户借出').debt;
+  fail(await h.a.patch(`/debts/${lent.id}`, { currency: 'CNY' }, h.auth), 409, 'currency_locked', '有往来流水不能改币种');
 });
 
 test('钱经过的真账户要同币种：美元债务不能从人民币卡走；持仓跟挂的账户；物品、会员费同理', async (t) => {

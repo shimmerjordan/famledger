@@ -147,6 +147,7 @@ function api(base) {
     get: (p, opts) => call('GET', p, opts),
     post: (p, body, opts) => call('POST', p, { ...opts, body }),
     patch: (p, body, opts) => call('PATCH', p, { ...opts, body }),
+    put: (p, body, opts) => call('PUT', p, { ...opts, body }),
     del: (p, opts) => call('DELETE', p, opts),
   };
 }
