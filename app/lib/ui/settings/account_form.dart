@@ -1,14 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../app/providers.dart';
 import '../../core/colors.dart';
+import '../../core/dates.dart';
 import '../../core/money.dart';
 import '../../data/models/models.dart';
+import '../transactions/tx_providers.dart';
 import '../widgets/widgets.dart';
 import 'manage_widgets.dart';
 
-/// 新建/编辑账户。
+/// 新建/编辑账户。编辑时能直接填「现在余额」校准（差额进初始余额，不多记流水）、看这个账户的流水、删掉没流水的账户。
 Future<void> showAccountForm(BuildContext context, {Account? account}) =>
     showManageSheet<void>(
       context,
@@ -56,6 +59,41 @@ class _AccountFormSheetState extends ConsumerState<AccountFormSheet> {
 
   bool get _isNew => widget.account == null;
 
+  /// 「现在余额」：编辑时才有（要总览里的余额）。和初始余额联动：差的那一截是这个账户的流水合计。
+  late final int? _now = _isNew
+      ? null
+      : ref.read(statsProvider(Dates.currentMonth())).valueOrNull?.accounts
+          .where((a) => a.accountId == widget.account!.id)
+          .firstOrNull
+          ?.balanceCents;
+  late final TextEditingController _current = TextEditingController(text: _now == null ? '' : Money.input(_now));
+
+  /// 最后改的是「现在余额」：保存时发 currentBalanceCents，让服务端按当下的流水算初始余额（别用这边可能过时的差额）。
+  bool _calibrating = false;
+  bool _syncing = false;
+
+  int get _flows => (_now ?? 0) - widget.account!.initialBalanceCents;
+
+  void _onCurrentChanged(String text) {
+    if (_syncing) return;
+    final cents = Money.tryParse(text);
+    _calibrating = true;
+    if (cents == null) return;
+    _syncing = true;
+    _balance.text = Money.input(cents - _flows);
+    _syncing = false;
+  }
+
+  void _onInitialChanged(String text) {
+    if (_syncing || _now == null) return;
+    final cents = Money.tryParse(text);
+    _calibrating = false;
+    if (cents == null) return;
+    _syncing = true;
+    _current.text = Money.input(cents + _flows);
+    _syncing = false;
+  }
+
   String _hintText(String key) {
     final raw = widget.account?.matchHints[key];
     if (raw is List) return raw.map((e) => '$e').join('，');
@@ -73,6 +111,7 @@ class _AccountFormSheetState extends ConsumerState<AccountFormSheet> {
   void dispose() {
     _name.dispose();
     _balance.dispose();
+    _current.dispose();
     _tails.dispose();
     _packages.dispose();
     _keywords.dispose();
@@ -91,6 +130,11 @@ class _AccountFormSheetState extends ConsumerState<AccountFormSheet> {
       setState(() => _error = '初始余额看不懂：$raw');
       return;
     }
+    final current = _calibrating ? Money.tryParse(_current.text) : null;
+    if (_calibrating && current == null) {
+      setState(() => _error = '现在余额看不懂：${_current.text}（欠着就写负数）');
+      return;
+    }
 
     final hints = <String, dynamic>{};
     final tails = _splitHints(_tails);
@@ -104,7 +148,7 @@ class _AccountFormSheetState extends ConsumerState<AccountFormSheet> {
       'name': name,
       'kind': _kind,
       'ownerMemberId': _owner,
-      'initialBalanceCents': cents,
+      if (current != null) 'currentBalanceCents': current else 'initialBalanceCents': cents,
       // 币种只在不是基准币（新建）或真改了（编辑）时才发：请求干净，也不会因为原样带回去碰到「有流水不能改」。
       if (_isNew ? _currency != ref.read(baseCurrencyProvider) : _currency != widget.account!.currency) 'currency': _currency,
       'icon': _icon,
@@ -133,6 +177,44 @@ class _AccountFormSheetState extends ConsumerState<AccountFormSheet> {
         });
       }
     }
+  }
+
+  /// 删账户：只有没流水的能删（服务端 409 account_in_use，原话照显示）；有流水的用「归档」。
+  Future<void> _delete() async {
+    final account = widget.account!;
+    final ok = await confirmDestructive(
+      context,
+      title: '删掉「${account.name}」？',
+      message: '只能删还没有流水的账户；有流水的请用「归档」，余额和流水都留着。',
+      confirmLabel: '删掉',
+    );
+    if (!ok || !mounted) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    final navigator = Navigator.of(context);
+    try {
+      await ref.read(ledgerRepoProvider).deleteAccount(account.id);
+      ref.invalidate(ledgerProvider);
+      navigator.pop();
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _error = describeError(e);
+        });
+      }
+    }
+  }
+
+  /// 去账单页只看这个账户（账单是底部 tab：先关弹层再切过去）。
+  void _showTransactions() {
+    final id = widget.account!.id;
+    final router = GoRouter.of(context);
+    ref.read(txFilterProvider.notifier).state = TxFilter(accountId: id, limit: TxListController.pageSize);
+    Navigator.of(context).pop();
+    router.go('/transactions');
   }
 
   /// 归档 = `PATCH {archived}`，不是 `DELETE`。
@@ -223,6 +305,21 @@ class _AccountFormSheetState extends ConsumerState<AccountFormSheet> {
           ],
           onChanged: (value) => setState(() => _owner = value),
         ),
+        if (_now != null)
+          ManageField(
+            label: '现在余额',
+            child: TextField(
+              key: const ValueKey('account-current-balance'),
+              controller: _current,
+              onChanged: _onCurrentChanged,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+              decoration: InputDecoration(
+                prefixText: '${Money.symbolFor(_currency).trim()} ',
+                helperText: '和实际对不上就直接改成实际的数：差额记进初始余额，不多记流水',
+                helperMaxLines: 2,
+              ),
+            ),
+          ),
         ManageField(
           label: '初始余额',
           child: Row(
@@ -230,7 +327,9 @@ class _AccountFormSheetState extends ConsumerState<AccountFormSheet> {
             children: [
               Expanded(
                 child: TextField(
+                  key: const ValueKey('account-initial-balance'),
                   controller: _balance,
+                  onChanged: _onInitialChanged,
                   keyboardType: const TextInputType.numberWithOptions(
                     decimal: true,
                     signed: true,
@@ -301,6 +400,24 @@ class _AccountFormSheetState extends ConsumerState<AccountFormSheet> {
             decoration: const InputDecoration(hintText: '工商银行，余额宝'),
           ),
         ),
+        if (!_isNew)
+          Wrap(
+            spacing: 8,
+            children: [
+              TextButton.icon(
+                key: const ValueKey('account-transactions'),
+                onPressed: _busy ? null : _showTransactions,
+                icon: const Icon(Icons.receipt_long_outlined, size: 18),
+                label: const Text('看这个账户的流水'),
+              ),
+              TextButton.icon(
+                key: const ValueKey('account-delete'),
+                onPressed: _busy ? null : _delete,
+                icon: Icon(Icons.delete_outline, size: 18, color: theme.colorScheme.error),
+                label: Text('删除账户', style: TextStyle(color: theme.colorScheme.error)),
+              ),
+            ],
+          ),
       ],
     );
   }

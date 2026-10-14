@@ -169,9 +169,18 @@ class HoldingsRepo {
     String? maturesOn,
     String? note,
     String? fromAccountId,
+    int? quantityE4,
+    int? costCents,
+    int? realizedCents,
+    int? valueCents,
   }) {
     final unit = kind == null || Holding.modeOf(kind) == InvestMode.unit;
     return _patch(id, {
+      // 手动校准：只发改了的（null = 不动）。服务端只改持仓上的数，不补记流水。
+      if (quantityE4 != null) 'quantityE4': quantityE4,
+      if (costCents != null) 'costCents': costCents,
+      if (realizedCents != null) 'realizedCents': realizedCents,
+      if (valueCents != null) 'valueCents': valueCents,
       'name': name,
       if (kind != null) 'kind': kind,
       'code': code == null || code.isEmpty ? null : code,
@@ -192,9 +201,9 @@ class HoldingsRepo {
   Future<Holding> setPrice(String id, int priceE4) =>
       _patch(id, {'priceE4': priceE4});
 
-  /// 金额类（活期、银行理财、保险……）更新当前金额。
-  Future<Holding> setValue(String id, int valueCents) =>
-      _patch(id, {'valueCents': valueCents});
+  /// 金额类（活期、银行理财、保险……）更新当前金额；[valueOn] 是哪天的数（`YYYY-MM-DD`，默认今天）。
+  Future<Holding> setValue(String id, int valueCents, {String? valueOn}) =>
+      _patch(id, {'valueCents': valueCents, if (valueOn != null) 'valueOn': valueOn});
 
   Future<void> delete(String id) async {
     await _api.delete('/holdings/$id');

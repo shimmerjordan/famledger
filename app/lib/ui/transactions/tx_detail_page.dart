@@ -34,6 +34,12 @@ class _TxDetailPageState extends ConsumerState<TxDetailPage> {
   final TextEditingController _merchant = TextEditingController();
   final TextEditingController _note = TextEditingController();
 
+  /// 跨币种转账的到账金额（转入那一侧的币）。
+  final TextEditingController _toAmount = TextEditingController();
+
+  /// 没挂账户的流水（只走板块）自己选的币种；挂了账户的跟着账户走。
+  String? _currency;
+
   /// 已经把哪条流水灌进输入框了（避免每次 build 都覆盖用户正在改的字）。
   String? _bound;
 
@@ -73,6 +79,7 @@ class _TxDetailPageState extends ConsumerState<TxDetailPage> {
     _amount.dispose();
     _merchant.dispose();
     _note.dispose();
+    _toAmount.dispose();
     super.dispose();
   }
 
@@ -82,7 +89,29 @@ class _TxDetailPageState extends ConsumerState<TxDetailPage> {
     _amount.text = Money.plain(tx.amountCents);
     _merchant.text = tx.merchant ?? '';
     _note.text = tx.note ?? '';
+    _toAmount.text = tx.toAmountCents == null ? '' : Money.input(tx.toAmountCents!);
   }
+
+  /// 这笔现在是什么币：挂了账户跟账户，没挂就是自己选的（默认原来的）。
+  String _currencyOf(Transaction tx, LedgerData? ledger, String? accountId) =>
+      (accountId == null ? null : ledger?.account(accountId)?.currency) ?? _currency ?? tx.currency;
+
+  /// 转入那一侧的币：转入账户的币；没有转入账户就和转出同币。
+  String _toCurrencyOf(Transaction tx, LedgerData? ledger, String? accountId, String? toAccountId) =>
+      (toAccountId == null ? null : ledger?.account(toAccountId)?.currency) ?? _currencyOf(tx, ledger, accountId);
+
+  /// 选择器里的候选：在用的那些，加上这笔原来选的（归档了、或是债务的内部账户）——不然改走了就选不回来。
+  List<Fund> _fundsWith(LedgerData ledger, Iterable<String?> keep) => [
+    ...ledger.activeFunds,
+    for (final id in keep.toSet())
+      if (id != null && !ledger.activeFunds.any((f) => f.id == id)) ?ledger.fund(id),
+  ];
+
+  List<Account> _accountsWith(LedgerData ledger, Iterable<String?> keep) => [
+    ...ledger.activeAccounts,
+    for (final id in keep.toSet())
+      if (id != null && !ledger.activeAccounts.any((a) => a.id == id)) ?ledger.account(id),
+  ];
 
   String _typeOf(Transaction tx) => _type ?? tx.type;
   DateTime _timeOf(Transaction tx) => _occurredAt ?? tx.occurredAt;
@@ -185,9 +214,23 @@ class _TxDetailPageState extends ConsumerState<TxDetailPage> {
       return;
     }
 
+    final ledger = ref.read(ledgerProvider).valueOrNull;
+    final currency = _currencyOf(tx, ledger, accountId);
+    final cross = isTransfer && toAccountId != null && _toCurrencyOf(tx, ledger, accountId, toAccountId) != currency;
+    int? toCents;
+    if (cross) {
+      toCents = Money.tryParse(_toAmount.text);
+      if (toCents == null || toCents <= 0) {
+        setState(() => _error = '两边币种不同，填一下到账多少，例如 669.40');
+        return;
+      }
+    }
+
     final patch = <String, dynamic>{
       'type': type,
       'amountCents': cents,
+      if (accountId == null && currency != tx.currency) 'currency': currency,
+      if (cross) 'toAmountCents': toCents,
       // 服务端要带时区偏移的 ISO（不带就 400）。
       'occurredAt': Dates.isoLocal(_timeOf(tx)),
       'merchant': _merchant.text.trim(),
@@ -294,6 +337,9 @@ class _TxDetailPageState extends ConsumerState<TxDetailPage> {
     final memberId = _value(_kMember, tx.memberId);
     final merchant = _merchant.text.trim();
     final note = _note.text.trim();
+    final currency = _currencyOf(tx, ledger, accountId);
+    final toCurrency = _toCurrencyOf(tx, ledger, accountId, toAccountId);
+    final cross = isTransfer && toAccountId != null && toCurrency != currency;
 
     // 一行一项的摘要，点哪一项就在它下面展开选择器：看一笔账不用滚过 15 个类别图标和
     // 三排芯片；要改哪个就点哪个。
@@ -301,7 +347,35 @@ class _TxDetailPageState extends ConsumerState<TxDetailPage> {
       maxWidth: 720,
       padding: const EdgeInsets.only(bottom: LedgerLayout.groupGap),
       children: [
-        _Header(tx: tx, amount: _amount, type: type),
+        _Header(tx: tx, amount: _amount, type: type, currency: currency),
+        if (cross)
+          PickerField(
+            key: const ValueKey('tx-to-amount-field'),
+            label: '到账多少（${currencyName(toCurrency)}）',
+            topGap: LedgerLayout.itemGap,
+            trailing: Text('两边币种不同', style: theme.textTheme.bodySmall),
+            child: TextField(
+              key: const ValueKey('tx-to-amount'),
+              controller: _toAmount,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: InputDecoration(prefixText: '${Money.symbolFor(toCurrency).trim()} ', hintText: '669.40'),
+            ),
+          ),
+        // 没挂账户的流水（只走板块）：币种自己选；挂了账户的跟着账户走，不用选。
+        if (accountId == null)
+          PickerField(
+            label: '币种',
+            topGap: LedgerLayout.itemGap,
+            trailing: Text('没走账户才要选', style: theme.textTheme.bodySmall),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: CurrencyDropdown(
+                keyPrefix: 'tx-currency',
+                value: currency,
+                onChanged: (c) => setState(() => _currency = c),
+              ),
+            ),
+          ),
         PickerField(
           label: '类型',
           topGap: LedgerLayout.itemGap,
@@ -349,7 +423,7 @@ class _TxDetailPageState extends ConsumerState<TxDetailPage> {
             value: _fundValue(ledger, fundId),
             flush: true,
             child: FundPicker(
-              funds: ledger.activeFunds,
+              funds: _fundsWith(ledger, [tx.fundId, fundId]),
               selectedId: fundId,
               onSelected: (id) => _pick(_kFund, id),
             ),
@@ -361,7 +435,7 @@ class _TxDetailPageState extends ConsumerState<TxDetailPage> {
               value: _fundValue(ledger, toFundId),
               flush: true,
               child: FundPicker(
-                funds: ledger.activeFunds,
+                funds: _fundsWith(ledger, [tx.toFundId, toFundId]),
                 keyPrefix: 'to-fund',
                 selectedId: toFundId,
                 onSelected: (id) => _pick(_kToFund, id),
@@ -372,7 +446,7 @@ class _TxDetailPageState extends ConsumerState<TxDetailPage> {
             label: isTransfer ? '从哪个账户转出' : '账户',
             value: _plain(ledger.account(accountId)?.name, isTransfer ? '不走账户' : '没填'),
             child: AccountPicker(
-              accounts: ledger.activeAccounts,
+              accounts: _accountsWith(ledger, [tx.accountId, accountId]),
               selectedId: accountId,
               onSelected: (id) => _pick(_kAccount, id),
             ),
@@ -383,7 +457,7 @@ class _TxDetailPageState extends ConsumerState<TxDetailPage> {
               label: '转入哪个账户',
               value: _plain(ledger.account(toAccountId)?.name, '不走账户'),
               child: AccountPicker(
-                accounts: ledger.activeAccounts,
+                accounts: _accountsWith(ledger, [tx.toAccountId, toAccountId]),
                 selectedId: toAccountId,
                 keyPrefix: 'to-account',
                 onSelected: (id) => _pick(_kToAccount, id),
@@ -653,11 +727,14 @@ class _SummaryRow extends StatelessWidget {
 
 /// 顶部：当前状态 + 可改的金额。
 class _Header extends StatelessWidget {
-  const _Header({required this.tx, required this.amount, required this.type});
+  const _Header({required this.tx, required this.amount, required this.type, required this.currency});
 
   final Transaction tx;
   final TextEditingController amount;
   final String type;
+
+  /// 现在选的账户的币（改了账户就跟着变）。
+  final String currency;
 
   @override
   Widget build(BuildContext context) {
@@ -691,7 +768,7 @@ class _Header extends StatelessWidget {
             style: theme.textTheme.headlineMedium,
             decoration: InputDecoration(
               // 这笔记的是什么币就写什么符号（美元户的流水是 $）。
-              prefixText: '${Money.symbolFor(tx.currency).trim()} ',
+              prefixText: '${Money.symbolFor(currency).trim()} ',
               filled: false,
               contentPadding: EdgeInsets.zero,
               border: InputBorder.none,

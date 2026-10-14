@@ -419,6 +419,9 @@ void main() {
 
       await tester.tap(find.text('工行储蓄卡'));
       await settle(tester);
+      // 表单多了「现在余额」「看流水 / 删除」，归档按钮在下面：先滚过去。
+      await tester.ensureVisible(find.text('归档'));
+      await settle(tester);
       await tester.tap(find.text('归档'));
       await settle(tester);
       // 二次确认
@@ -430,6 +433,33 @@ void main() {
       expect(bodyOf(patch!)['archived'], true);
       // DELETE 是软删打墓碑：行会从各设备消失，还会被 409 挡，绝不能用。
       expect(seen.any((r) => r.method == 'DELETE'), isFalse);
+    });
+
+    testWidgets('编辑账户填「现在余额」= 校准：发 currentBalanceCents，不发初始余额；初始余额跟着联动显示', (tester) async {
+      final seen = <http.Request>[];
+      await pumpPage(
+        tester,
+        await boot(settingsApi(seen: seen)),
+        const AccountsPage(),
+      );
+
+      await tester.tap(find.text('工行储蓄卡'));
+      await settle(tester);
+      final current = find.byKey(const ValueKey('account-current-balance'));
+      expect(tester.widget<TextField>(current).controller!.text, '1000.00');
+      await tester.enterText(current, '1234.56');
+      await settle(tester);
+      final initial = tester.widget<TextField>(find.byKey(const ValueKey('account-initial-balance'))).controller!.text;
+      await tester.ensureVisible(find.text('保存'));
+      await settle(tester);
+      await tester.tap(find.text('保存'));
+      await settle(tester);
+
+      final patch = lastWhere(seen, 'PATCH', '/accounts/a1');
+      expect(bodyOf(patch!)['currentBalanceCents'], 123456);
+      expect(bodyOf(patch).containsKey('initialBalanceCents'), isFalse);
+      // 联动：初始余额 = 现在余额 − 流水合计（初始 0、现在 1000 → 流水合计 1000）。
+      expect(initial, '234.56');
     });
 
     testWidgets('已归档的账户给的是「取消归档」，一步收回', (tester) async {
@@ -445,6 +475,8 @@ void main() {
       expect(find.text('取消归档'), findsOneWidget);
       expect(find.text('归档'), findsNothing);
 
+      await tester.ensureVisible(find.text('取消归档'));
+      await settle(tester);
       await tester.tap(find.text('取消归档'));
       await settle(tester);
 

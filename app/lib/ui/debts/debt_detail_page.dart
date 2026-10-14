@@ -5,8 +5,10 @@ import 'package:go_router/go_router.dart';
 import '../../app/providers.dart';
 import '../../app/theme.dart';
 import '../../core/dates.dart';
+import '../../core/money.dart';
 import '../../data/models/models.dart';
 import '../../data/repos/ledger_repo.dart';
+import '../add_tx/picker_field.dart';
 import '../assets/asset_providers.dart';
 import '../assets/asset_widgets.dart';
 import '../transactions/tx_tile.dart';
@@ -272,13 +274,16 @@ class _History extends ConsumerWidget {
     final txs = accountId == null ? const AsyncValue<List<Transaction>>.data([]) : ref.watch(debtTransactionsProvider(accountId));
     final memos = debt.memoLog;
     final rows = <({String day, Widget child})>[];
-    for (final m in memos) {
+    for (var i = 0; i < memos.length; i++) {
+      final m = memos[i];
+      final index = i;
       // 备忘里记的是对内部账户余额的影响；借入那边反过来才是「欠的变多 / 变少」。
       final delta = debt.isLend ? m.amountCents : -m.amountCents;
       rows.add((
         day: m.on,
         child: ListTile(
           key: ValueKey('debt-memo-${m.on}-${m.amountCents}-${m.note}'),
+          onTap: () => showDebtMemoSheet(context, debt, index),
           contentPadding: const EdgeInsets.symmetric(horizontal: LedgerLayout.pagePadding),
           leading: const AssetAvatar(Icons.edit_note),
           title: Text(m.note.isEmpty ? '没记流水' : m.note, maxLines: 1, overflow: TextOverflow.ellipsis),
@@ -308,5 +313,174 @@ class _History extends ConsumerWidget {
       );
     }
     return Column(children: [for (final r in rows) r.child]);
+  }
+}
+
+/// 改 / 删一行备忘（没记流水的那几笔）：金额、日期、说明。改金额、删掉都会把它对「还剩多少」的影响一起改回来；
+/// 起始、追加那几行连总额一起改。人情记过钱的那几行只改这里的数，那笔支出 / 收入在账单里另外改。
+Future<void> showDebtMemoSheet(BuildContext context, Debt debt, int index) => showModalBottomSheet<void>(
+  useRootNavigator: true,
+  context: context,
+  isScrollControlled: true,
+  builder: (context) => _MemoSheet(debt: debt, index: index),
+);
+
+class _MemoSheet extends ConsumerStatefulWidget {
+  const _MemoSheet({required this.debt, required this.index});
+
+  final Debt debt;
+  final int index;
+
+  @override
+  ConsumerState<_MemoSheet> createState() => _MemoSheetState();
+}
+
+class _MemoSheetState extends ConsumerState<_MemoSheet> {
+  late final DebtMemo _memo = widget.debt.memoLog[widget.index];
+  late final TextEditingController _amount = TextEditingController(text: Money.input(_memo.amountCents.abs()));
+  late final TextEditingController _note = TextEditingController(text: _memo.note);
+  late DateTime _on = localDate(_memo.on) ?? DateTime.now();
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _amount.dispose();
+    _note.dispose();
+    super.dispose();
+  }
+
+  Future<void> _run(Future<void> Function() action, String done) async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await action();
+      refreshMoneyViews(ref);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(done)));
+      Navigator.of(context).pop();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = describeError(error);
+      });
+    }
+  }
+
+  void _save() {
+    final cents = Money.tryParse(_amount.text);
+    if (cents == null || cents < 0) {
+      setState(() => _error = '金额填得不对，例如 2000');
+      return;
+    }
+    final repo = ref.read(debtsRepoProvider);
+    _run(
+      () => repo.editMemo(
+        widget.debt.id,
+        widget.index,
+        amountCents: cents == _memo.amountCents.abs() ? null : cents,
+        on: Dates.isoDate(_on),
+        note: _note.text.trim(),
+      ),
+      '改好了',
+    );
+  }
+
+  Future<void> _delete() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('删掉这一行？'),
+        content: const Text('它对「还剩多少」的影响会一起撤掉；起始、追加那几行连总额一起改。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('算了')),
+          FilledButton(
+            key: const ValueKey('memo-delete-confirm'),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('删掉'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    final repo = ref.read(debtsRepoProvider);
+    _run(() => repo.deleteMemo(widget.debt.id, widget.index), '删掉了');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const SectionHeader('改这一行'),
+              if (widget.debt.isFavor && _memo.recorded)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: LedgerLayout.pagePadding),
+                  child: Text('这一笔的钱另记过一笔支出 / 收入，那笔在账单里另外改。', style: theme.textTheme.bodySmall),
+                ),
+              PickerField(
+                label: '金额',
+                child: TextField(
+                  key: const ValueKey('memo-amount'),
+                  controller: _amount,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: InputDecoration(prefixText: '${Money.symbolFor(widget.debt.currency).trim()} '),
+                ),
+              ),
+              PickerField(
+                label: '哪天',
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: DayButton(
+                    day: _on,
+                    onPressed: () async {
+                      final d = await pickPastDay(context, initial: _on);
+                      if (d != null) setState(() => _on = d);
+                    },
+                  ),
+                ),
+              ),
+              PickerField(
+                label: '说明',
+                child: TextField(key: const ValueKey('memo-note'), controller: _note, maxLength: 200),
+              ),
+              if (_error != null)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: LedgerLayout.pagePadding),
+                  child: Text(_error!, style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.error)),
+                ),
+              Padding(
+                padding: const EdgeInsets.all(LedgerLayout.pagePadding),
+                child: Row(
+                  children: [
+                    TextButton.icon(
+                      key: const ValueKey('memo-delete'),
+                      onPressed: _busy ? null : _delete,
+                      icon: Icon(Icons.delete_outline, color: theme.colorScheme.error),
+                      label: Text('删掉', style: TextStyle(color: theme.colorScheme.error)),
+                    ),
+                    const Spacer(),
+                    FilledButton(
+                      key: const ValueKey('memo-save'),
+                      onPressed: _busy ? null : _save,
+                      child: const Text('保存'),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }

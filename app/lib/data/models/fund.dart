@@ -1,6 +1,7 @@
 import 'json_utils.dart';
 
-/// 板块（「我的 › 财富」里的一项；代码里叫 Fund）：钱「归谁、干什么用」。余额 = Σ流水，按币种分开算。
+/// 板块（「我的 › 财富」里的一项；代码里叫 Fund）：钱「归谁、干什么用」。余额 = 期初 + Σ流水，按币种分开算；
+/// 「校准余额」改的是期初（[openingBalances]），不多记流水。
 /// 可以挂「每月固定进账」：每月 [incomeDay] 号往 [incomeAccountId] 记一笔真的收入（服务端 fund_income.js 生成）。
 class Fund {
   const Fund({
@@ -18,6 +19,7 @@ class Fund {
     this.incomeCategoryId,
     this.incomeStartMonth,
     this.description,
+    this.openingBalances = const {},
     this.sortOrder = 0,
     this.archived = false,
     this.isDefault = false,
@@ -61,6 +63,9 @@ class Fund {
   /// 从哪个月起 `YYYY-MM`（含）。
   final String? incomeStartMonth;
 
+  /// 期初余额，按币种（分）。「校准余额」= 服务端按「现在实际有多少」反推出来写这里。
+  final Map<String, int> openingBalances;
+
   /// 开着每月固定进账。
   bool get hasMonthlyIncome => (monthlyIncomeCents ?? 0) > 0 && incomeAccountId != null;
   final String? description;
@@ -85,6 +90,7 @@ class Fund {
     incomeCategoryId: jsonStringOrNull(json['incomeCategoryId']),
     incomeStartMonth: jsonStringOrNull(json['incomeStartMonth']),
     description: jsonStringOrNull(json['description']),
+    openingBalances: _balances(json['openingBalances']),
     sortOrder: jsonInt(json['sortOrder']),
     archived: jsonBool(json['archived']),
     isDefault: jsonBool(json['isDefault']),
@@ -103,9 +109,20 @@ class Fund {
     putIfNotNull(json, 'incomeCategoryId', incomeCategoryId);
     putIfNotNull(json, 'incomeStartMonth', incomeStartMonth);
     putIfNotNull(json, 'description', description);
+    if (openingBalances.isNotEmpty) json['openingBalances'] = openingBalances;
     json['sortOrder'] = sortOrder;
     json['archived'] = archived;
     json['isDefault'] = isDefault;
     return json;
   }
+}
+
+/// `{"CNY": 1200}` → `{'CNY': 1200}`；不是对象、值不是整数的跳过。
+Map<String, int> _balances(Object? raw) {
+  if (raw is! Map) return const {};
+  final out = <String, int>{};
+  raw.forEach((k, v) {
+    if (k is String && v is num && v != 0) out[k.toUpperCase()] = v.toInt();
+  });
+  return out;
 }

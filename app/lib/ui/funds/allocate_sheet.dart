@@ -8,12 +8,14 @@ import '../../core/money.dart';
 import '../../data/models/models.dart';
 import '../add_tx/fund_picker.dart';
 import '../add_tx/picker_field.dart';
+import '../assets/asset_widgets.dart' show DayButton, pickPastDay;
 import '../transactions/tx_providers.dart';
 import '../widgets/widgets.dart';
 
-/// 拨款：把钱从一个基金挪到另一个基金（账户不动）。
+/// 拨款：把钱从一个板块挪到另一个板块（账户不动）。能拨出去也能拨进来，能补记以前的日子，能选币种
+/// （板块余额按币种分开，美元那份要按美元拨）。
 ///
-/// 落到数据上就是一笔 `type=transfer` 且只填了基金对的流水（spec §3）。
+/// 落到数据上就是一笔 `type=transfer` 且只填了板块对的流水（spec §3）。
 /// 成功返回 true。
 Future<bool?> showAllocateSheet(
   BuildContext context, {
@@ -43,6 +45,11 @@ class _AllocateSheetState extends ConsumerState<_AllocateSheet> {
   String? _error;
   bool _busy = false;
 
+  /// 拨进来：从对方板块拨到这个板块。
+  bool _inbound = false;
+  DateTime _day = DateTime.now();
+  late String _currency = ref.read(baseCurrencyProvider);
+
   @override
   void dispose() {
     _amount.dispose();
@@ -57,9 +64,13 @@ class _AllocateSheetState extends ConsumerState<_AllocateSheet> {
       return;
     }
     if (_toFundId == null) {
-      setState(() => _error = '选一个要拨给谁');
+      setState(() => _error = _inbound ? '选一个从哪拨过来' : '选一个要拨给谁');
       return;
     }
+    final now = DateTime.now();
+    final today = DateUtils.isSameDay(_day, now);
+    final at = today ? now : DateTime(_day.year, _day.month, _day.day, 12);
+    final (from, to) = _inbound ? (_toFundId!, widget.from.id) : (widget.from.id, _toFundId!);
     setState(() {
       _busy = true;
       _error = null;
@@ -72,9 +83,10 @@ class _AllocateSheetState extends ConsumerState<_AllocateSheet> {
               clientId: newClientId(),
               type: Transaction.typeTransfer,
               amountCents: cents,
-              occurredAt: DateTime.now(),
-              fundId: widget.from.id,
-              toFundId: _toFundId,
+              currency: _currency,
+              occurredAt: at,
+              fundId: from,
+              toFundId: to,
               memberId: ref.read(sessionProvider)?.me.id,
               note: _note.text.trim().isEmpty ? null : _note.text.trim(),
             ),
@@ -90,7 +102,9 @@ class _AllocateSheetState extends ConsumerState<_AllocateSheet> {
           content: Text(
             saved.pendingSync
                 ? '已离线保存，联网后自动上传'
-                : '已从「${widget.from.name}」拨出 ${Money.format(cents)}',
+                : _inbound
+                ? '已拨进「${widget.from.name}」${Money.format(cents, currency: _currency)}'
+                : '已从「${widget.from.name}」拨出 ${Money.format(cents, currency: _currency)}',
           ),
         ),
       );
@@ -114,27 +128,68 @@ class _AllocateSheetState extends ConsumerState<_AllocateSheet> {
         padding: EdgeInsets.only(
           bottom: MediaQuery.viewInsetsOf(context).bottom,
         ),
-        child: Column(
+        child: SingleChildScrollView(
+          child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            SectionHeader('从「${widget.from.name}」拨款'),
+            SectionHeader('「${widget.from.name}」拨款'),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: LedgerLayout.pagePadding),
+              child: SegmentedButton<bool>(
+                key: const ValueKey('allocate-direction'),
+                segments: const [
+                  ButtonSegment(value: false, label: Text('拨出去')),
+                  ButtonSegment(value: true, label: Text('拨进来')),
+                ],
+                selected: {_inbound},
+                onSelectionChanged: (v) => setState(() {
+                  _inbound = v.first;
+                  _error = null;
+                }),
+              ),
+            ),
             PickerField(
               label: '金额',
-              topGap: 0,
-              child: TextField(
-                controller: _amount,
-                autofocus: true,
-                keyboardType: const TextInputType.numberWithOptions(
-                  decimal: true,
-                ),
-                decoration: const InputDecoration(
-                  prefixText: '¥ ',
-                  hintText: '500',
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      key: const ValueKey('allocate-amount'),
+                      controller: _amount,
+                      autofocus: true,
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
+                      decoration: InputDecoration(
+                        prefixText: '${Money.symbolFor(_currency)} ',
+                        hintText: '500',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  CurrencyDropdown(
+                    keyPrefix: 'allocate-currency',
+                    value: _currency,
+                    onChanged: (c) => setState(() => _currency = c),
+                  ),
+                ],
+              ),
+            ),
+            PickerField(
+              label: '哪天',
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: DayButton(
+                  day: _day,
+                  onPressed: () async {
+                    final d = await pickPastDay(context, initial: _day);
+                    if (d != null) setState(() => _day = d);
+                  },
                 ),
               ),
             ),
             PickerField(
-              label: '拨给哪个板块',
+              label: _inbound ? '从哪个板块拨过来' : '拨给哪个板块',
               contentPadding: EdgeInsets.zero,
               child: FundPicker(
                 funds: targets,
@@ -175,11 +230,12 @@ class _AllocateSheetState extends ConsumerState<_AllocateSheet> {
                 width: double.infinity,
                 child: FilledButton(
                   onPressed: _busy || targets.isEmpty ? null : _submit,
-                  child: const Text('拨过去'),
+                  child: Text(_inbound ? '拨进来' : '拨过去'),
                 ),
               ),
             ),
           ],
+          ),
         ),
       ),
     );

@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../app/theme.dart';
 import '../../core/dates.dart';
+import '../add_tx/picker_field.dart';
 import '../../core/ids.dart';
 import '../../core/money.dart';
 import '../../data/api/api_client.dart';
@@ -15,7 +16,8 @@ import '../widgets/widgets.dart';
 import 'perk_providers.dart';
 
 // 会员权益的几个动作（spec §5）：一键打卡（snackbar 撤销；年卡类权益打完卡顺手「在优酷建会员卡」）、
-// 长按打卡（记多份、改日期、改价值、本期跳过）、「续了」「停了」、删一条打卡记录 —— 都能在 snackbar 里撤销。
+// 长按打卡（记多份、改日期、改价值、本期跳过）、「续了」「停了」、删一条打卡记录 —— 都能在 snackbar 里撤销；
+// 打卡记录点开能改（哪天、领了 / 用了 / 跳过、几份、这次值多少、备注）。
 // 本期视图、首页「会员权益」段、会员详情共用。
 
 /// 「今天」：本地日历上的这一天（UTC 零点，perk_math 的口径）。
@@ -460,4 +462,163 @@ Future<void> deleteCheckIn(BuildContext context, WidgetRef ref, BenefitEvent e) 
       ),
     ),
   );
+}
+
+/// 改一条打卡记录（会员详情的历史里点一下）。
+Future<void> showCheckInEditSheet(BuildContext context, BenefitEvent e, {String currency = 'CNY'}) =>
+    showModalBottomSheet<void>(
+      useRootNavigator: true,
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => _CheckInEditSheet(event: e, currency: currency),
+    );
+
+class _CheckInEditSheet extends ConsumerStatefulWidget {
+  const _CheckInEditSheet({required this.event, required this.currency});
+
+  final BenefitEvent event;
+  final String currency;
+
+  @override
+  ConsumerState<_CheckInEditSheet> createState() => _CheckInEditSheetState();
+}
+
+class _CheckInEditSheetState extends ConsumerState<_CheckInEditSheet> {
+  late String _kind = widget.event.kind;
+  late DateTime _on = localDate(widget.event.occurredOn) ?? DateTime.now();
+  late final TextEditingController _count = TextEditingController(text: '${widget.event.count}');
+  late final TextEditingController _value = TextEditingController(
+    text: widget.event.valueCents == null ? '' : Money.input(widget.event.valueCents!),
+  );
+  late final TextEditingController _note = TextEditingController(text: widget.event.note ?? '');
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _count.dispose();
+    _value.dispose();
+    _note.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    final count = int.tryParse(_count.text.trim());
+    if (count == null || count < 1 || count > 999) {
+      setState(() => _error = '几份填个 1 到 999 的整数');
+      return;
+    }
+    int? value;
+    if (_value.text.trim().isNotEmpty) {
+      value = parseMoneyField(_value.text);
+      if (value == null || value < 0) {
+        setState(() => _error = '这次值多少填得不对，例如 25');
+        return;
+      }
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await ref.read(perksRepoProvider).updateBenefitEvent(widget.event.id, {
+        'kind': _kind,
+        'occurredOn': Dates.isoDate(_on),
+        'count': count,
+        'valueCents': value,
+        'note': _note.text.trim().isEmpty ? null : _note.text.trim(),
+      });
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('打卡记录改好了')));
+      Navigator.of(context).pop();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = describeError(error);
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const SectionHeader('改这条打卡'),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: LedgerLayout.pagePadding),
+                child: SegmentedButton<String>(
+                  key: const ValueKey('checkin-kind'),
+                  segments: const [
+                    ButtonSegment(value: 'claim', label: Text('领了')),
+                    ButtonSegment(value: 'use', label: Text('用了')),
+                    ButtonSegment(value: 'skip', label: Text('本期跳过')),
+                  ],
+                  selected: {_kind},
+                  showSelectedIcon: false,
+                  onSelectionChanged: (v) => setState(() => _kind = v.first),
+                ),
+              ),
+              PickerField(
+                label: '哪天',
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: DayButton(
+                    key: const ValueKey('checkin-day'),
+                    day: _on,
+                    onPressed: () async {
+                      final d = await pickPastDay(context, initial: _on);
+                      if (d != null) setState(() => _on = d);
+                    },
+                  ),
+                ),
+              ),
+              PickerField(
+                label: '几份',
+                child: TextField(
+                  key: const ValueKey('checkin-count'),
+                  controller: _count,
+                  keyboardType: TextInputType.number,
+                ),
+              ),
+              PickerField(
+                label: '这次值多少（选填）',
+                trailing: Text('空着 = 按权益的面值算', style: theme.textTheme.bodySmall),
+                child: TextField(
+                  key: const ValueKey('checkin-value'),
+                  controller: _value,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: InputDecoration(prefixText: '${Money.symbolFor(widget.currency).trim()} '),
+                ),
+              ),
+              PickerField(
+                label: '备注（选填）',
+                child: TextField(key: const ValueKey('checkin-note'), controller: _note, maxLength: 200),
+              ),
+              if (_error != null)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: LedgerLayout.pagePadding),
+                  child: Text(_error!, style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.error)),
+                ),
+              Padding(
+                padding: const EdgeInsets.all(LedgerLayout.pagePadding),
+                child: FilledButton(
+                  key: const ValueKey('checkin-save'),
+                  onPressed: _busy ? null : _save,
+                  child: const Text('保存'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }

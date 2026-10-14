@@ -94,6 +94,22 @@ void main() {
       expect(find.text('已回本 282% · ¥248.00 / ¥88.00'), findsOneWidget);
     });
 
+    testWidgets('打卡记录点开能改：几份、哪天、这次值多少', (tester) async {
+      final backend = paybackBackend();
+      await pumpAssetsAt(tester, bootAssets(backend), '/assets/memberships/vip', size: tall);
+
+      await tapVisible(tester, find.text('9月20日 · 领了 · ¥248.00'));
+      expect(find.text('改这条打卡'), findsOneWidget);
+      await tester.enterText(find.byKey(const ValueKey('checkin-count')), '2');
+      await tapVisible(tester, find.byKey(const ValueKey('checkin-save')));
+
+      final body = backend.lastBody('PATCH', '/benefit-events/e1');
+      expect(body['count'], 2);
+      expect(body['occurredOn'], '2026-09-20');
+      expect(body['kind'], 'claim');
+      expect(find.text('9月20日 · 领了 ×2 · ¥496.00'), findsOneWidget);
+    });
+
     testWidgets('打卡记录超过 10 条先收着，点「再看 N 条」全部列出', (tester) async {
       final backend = paybackBackend();
       for (var i = 1; i <= 12; i++) {

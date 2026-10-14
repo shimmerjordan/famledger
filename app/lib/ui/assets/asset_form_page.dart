@@ -42,6 +42,10 @@ class _AssetFormPageState extends ConsumerState<AssetFormPage> {
   final TextEditingController _note = TextEditingController();
   final ValuationEditor _valuation = ValuationEditor();
 
+  /// 已退役 / 卖出的：结束日期、卖出价（编辑时才有）。
+  DateTime? _endedOn;
+  final TextEditingController _sale = TextEditingController();
+
   String _category = 'digital';
 
   /// 买价是什么币（美元买的就记美元，估值也按美元算）；新建默认家庭基准币。
@@ -70,6 +74,7 @@ class _AssetFormPageState extends ConsumerState<AssetFormPage> {
     _expected.dispose();
     _note.dispose();
     _valuation.dispose();
+    _sale.dispose();
     super.dispose();
   }
 
@@ -84,6 +89,8 @@ class _AssetFormPageState extends ConsumerState<AssetFormPage> {
     _currency = asset.currency;
     _purchasedOn = localDate(asset.purchasedOn) ?? ref.read(assetClockProvider)();
     _valuation.bind(asset);
+    _endedOn = localDate(asset.endedOn);
+    _sale.text = asset.saleCents == null ? '' : Money.input(asset.saleCents!);
   }
 
   /// 买价填对了才预估「现在约多少」。
@@ -136,6 +143,26 @@ class _AssetFormPageState extends ConsumerState<AssetFormPage> {
       return;
     }
 
+    final existing = _editing ? ledger.asset(widget.id) : null;
+    String? endedOn;
+    int? sale;
+    if (existing != null && existing.isEnded && _endedOn != null) {
+      if (_endedOn!.isBefore(_purchasedOn)) {
+        setState(() => _error = '结束日期不能早于买入日期');
+        return;
+      }
+      final iso = Dates.isoDate(_endedOn!);
+      if (iso != existing.endedOn) endedOn = iso;
+      if (existing.status == Asset.statusSold && _sale.text.trim().isNotEmpty) {
+        sale = parseMoneyField(_sale.text);
+        if (sale == null || sale < 0) {
+          setState(() => _error = '卖出价填得不对，例如 2000');
+          return;
+        }
+        if (sale == existing.saleCents) sale = null;
+      }
+    }
+
     setState(() {
       _busy = true;
       _error = null;
@@ -155,7 +182,10 @@ class _AssetFormPageState extends ConsumerState<AssetFormPage> {
           note: note,
           valuation: valuation.input,
           currency: _currency == ledger.asset(widget.id)?.currency ? null : _currency,
+          endedOn: endedOn,
+          saleCents: sale,
         );
+        if (endedOn != null || sale != null) refreshNetWorth(ref);
       } else {
         await repo.create(
           name: name,
@@ -341,6 +371,40 @@ class _AssetFormPageState extends ConsumerState<AssetFormPage> {
                 ],
               ),
             ),
+          if (asset != null && asset.isEnded) ...[
+            PickerField(
+              label: asset.status == Asset.statusSold ? '哪天卖的' : '哪天退役的',
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: DayButton(
+                  key: const ValueKey('asset-ended-on'),
+                  day: _endedOn ?? ref.read(assetClockProvider)(),
+                  onPressed: () async {
+                    final picked = await pickPastDay(
+                      context,
+                      initial: _endedOn ?? ref.read(assetClockProvider)(),
+                      first: _purchasedOn,
+                      help: asset.status == Asset.statusSold ? '哪天卖的' : '哪天退役的',
+                    );
+                    if (picked != null) setState(() => _endedOn = picked);
+                  },
+                ),
+              ),
+            ),
+            if (asset.status == Asset.statusSold)
+              PickerField(
+                label: '卖了多少',
+                trailing: asset.saleTransactionId == null
+                    ? null
+                    : Text('卖出时记的那笔收入在账单里另外改', style: theme.textTheme.bodySmall),
+                child: TextField(
+                  key: const ValueKey('asset-sale'),
+                  controller: _sale,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: InputDecoration(prefixText: '${Money.symbolFor(_currency).trim()} '),
+                ),
+              ),
+          ],
         ],
         side: [
             ValuationFields(

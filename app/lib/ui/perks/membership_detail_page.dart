@@ -21,7 +21,7 @@ import 'perk_widgets.dart';
 
 /// 会员详情（`/assets/memberships/:id`）：头部信息、本期回本（回本条、潜在额度）、权益列表（「去优酷领」、限制条件、
 /// 有效期、面值、领取链接、本期进度）、收起来的「已归档」权益、「AI 补充权益」（粘贴说明，识别出的都归到这张卡）、
-/// 打卡记录（可删、能撤销）、加权益、续了一期、编辑、归档、删除。字段旁的「AI 推断」小点点一下能确认或去改。
+/// 打卡记录（点开能改、可删、能撤销）、加权益、续了一期、编辑、归档、删除。字段旁的「AI 推断」小点点一下能确认或去改。
 class MembershipDetailPage extends ConsumerWidget {
   const MembershipDetailPage(this.id, {super.key});
 
@@ -391,6 +391,7 @@ class _MembershipDetailViewState extends ConsumerState<MembershipDetailView> {
     };
     return ListTile(
       key: ValueKey('event-${e.id}'),
+      onTap: () => showCheckInEditSheet(context, e, currency: ref.read(baseCurrencyProvider)),
       visualDensity: VisualDensity.compact,
       contentPadding: const EdgeInsets.only(left: LedgerLayout.pagePadding, right: 4),
       title: Text(b.name, maxLines: 1, overflow: TextOverflow.ellipsis),

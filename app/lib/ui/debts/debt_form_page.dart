@@ -18,7 +18,8 @@ import 'debt_widgets.dart';
 /// 记一笔 / 编辑债务：别人欠我还是我欠别人、借款还是人情、对方、多少、哪天、约定哪天还。
 ///
 /// 新建时默认「同时记一笔」：借款记成真账户和这笔债务之间的转账（不算支出），人情记成一笔
-/// 支出 / 收入（类别「人情」）。编辑只改基本信息；金额经详情页的「收回 / 再借」改。
+/// 支出 / 收入（类别「人情」）。平时金额经详情页的「收回 / 再借」改；记错了在编辑页直接改总额、还剩多少
+/// （校准，留一行备忘），还没有往来流水时方向、币种也能改。
 /// 新建时能顺带填「已经收回 / 已经还了」多少（以前的账收回过一部分），存的时候一起记，不用建完再去点「收回」。
 class DebtFormPage extends ConsumerStatefulWidget {
   const DebtFormPage({super.key, this.id});
@@ -34,6 +35,17 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
   final TextEditingController _amount = TextEditingController();
   final TextEditingController _settled = TextEditingController();
   final TextEditingController _note = TextEditingController();
+
+  /// 编辑时的「还剩多少」：改了就是校准（服务端按差额改内部账户、留一行「校准」）。
+  final TextEditingController _remaining = TextEditingController();
+  bool _remainingTouched = false;
+  int? _origRemaining;
+  int _origTotal = 0;
+  String _origDirection = Debt.lend;
+  String _origCurrency = 'CNY';
+
+  /// 家里谁的（null = 家庭共用）。新建默认是自己；编辑时原样带回去（不带会被清掉）。
+  late String? _memberId = ref.read(sessionProvider)?.me.id;
 
   String _direction = Debt.lend;
 
@@ -67,6 +79,7 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
     _amount.dispose();
     _settled.dispose();
     _note.dispose();
+    _remaining.dispose();
     super.dispose();
   }
 
@@ -81,6 +94,22 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
     _dueOn = localDate(d.dueOn);
     _counted = d.counted;
     _countedTouched = true;
+    _memberId = d.memberId;
+    _currency = d.currency;
+    _origCurrency = d.currency;
+    _origDirection = d.direction;
+    _origTotal = d.amountCents;
+    _amount.text = Money.input(d.amountCents);
+    _origRemaining = outstandingOf(d, ref.read(debtBalancesProvider));
+    if (_origRemaining != null) _remaining.text = Money.input(_origRemaining!);
+  }
+
+  /// 编辑时改总额：还剩多少没亲手改过就跟着挪同样多（起始那笔记错了，两个数一起错）。
+  void _onTotalChanged(String text) {
+    if (!_editing || _remainingTouched || _origRemaining == null) return;
+    final total = Money.tryParse(text);
+    if (total == null) return;
+    _remaining.text = Money.input(_origRemaining! + total - _origTotal);
   }
 
   void _setKind(String kind) => setState(() {
@@ -112,6 +141,20 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
     final repo = ref.read(debtsRepoProvider);
     final dueOn = _dueOn == null ? null : Dates.isoDate(_dueOn!);
     if (_editing) {
+      final total = parseMoneyField(_amount.text);
+      if (total == null || total <= 0) {
+        setState(() => _error = '总额填得不对，例如 5000');
+        return;
+      }
+      int? remaining;
+      if (_remaining.text.trim().isNotEmpty) {
+        remaining = Money.tryParse(_remaining.text);
+        if (remaining == null) {
+          setState(() => _error = '还剩多少填得不对，例如 2000（多还了写负数）');
+          return;
+        }
+      }
+      final calibrate = remaining != null && remaining != _origRemaining;
       return _submit(() async {
         await repo.edit(
           widget.id!,
@@ -120,9 +163,15 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
           startedOn: Dates.isoDate(_startedOn),
           dueOn: dueOn,
           counted: _counted,
+          memberId: _memberId,
           note: _note.text.trim(),
+          amountCents: total != _origTotal ? total : null,
+          remainingCents: calibrate ? remaining : null,
+          direction: _direction != _origDirection ? _direction : null,
+          currency: _currency != _origCurrency ? _currency : null,
         );
-        return '已保存';
+        if (calibrate) refreshMoneyViews(ref);
+        return calibrate ? '已保存，还剩 ${Money.format(remaining!, currency: _currency)}' : '已保存';
       });
     }
     final amount = parseMoneyField(_amount.text);
@@ -157,7 +206,7 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
         startedOn: Dates.isoDate(_startedOn),
         dueOn: dueOn,
         counted: _counted,
-        memberId: ref.read(sessionProvider)?.me.id,
+        memberId: _memberId,
         note: _note.text.trim(),
         accountId: _record ? _accountId : null,
         settledCents: settled,
@@ -203,6 +252,11 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
     final ledger = ref.watch(ledgerProvider).valueOrNull;
     final debt = _editing ? ledger?.debt(widget.id) : null;
     if (debt != null) _bind(debt);
+    // 总览晚到一步：到了再补上「还剩多少」的初值。
+    if (debt != null && _origRemaining == null) {
+      _origRemaining = outstandingOf(debt, ref.watch(debtBalancesProvider));
+      if (_origRemaining != null) _remaining.text = Money.input(_origRemaining! + (Money.tryParse(_amount.text) ?? _origTotal) - _origTotal);
+    }
     final title = _editing ? '编辑债务' : '记一笔债务';
     if (ledger == null) {
       return Scaffold(appBar: AppBar(title: Text(title)), body: const SkeletonList(rows: 5));
@@ -216,10 +270,10 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
       // 宽屏两列：左边「谁欠谁、多少、哪天」，右边约定还款、计不计入净资产、记账和备注。
       body: FormColumns(
         main: [
-          if (!_editing)
-            PickerField(
+          PickerField(
               label: '方向',
               topGap: LedgerLayout.pagePadding,
+              trailing: _editing ? Text('有往来流水时不能改', style: theme.textTheme.bodySmall) : null,
               child: SegmentedButton<String>(
                 key: const ValueKey('debt-direction'),
                 segments: [
@@ -236,7 +290,6 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
             ),
           PickerField(
             label: '类型',
-            topGap: _editing ? LedgerLayout.pagePadding : LedgerLayout.groupGap,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -275,21 +328,22 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
               decoration: const InputDecoration(hintText: '例如「张三」「小王」「李阿姨」'),
             ),
           ),
-          if (!_editing)
-            PickerField(
-              label: _favor ? '礼金' : '金额',
+          PickerField(
+              label: _editing ? (_favor ? '礼金总额' : '总额') : (_favor ? '礼金' : '金额'),
+              trailing: _editing ? Text('借出 / 借入一共多少', style: theme.textTheme.bodySmall) : null,
               child: Row(
                 children: [
                   Expanded(
                     child: TextField(
                       key: const ValueKey('debt-amount'),
                       controller: _amount,
+                      onChanged: _onTotalChanged,
                       keyboardType: const TextInputType.numberWithOptions(decimal: true),
                       decoration: InputDecoration(prefixText: '${Money.symbolFor(_currency).trim()} ', hintText: '5000'),
                     ),
                   ),
                   const SizedBox(width: 12),
-                  // 币种只在新建时定（建好后不能改）；换了币种，原来选的账户不一定还是同币种的。
+                  // 换了币种，原来选的账户不一定还是同币种的；编辑时有往来流水服务端不让改（409，原话照显示）。
                   CurrencyDropdown(
                     key: const ValueKey('debt-currency'),
                     value: _currency,
@@ -300,6 +354,18 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
                     }),
                   ),
                 ],
+              ),
+            ),
+          if (_editing && _origRemaining != null)
+            PickerField(
+              label: '还剩多少',
+              trailing: Text('和实际对不上就直接改；留一行「校准」备忘', style: theme.textTheme.bodySmall),
+              child: TextField(
+                key: const ValueKey('debt-remaining'),
+                controller: _remaining,
+                onChanged: (_) => _remainingTouched = true,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+                decoration: InputDecoration(prefixText: '${Money.symbolFor(_currency).trim()} '),
               ),
             ),
           if (!_editing)
@@ -317,6 +383,28 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
                 ),
               ),
             ),
+          PickerField(
+            label: '家里谁的',
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                ChoiceChip(
+                  key: const ValueKey('debt-member-none'),
+                  selected: _memberId == null,
+                  onSelected: (_) => setState(() => _memberId = null),
+                  label: const Text('家庭共用'),
+                ),
+                for (final m in ledger.activeMembers)
+                  ChoiceChip(
+                    key: ValueKey('debt-member-${m.id}'),
+                    selected: _memberId == m.id,
+                    onSelected: (_) => setState(() => _memberId = m.id),
+                    label: Text(m.label),
+                  ),
+              ],
+            ),
+          ),
           PickerField(
             label: '哪天',
             child: DayButton(

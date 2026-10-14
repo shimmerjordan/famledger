@@ -311,7 +311,7 @@ class _FundFormPageState extends ConsumerState<FundFormPage> {
             child: TextField(
               controller: _target,
               keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: const InputDecoration(prefixText: '¥ ', hintText: '例如 50000'),
+              decoration: InputDecoration(prefixText: '${Money.symbolFor(ref.watch(baseCurrencyProvider))} ', hintText: '例如 50000'),
             ),
           ),
           PickerField(
@@ -320,7 +320,12 @@ class _FundFormPageState extends ConsumerState<FundFormPage> {
             child: TextField(
               controller: _budget,
               keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: const InputDecoration(prefixText: '¥ ', hintText: '例如 3000'),
+              decoration: InputDecoration(
+                prefixText: '${Money.symbolFor(ref.watch(baseCurrencyProvider))} ',
+                hintText: '例如 3000',
+                helperText: '「我的 › 预算」里给某个月单独设过的，那个月以那边为准',
+                helperMaxLines: 2,
+              ),
             ),
           ),
           const SizedBox(height: LedgerLayout.itemGap),

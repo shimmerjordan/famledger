@@ -56,7 +56,9 @@ class DebtsRepo {
     return _apply(await _api.post('/debts', body));
   }
 
-  /// 改基本信息。方向、金额服务端不让改（金额经 [move]）。
+  /// 改债务。[memberId] 原样发（null = 家庭共用）——编辑表单一定要把选的人带上，不然会被清掉。
+  /// 手动微调（只发给了的）：[amountCents] 总额；[remainingCents] 还剩多少（差额进内部账户期初、留一行「校准」）；
+  /// [direction]、[currency] 只有还没有往来流水时能改（服务端 409 会说清楚）。
   Future<Debt> edit(
     String id, {
     required String kind,
@@ -66,6 +68,10 @@ class DebtsRepo {
     required bool counted,
     String? memberId,
     String? note,
+    int? amountCents,
+    int? remainingCents,
+    String? direction,
+    String? currency,
   }) async => _apply(
     await _api.patch('/debts/$id', {
       'kind': kind,
@@ -75,8 +81,25 @@ class DebtsRepo {
       'counted': counted,
       'memberId': memberId,
       'note': note == null || note.isEmpty ? null : note,
+      if (amountCents != null) 'amountCents': amountCents,
+      if (remainingCents != null) 'remainingCents': remainingCents,
+      if (direction != null) 'direction': direction,
+      if (currency != null) 'currency': currency,
     }),
   );
+
+  /// 改一行备忘（不记流水的那几笔）：[index] 是 memoLog 里的下标。[amountCents] 是正数，方向跟着原来那行；
+  /// 服务端会按差额改回内部账户的期初（起始、追加那几行连总额一起改）。
+  Future<Debt> editMemo(String id, int index, {int? amountCents, String? on, String? note}) async => _apply(
+    await _api.patch('/debts/$id/memo/$index', {
+      if (amountCents != null) 'amountCents': amountCents,
+      if (on != null) 'on': on,
+      if (note != null) 'note': note,
+    }),
+  );
+
+  /// 删一行备忘：它当初对还剩多少（和总额）的影响一起撤掉。
+  Future<Debt> deleteMemo(String id, int index) async => _apply(await _api.delete('/debts/$id/memo/$index'));
 
   Future<Debt> setArchived(String id, bool archived) async =>
       _apply(await _api.patch('/debts/$id', {'archived': archived}));

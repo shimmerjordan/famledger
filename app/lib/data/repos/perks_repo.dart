@@ -124,6 +124,14 @@ class PerksRepo {
     return item;
   }
 
+  /// 改一条打卡记录：日期、领了 / 用了 / 跳过、份数、这次值多少、备注（只发给了的）。
+  Future<BenefitEvent> updateBenefitEvent(String id, Map<String, dynamic> patch) async {
+    final item = BenefitEvent.fromJson(unwrap(await _api.patch('/benefit-events/$id', patch), 'event'));
+    await _ledger.putBenefitEvent(item);
+    await _syncQuietly();
+    return item;
+  }
+
   /// 撤销打卡（软删）。
   Future<void> deleteBenefitEvent(String id) async {
     await _api.delete('/benefit-events/$id');

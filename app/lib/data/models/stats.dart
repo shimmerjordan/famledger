@@ -346,6 +346,7 @@ class FxRates {
     this.rates = const {},
     this.asOf,
     this.missing = const [],
+    this.manual = const [],
   });
 
   /// 家庭基准币。
@@ -359,6 +360,9 @@ class FxRates {
 
   /// 服务端聚合时抓不到汇率的币种（已按 0 计入基准币合计）。
   final List<String> missing;
+
+  /// 手填的汇率（自动抓取不覆盖，直到「恢复自动」）。
+  final List<String> manual;
 
   static const double _e6 = 1e6;
 
@@ -402,6 +406,7 @@ class FxRates {
       rates: rates,
       asOf: jsonStringOrNull(json['asOf']),
       missing: jsonStringList(json['missing']).map((e) => e.toUpperCase()).toList(),
+      manual: jsonStringList(json['manual']).map((e) => e.toUpperCase()).toList(),
     );
   }
 
@@ -410,6 +415,7 @@ class FxRates {
     'rates': rates,
     if (asOf != null) 'asOf': asOf,
     'missing': missing,
+    if (manual.isNotEmpty) 'manual': manual,
   };
 }
 

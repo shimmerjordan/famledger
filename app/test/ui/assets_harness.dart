@@ -631,6 +631,23 @@ class AssetsBackend {
     }
     final row = debts[seg[1]];
     if (row == null) return _error(404, 'not_found', '债务不存在');
+    // 备忘行：PATCH / DELETE /debts/:id/memo/:index（金额跟着原来那行的正负号）。
+    if (seg.length == 4 && seg[2] == 'memo') {
+      final log = [...(row['memoLog'] as List).cast<Map>()].map((m) => Map<String, dynamic>.from(m)).toList();
+      final i = int.parse(seg[3]);
+      if (i >= log.length) return _error(404, 'not_found', '这行备忘不存在了');
+      if (method == 'DELETE') {
+        log.removeAt(i);
+      } else {
+        final old = log[i];
+        final sign = (old['amountCents'] as int) < 0 ? -1 : 1;
+        if (body['amountCents'] != null) old['amountCents'] = sign * (body['amountCents'] as int);
+        if (body['on'] != null) old['on'] = body['on'];
+        if (body['note'] != null) old['note'] = body['note'];
+      }
+      row['memoLog'] = log;
+      return _ok({'debt': row});
+    }
     if (method == 'PATCH') {
       row.addAll(body);
       return _ok({'debt': row});

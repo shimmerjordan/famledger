@@ -78,9 +78,11 @@ class _FundsTabState extends ConsumerState<FundsTab> {
     // ≥ 840：左边卡片、右边嵌着选中那个基金的详情页（fund_detail_page），右半屏不再空着。
     final twoPane = width == WidthClass.expanded;
     final funds = ledger.valueOrNull?.activeFunds ?? const <Fund>[];
+    final all = ledger.valueOrNull?.funds ?? const <Fund>[];
     final selected = ref.watch(selectedFundProvider);
+    // 已归档的也能点开看（右栏照常嵌详情，那里能恢复）。
     final shown = twoPane
-        ? (funds.any((f) => f.id == selected) ? selected : funds.firstOrNull?.id)
+        ? (all.any((f) => f.id == selected) ? selected : funds.firstOrNull?.id)
         : null;
     if (twoPane && shown != selected) pinSelection(ref, selectedFundProvider, shown);
 
@@ -120,6 +122,10 @@ class _FundsTabState extends ConsumerState<FundsTab> {
         errorPadding: const EdgeInsets.all(LedgerLayout.pagePadding),
         data: (data) {
           final funds = data.activeFunds;
+          final archived = data.funds.where((f) => f.archived).toList();
+          final archivedSection = archived.isEmpty
+              ? const SizedBox.shrink()
+              : _ArchivedFunds(funds: archived, stats: stats.valueOrNull, onOpen: onOpen);
           if (funds.isEmpty) {
             return ListView(
               padding: side,
@@ -133,6 +139,7 @@ class _FundsTabState extends ConsumerState<FundsTab> {
                   actionLabel: '从模板新建',
                   onAction: () => startNewFund(context, ref),
                 ),
+                archivedSection,
               ],
             );
           }
@@ -179,6 +186,7 @@ class _FundsTabState extends ConsumerState<FundsTab> {
                     onTap: onOpen,
                   ),
                 ),
+              archivedSection,
             ],
           );
         },
@@ -217,6 +225,56 @@ class _Total extends ConsumerWidget {
           style: theme.textTheme.bodySmall,
         ),
       ],
+    );
+  }
+}
+
+/// 已归档的板块：收在列表底下，点开看详情（详情里能恢复），行尾也能直接恢复。余额照算，只是记账时不再出现。
+class _ArchivedFunds extends ConsumerWidget {
+  const _ArchivedFunds({required this.funds, required this.stats, required this.onOpen});
+
+  final List<Fund> funds;
+  final StatsOverview? stats;
+  final ValueChanged<Fund> onOpen;
+
+  Future<void> _restore(BuildContext context, WidgetRef ref, Fund fund) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await ref.read(ledgerRepoProvider).updateFund(fund.id, {'archived': false});
+      ref.invalidate(ledgerProvider);
+      refreshMoneyViews(ref);
+      messenger.showSnackBar(SnackBar(content: Text('「${fund.name}」恢复了')));
+    } catch (error) {
+      messenger.showSnackBar(SnackBar(content: Text(describeError(error))));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(top: LedgerLayout.groupGap),
+      child: ExpansionTile(
+        key: const ValueKey('funds-archived'),
+        tilePadding: const EdgeInsets.symmetric(horizontal: LedgerLayout.pagePadding),
+        title: Text('已归档（${funds.length}）', style: theme.textTheme.titleSmall),
+        subtitle: Text('记账时不再出现，余额照算；点开能恢复', style: theme.textTheme.bodySmall),
+        children: [
+          for (final fund in funds)
+            ListTile(
+              key: ValueKey('archived-fund-${fund.id}'),
+              contentPadding: const EdgeInsets.symmetric(horizontal: LedgerLayout.pagePadding),
+              title: Text(fund.name),
+              subtitle: CurrencyTotal(stats?.fundBalances(fund.id) ?? const CurrencyAmounts(), muted: true),
+              onTap: () => onOpen(fund),
+              trailing: TextButton(
+                key: ValueKey('restore-fund-${fund.id}'),
+                onPressed: () => _restore(context, ref, fund),
+                child: const Text('恢复'),
+              ),
+            ),
+        ],
+      ),
     );
   }
 }

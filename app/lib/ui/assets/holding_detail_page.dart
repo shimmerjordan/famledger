@@ -53,17 +53,20 @@ class _HoldingDetailPageState extends ConsumerState<HoldingDetailPage> {
   }
 
   Future<void> _setValue(Holding h) async {
-    final value = await showDialog<int>(
+    final picked = await showDialog<(int, DateTime)>(
       context: context,
       builder: (context) => _ValueDialog(holding: h),
     );
-    if (value == null || !mounted) return;
+    if (picked == null || !mounted) return;
+    final (value, on) = picked;
     setState(() {
       _busy = true;
       _error = null;
     });
     try {
-      await ref.read(holdingsRepoProvider).setValue(h.id, value);
+      // 默认今天就不带日期（服务端按今天记）；补记以前的才发。
+      final past = !DateUtils.isSameDay(on, DateTime.now());
+      await ref.read(holdingsRepoProvider).setValue(h.id, value, valueOn: past ? Dates.isoDate(on) : null);
       refreshNetWorth(ref);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -507,7 +510,7 @@ class _PriceDialogState extends State<_PriceDialog> {
           autofocus: true,
           keyboardType: const TextInputType.numberWithOptions(decimal: true),
           decoration: InputDecoration(
-            prefixText: '${Money.symbol} ',
+            prefixText: '${Money.symbolFor(widget.holding.currency)} ',
             hintText: '1.0230',
             errorText: _error,
           ),
@@ -532,7 +535,7 @@ class _PriceDialogState extends State<_PriceDialog> {
   );
 }
 
-/// 金额类更新当前金额：看着 App 里的数填，返回分。
+/// 金额类更新当前金额：看着 App 里的数填，返回（分，哪天的数）。补记以前的也行。
 class _ValueDialog extends StatefulWidget {
   const _ValueDialog({required this.holding});
 
@@ -547,6 +550,7 @@ class _ValueDialogState extends State<_ValueDialog> {
     text: Money.input(widget.holding.valueCents ?? widget.holding.costCents),
   );
   String? _error;
+  DateTime _on = DateTime.now();
 
   @override
   void dispose() {
@@ -560,7 +564,7 @@ class _ValueDialogState extends State<_ValueDialog> {
       setState(() => _error = '填个金额，例如 10230.55');
       return;
     }
-    Navigator.of(context).pop(value);
+    Navigator.of(context).pop((value, _on));
   }
 
   @override
@@ -575,8 +579,19 @@ class _ValueDialogState extends State<_ValueDialog> {
           controller: _value,
           autofocus: true,
           keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          decoration: InputDecoration(prefixText: '${Money.symbol} ', errorText: _error),
+          decoration: InputDecoration(prefixText: '${Money.symbolFor(widget.holding.currency)} ', errorText: _error),
           onSubmitted: (_) => _submit(),
+        ),
+        const SizedBox(height: 8),
+        Text('哪天的数', style: Theme.of(context).textTheme.bodySmall),
+        const SizedBox(height: 4),
+        DayButton(
+          key: const ValueKey('value-day'),
+          day: _on,
+          onPressed: () async {
+            final d = await pickPastDay(context, initial: _on);
+            if (d != null) setState(() => _on = d);
+          },
         ),
         const SizedBox(height: 8),
         Text(

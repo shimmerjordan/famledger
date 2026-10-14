@@ -444,6 +444,10 @@ class PerksFake {
       _bury('event', row);
       return ok({'event': row});
     }
+    if (method == 'PATCH') {
+      row.addAll(body);
+      return ok({'event': row});
+    }
     return error(404, 'not_found', '没有这个接口');
   }
 

@@ -129,6 +129,74 @@ class _CurrencyPageState extends ConsumerState<CurrencyPage> {
     }
   }
 
+  /// 手填一个汇率（「1 美元 = 7.10 人民币」这样填，直观），或恢复自动抓取。管理员才能改。
+  Future<void> _editRate(String currency, String base, int? rateE6, bool manual) async {
+    final perUnit = rateE6 == null || rateE6 <= 0 ? '' : (1e6 / rateE6).toStringAsFixed(4);
+    final controller = TextEditingController(text: perUnit);
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('${_shortLabel(currency)}的汇率'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              key: const ValueKey('rate-input'),
+              controller: controller,
+              autofocus: true,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: InputDecoration(
+                prefixText: '1 ${_shortLabel(currency)} = ',
+                suffixText: _shortLabel(base),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text('手填的不会被自动抓取覆盖，点「恢复自动」才回到每小时自动更新。', style: Theme.of(context).textTheme.bodySmall),
+          ],
+        ),
+        actions: [
+          if (manual)
+            TextButton(
+              key: const ValueKey('rate-auto'),
+              onPressed: () => Navigator.of(context).pop('auto'),
+              child: const Text('恢复自动'),
+            ),
+          TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('算了')),
+          FilledButton(
+            key: const ValueKey('rate-save'),
+            onPressed: () => Navigator.of(context).pop(controller.text),
+            child: const Text('用这个'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (result == null || !mounted) return;
+    setState(() {
+      _error = null;
+      _notice = null;
+    });
+    try {
+      final api = ref.read(apiProvider);
+      if (result == 'auto') {
+        await api.delete('/fx/rates/$currency');
+      } else {
+        final per = double.tryParse(result.trim().replaceAll(',', ''));
+        if (per == null || !per.isFinite || per <= 0) {
+          setState(() => _error = '汇率填个正数，例如 7.10');
+          return;
+        }
+        await api.put('/fx/rates/$currency', {'rateE6': (1e6 / per).round()});
+      }
+      ref.invalidate(statsProvider);
+      if (!mounted) return;
+      setState(() => _notice = result == 'auto' ? '${_shortLabel(currency)}恢复自动汇率' : '${_shortLabel(currency)}的汇率改好了');
+    } catch (e) {
+      if (mounted) setState(() => _error = describeError(e));
+    }
+  }
+
   // ------------------------------------------------------------ 界面
 
   @override
@@ -239,18 +307,54 @@ class _CurrencyPageState extends ConsumerState<CurrencyPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('1 ${_shortLabel(fx.base)} =', style: theme.textTheme.labelMedium),
+                Text(
+                  isAdmin ? '1 ${_shortLabel(fx.base)} =（点一行手填）' : '1 ${_shortLabel(fx.base)} =',
+                  style: theme.textTheme.labelMedium,
+                ),
                 const SizedBox(height: 4),
                 for (final e in entries)
-                  Text(
-                    '${_shortLabel(e.key)}  ${(e.value / 1e6).toStringAsFixed(4)}',
-                    style: theme.textTheme.bodySmall,
+                  InkWell(
+                    key: ValueKey('rate-${e.key}'),
+                    onTap: isAdmin ? () => _editRate(e.key, fx.base, e.value, fx.manual.contains(e.key)) : null,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 6),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              '${_shortLabel(e.key)}  ${(e.value / 1e6).toStringAsFixed(4)}'
+                              '（1 ${_shortLabel(e.key)} ≈ ${(1e6 / e.value).toStringAsFixed(4)} ${_shortLabel(fx.base)}）',
+                              style: theme.textTheme.bodySmall,
+                            ),
+                          ),
+                          if (fx.manual.contains(e.key))
+                            Text('手填', style: theme.textTheme.labelSmall?.copyWith(color: theme.colorScheme.primary)),
+                          if (isAdmin) Icon(Icons.edit_outlined, size: 14, color: theme.colorScheme.onSurfaceVariant),
+                        ],
+                      ),
+                    ),
                   ),
               ],
             ),
           ),
-        if (fx.missing.isNotEmpty)
+        if (fx.missing.isNotEmpty) ...[
           _warn('这些币种暂时没抓到汇率，聚合里已按 0 计入、显示时只出原生币：${fx.missing.join('、')}'),
+          if (isAdmin)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(LedgerLayout.pagePadding, 4, LedgerLayout.pagePadding, 0),
+              child: Wrap(
+                spacing: 8,
+                children: [
+                  for (final c in fx.missing)
+                    OutlinedButton(
+                      key: ValueKey('rate-fill-$c'),
+                      onPressed: () => _editRate(c, fx.base, null, false),
+                      child: Text('手填${_shortLabel(c)}汇率'),
+                    ),
+                ],
+              ),
+            ),
+        ],
       ],
     );
   }

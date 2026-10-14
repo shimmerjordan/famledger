@@ -120,7 +120,7 @@ class ApiClient {
   Future<Map<String, dynamic>> put(String path, Object? body) =>
       _send('PUT', path, body: body, hasBody: true);
 
-  Future<void> delete(String path) => _send('DELETE', path);
+  Future<Map<String, dynamic>> delete(String path) => _send('DELETE', path);
 
   /// `POST` 一个流式接口（AI 对话/月报），逐个吐出 SSE 事件。
   Stream<SseEvent> sse(String path, Object? body) async* {

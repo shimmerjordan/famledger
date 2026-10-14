@@ -119,8 +119,13 @@ class AssetsRepo {
     String? note,
     ValuationInput? valuation,
     String? currency,
+    String? endedOn,
+    int? saleCents,
   }) => update(id, {
     if (currency != null) 'currency': currency,
+    // 已退役 / 卖出的：结束日期、卖出价也能改（只发给了的）。
+    if (endedOn != null) 'endedOn': endedOn,
+    if (saleCents != null) 'saleCents': saleCents,
     'name': name,
     'category': category,
     'priceCents': priceCents,

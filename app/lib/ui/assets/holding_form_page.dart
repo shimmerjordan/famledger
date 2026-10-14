@@ -25,7 +25,8 @@ final RegExp _codePattern = RegExp(r'^[0-9A-Za-z._-]{1,20}$');
 /// 份额类填份额、成本、价格；定期类填本金、年化、到期日；金额类填本金和当前金额。
 /// 新建时默认「同时记一笔转账」：买理财是把钱挪到投资账户，不是花掉。
 ///
-/// 编辑只改基础信息；份额、本金只能在详情页存取 / 加减仓。
+/// 平时份额、本金在详情页存取 / 加减仓；记错了在编辑页「数额」一节直接改（份额、成本 / 本金、已实现收益、
+/// 当前金额、是否结清），只改这笔理财上的数，不补记流水。
 /// 新建时能顺带填记账前已经到手的分红（基金、股票）/ 利息（定期类），不用建完再去详情里一笔笔补；不记流水。
 ///
 /// 投资账户跟着转账走：净资产只给挂了账户的持仓补浮盈，前提是成本已经以转账记进那个账户
@@ -61,6 +62,9 @@ class _HoldingFormPageState extends ConsumerState<HoldingFormPage> {
   String? _accountId;
   bool _record = true;
   String? _fromAccountId;
+
+  /// 编辑时：非份额类标成「已结清」（份额置 0）。
+  bool _cleared = false;
 
   /// 这笔理财是什么币（美股、港股按当地币记）；新建默认家庭基准币，选了投资账户就跟着它。
   late String _currency = ref.read(baseCurrencyProvider);
@@ -139,6 +143,86 @@ class _HoldingFormPageState extends ConsumerState<HoldingFormPage> {
     _boundAccountId = ledger.account(h.accountId) == null ? null : h.accountId;
     _accountId = _boundAccountId;
     _note.text = h.note ?? '';
+    // 「数额」一节的初值：就是现在记着的数，改哪个发哪个。
+    _quantity.text = formatE4(h.quantityE4);
+    _cost.text = Money.input(h.costCents);
+    _realized.text = Money.input(h.realizedCents);
+    _value.text = h.valueCents == null ? '' : Money.input(h.valueCents!);
+    _cleared = h.isCleared;
+  }
+
+  /// 编辑页的「数额」：记错了直接改成对的数（服务端 PATCH，只改持仓、不补记流水）。
+  List<Widget> _calibrateFields(ThemeData theme, Holding h) {
+    final unit = _mode == InvestMode.unit;
+    final gold = _kind == Holding.kindGold;
+    final insurance = _kind == Holding.kindInsurance;
+    return [
+      const SizedBox(height: LedgerLayout.groupGap),
+      const SectionHeader('数额（记错了直接改）'),
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: LedgerLayout.pagePadding),
+        child: Text(
+          '只改这笔理财上的数，不补记流水${h.accountId == null ? '' : '；挂着投资账户的，账户余额要到「账户」里另外校准'}。',
+          style: theme.textTheme.bodySmall,
+        ),
+      ),
+      if (unit)
+        PickerField(
+          key: const ValueKey('holding-field-quantity'),
+          label: gold ? '克数' : '份额',
+          child: TextField(
+            key: const ValueKey('holding-quantity'),
+            controller: _quantity,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: InputDecoration(suffixText: gold ? '克' : '份'),
+          ),
+        ),
+      PickerField(
+        key: const ValueKey('holding-field-cost'),
+        label: unit ? '成本' : insurance ? '已交保费' : '本金',
+        trailing: Text(unit ? '还持有的那部分花了多少' : '还在里面的本金', style: theme.textTheme.bodySmall),
+        child: TextField(
+          key: const ValueKey('holding-cost'),
+          controller: _cost,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          decoration: InputDecoration(prefixText: '$_sym '),
+        ),
+      ),
+      if (_mode == InvestMode.balance)
+        PickerField(
+          key: const ValueKey('holding-field-value'),
+          label: insurance ? '现金价值' : '当前金额',
+          trailing: Text('空着 = 按本金', style: theme.textTheme.bodySmall),
+          child: TextField(
+            key: const ValueKey('holding-value'),
+            controller: _value,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: InputDecoration(prefixText: '$_sym '),
+          ),
+        ),
+      PickerField(
+        key: const ValueKey('holding-field-realized'),
+        label: _mode == InvestMode.deposit ? '已领利息' : '已实现收益',
+        trailing: Text(
+          _mode == InvestMode.deposit ? '估值会扣掉它' : '卖出赚的、分红；亏了写负数',
+          style: theme.textTheme.bodySmall,
+        ),
+        child: TextField(
+          key: const ValueKey('holding-realized'),
+          controller: _realized,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+          decoration: InputDecoration(prefixText: '$_sym '),
+        ),
+      ),
+      if (!unit)
+        SwitchListTile(
+          key: const ValueKey('holding-cleared'),
+          value: _cleared,
+          onChanged: (v) => setState(() => _cleared = v),
+          title: const Text('已结清'),
+          subtitle: const Text('取完了 / 到期了；关掉就是还持有着'),
+        ),
+    ];
   }
 
   /// 编辑有成本的持仓时，这次换账户要不要补转账、补哪种。
@@ -268,6 +352,33 @@ class _HoldingFormPageState extends ConsumerState<HoldingFormPage> {
         return _fail('挂上投资账户要选成本从哪个账户转进来');
       }
       final cost = holding?.costCents ?? 0;
+      // 「数额」：和现在记着的不一样才发。
+      int? quantity;
+      int? newCost;
+      int? realized;
+      int? value;
+      if (holding != null) {
+        if (unit) {
+          final q = parseE4(_quantity.text);
+          if (q == null) return _fail(_kind == Holding.kindGold ? '克数填得不对，例如 20' : '份额填得不对，例如 1000');
+          if (q != holding.quantityE4) quantity = q;
+        } else {
+          final want = _cleared ? 0 : Holding.heldE4;
+          if (want != holding.quantityE4) quantity = want;
+        }
+        final c = parseMoneyField(_cost.text);
+        if (c == null || c < 0) return _fail(unit ? '成本填得不对，例如 10000' : '本金填得不对，例如 50000');
+        if (c != holding.costCents) newCost = c;
+        final r = _realized.text.trim().isEmpty ? 0 : Money.tryParse(_realized.text);
+        if (r == null) return _fail('${_mode == InvestMode.deposit ? '已领利息' : '已实现收益'}填得不对，例如 120（亏了写 -120）');
+        if (r != holding.realizedCents) realized = r;
+        if (_mode == InvestMode.balance && _value.text.trim().isNotEmpty) {
+          final v = parseMoneyField(_value.text);
+          if (v == null || v < 0) return _fail('当前金额填得不对，例如 10230.55');
+          if (v != holding.valueCents) value = v;
+        }
+      }
+      final numbersChanged = quantity != null || newCost != null || realized != null || value != null;
       return _submit(() async {
         await repo.edit(
           widget.id!,
@@ -286,8 +397,13 @@ class _HoldingFormPageState extends ConsumerState<HoldingFormPage> {
           fromAccountId: change == _AccountChange.attach
               ? _fromAccountId
               : null,
+          quantityE4: quantity,
+          costCents: newCost,
+          realizedCents: realized,
+          valueCents: value,
         );
-        if (change == _AccountChange.none) return '已保存';
+        if (numbersChanged) refreshNetWorth(ref);
+        if (change == _AccountChange.none) return numbersChanged ? '已保存，数额改好了' : '已保存';
         refreshMoneyViews(ref);
         return change == _AccountChange.attach
             ? '已保存，也记了一笔 ${Money.format(cost)} 的转账'
@@ -761,6 +877,7 @@ class _HoldingFormPageState extends ConsumerState<HoldingFormPage> {
             if (_mode == InvestMode.unit) ..._unitFields(theme),
             if (_mode == InvestMode.deposit) ..._depositFields(theme),
             if (_mode == InvestMode.balance) ..._balanceFields(theme),
+            if (_editing && holding != null) ..._calibrateFields(theme, holding),
         ],
         side: [
             if (_editing) ...[

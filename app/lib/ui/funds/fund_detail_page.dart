@@ -11,13 +11,16 @@ import '../../core/money.dart';
 import '../../data/models/models.dart';
 import '../../data/repos/ledger_repo.dart';
 import '../analysis/trend_chart.dart' show compactYuan;
+import '../assets/asset_providers.dart' show refreshMoneyViews;
+import '../transactions/tx_providers.dart';
 import '../transactions/tx_tile.dart';
 import '../widgets/widgets.dart';
 import 'allocate_sheet.dart';
+import 'fund_calibrate_sheet.dart';
 import 'fund_progress.dart';
 import 'fund_providers.dart';
 
-/// 基金详情：余额、目标/预算、本月类别构成、近 6 月趋势、最近流水、拨款。
+/// 板块详情：余额（能校准）、目标/预算、本月类别构成、近 6 月趋势、最近流水、拨款；归档 / 恢复、删除。
 class FundDetailPage extends ConsumerWidget {
   const FundDetailPage(this.id, {super.key});
 
@@ -61,6 +64,25 @@ class FundDetailPage extends ConsumerWidget {
             onPressed: fund == null ? null : () => context.push('/funds/$id/edit'),
             icon: const Icon(Icons.edit_outlined),
           ),
+          if (fund != null)
+            PopupMenuButton<String>(
+              key: const ValueKey('fund-menu'),
+              tooltip: '更多',
+              onSelected: (action) => switch (action) {
+                'calibrate' => _calibrate(context, ref, fund),
+                'archive' => _setArchived(context, ref, fund, !fund.archived),
+                _ => _delete(context, ref, fund),
+              },
+              itemBuilder: (context) => [
+                const PopupMenuItem(value: 'calibrate', child: Text('校准余额')),
+                PopupMenuItem(
+                  key: const ValueKey('fund-archive'),
+                  value: 'archive',
+                  child: Text(fund.archived ? '恢复（取消归档）' : '归档'),
+                ),
+                const PopupMenuItem(key: ValueKey('fund-delete'), value: 'delete', child: Text('删除')),
+              ],
+            ),
         ],
       ),
       body: RefreshIndicator(
@@ -76,7 +98,23 @@ class FundDetailPage extends ConsumerWidget {
           main: ListView(
             padding: const EdgeInsets.only(bottom: 96),
             children: [
-              _Balance(fund: fund, stats: stats.valueOrNull, color: color),
+              if (fund != null && fund.archived)
+                MaterialBanner(
+                  key: const ValueKey('fund-archived-banner'),
+                  content: const Text('这个板块已归档：记账时不再出现，余额照算。'),
+                  actions: [
+                    TextButton(
+                      onPressed: () => _setArchived(context, ref, fund, false),
+                      child: const Text('恢复'),
+                    ),
+                  ],
+                ),
+              _Balance(
+                fund: fund,
+                stats: stats.valueOrNull,
+                color: color,
+                onCalibrate: fund == null ? null : () => _calibrate(context, ref, fund),
+              ),
               if (stats.hasError)
                 InlineError(
                   message: describeError(stats.error!),
@@ -94,7 +132,11 @@ class FundDetailPage extends ConsumerWidget {
               SectionHeader(
                 '最近流水',
                 actionLabel: '全部',
-                onAction: () => context.go('/transactions'), // 账单是底部 tab：切过去，push 会再叠一个外壳
+                // 账单是底部 tab：切过去（push 会再叠一个外壳），筛好这个板块。
+                onAction: () {
+                  ref.read(txFilterProvider.notifier).state = TxFilter(fundId: id, limit: TxListController.pageSize);
+                  context.go('/transactions');
+                },
               ),
               _Recent(stats: stats, ledger: ledger),
             ],
@@ -109,6 +151,58 @@ class FundDetailPage extends ConsumerWidget {
         ),
       ),
     );
+  }
+
+  Future<void> _calibrate(BuildContext context, WidgetRef ref, Fund fund) async {
+    final base = ref.read(baseCurrencyProvider);
+    final stats = ref.read(fundStatsProvider(id)).valueOrNull;
+    await showFundCalibrateSheet(context, fund: fund, balances: stats?.amounts(base) ?? const CurrencyAmounts());
+  }
+
+  Future<void> _setArchived(BuildContext context, WidgetRef ref, Fund fund, bool archived) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await ref.read(ledgerRepoProvider).updateFund(fund.id, {'archived': archived});
+      ref.invalidate(ledgerProvider);
+      refreshMoneyViews(ref);
+      messenger.showSnackBar(SnackBar(content: Text(archived ? '已归档「${fund.name}」' : '「${fund.name}」恢复了')));
+    } catch (error) {
+      messenger.showSnackBar(SnackBar(content: Text(describeError(error))));
+    }
+  }
+
+  Future<void> _delete(BuildContext context, WidgetRef ref, Fund fund) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('删掉「${fund.name}」？'),
+        content: const Text('只能删还没有流水的板块；有流水的可以「归档」，余额照算、记账时不再出现。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('算了')),
+          FilledButton(
+            key: const ValueKey('fund-delete-confirm'),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('删掉'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !context.mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await ref.read(ledgerRepoProvider).deleteFund(fund.id);
+      ref.invalidate(ledgerProvider);
+      refreshMoneyViews(ref);
+      messenger.showSnackBar(SnackBar(content: Text('已删掉「${fund.name}」')));
+      if (!context.mounted) return;
+      if (context.canPop()) {
+        context.pop();
+      } else {
+        context.go('/funds');
+      }
+    } catch (error) {
+      messenger.showSnackBar(SnackBar(content: Text(describeError(error))));
+    }
   }
 
   /// 目标/预算 + 操作。宽屏在右栏，窄屏接在余额下面。
@@ -144,29 +238,33 @@ class FundDetailPage extends ConsumerWidget {
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             const SizedBox(height: LedgerLayout.itemGap),
-            Row(
+            // 三个按钮按内容宽度排，放不下就换行（宽屏右栏只有 360 宽，等分会把字挤成两三行）。
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
               children: [
-                Expanded(
-                  child: FilledButton.tonalIcon(
-                    onPressed: () async {
-                      final done = await showAllocateSheet(
-                        context,
-                        from: fund,
-                        funds: ledger.activeFunds,
-                      );
-                      if (done == true) ref.invalidate(fundStatsProvider(id));
-                    },
-                    icon: const Icon(Icons.swap_horiz, size: 18),
-                    label: const Text('拨款'),
-                  ),
+                FilledButton.tonalIcon(
+                  onPressed: () async {
+                    final done = await showAllocateSheet(
+                      context,
+                      from: fund,
+                      funds: ledger.activeFunds,
+                    );
+                    if (done == true) ref.invalidate(fundStatsProvider(id));
+                  },
+                  icon: const Icon(Icons.swap_horiz, size: 18),
+                  label: const Text('拨款'),
                 ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => context.push('/funds/$id/edit'),
-                    icon: const Icon(Icons.tune, size: 18),
-                    label: const Text('目标/预算'),
-                  ),
+                OutlinedButton.icon(
+                  key: const ValueKey('fund-calibrate'),
+                  onPressed: () => _calibrate(context, ref, fund),
+                  icon: const Icon(Icons.edit_note, size: 18),
+                  label: const Text('校准余额'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () => context.push('/funds/$id/edit'),
+                  icon: const Icon(Icons.tune, size: 18),
+                  label: const Text('目标/预算'),
                 ),
               ],
             ),
@@ -179,11 +277,14 @@ class FundDetailPage extends ConsumerWidget {
 }
 
 class _Balance extends ConsumerWidget {
-  const _Balance({required this.color, this.fund, this.stats});
+  const _Balance({required this.color, this.fund, this.stats, this.onCalibrate});
 
   final Fund? fund;
   final FundStats? stats;
   final Color color;
+
+  /// 点余额 = 校准（填现在实际有多少）。
+  final VoidCallback? onCalibrate;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -208,7 +309,20 @@ class _Balance extends ConsumerWidget {
           if (stats == null)
             const Skeleton(width: 180, height: 30)
           else
-            CurrencyTotal(stats!.amounts(base), size: MoneySize.display),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Flexible(child: CurrencyTotal(stats!.amounts(base), size: MoneySize.display)),
+                if (onCalibrate != null)
+                  IconButton(
+                    key: const ValueKey('fund-balance-edit'),
+                    tooltip: '校准余额',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: onCalibrate,
+                    icon: Icon(Icons.edit_outlined, size: 18, color: theme.colorScheme.onSurfaceVariant),
+                  ),
+              ],
+            ),
           const SizedBox(height: LedgerLayout.itemGap),
           Row(
             children: [
