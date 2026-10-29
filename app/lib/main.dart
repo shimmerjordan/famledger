@@ -9,10 +9,13 @@ import 'app/theme_mode.dart';
 import 'data/local/local_store.dart';
 import 'data/local/secure_store.dart';
 import 'data/repos/session_repo.dart';
+import 'platform/web_fonts.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // 网页版先把中文字体拉下来再画第一帧（原因见 warmUpCjkFallbackFonts），和开本地存储并行。
+  final fontsReady = warmUpCjkFallbackFonts();
   // 会话先恢复好，路由的 redirect 才能是同步判断，启动不闪屏。
   final store = await LocalStore.open();
   final secure = await SecureStore.open();
@@ -20,6 +23,7 @@ Future<void> main() async {
   await sessionRepo.restore();
   // 外观也先读好：深色的用户不该先看到一帧白的。
   final themeMode = await readThemeMode(store);
+  await fontsReady;
 
   runApp(
     ProviderScope(

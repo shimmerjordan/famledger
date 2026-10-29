@@ -294,7 +294,7 @@ void main() {
       ),
     );
 
-    await tester.tap(find.text('转账·拨款'));
+    await tester.tap(find.text('转账・拨款'));
     await tester.pumpAndSettle();
     await tapKeys(tester, '100');
     await tester.tap(find.byKey(const ValueKey('account-a1')));
@@ -333,7 +333,7 @@ void main() {
     // 先在支出模式下挑一个基金（单边），再切到转账。
     await tester.tap(find.byKey(const ValueKey('fund-f1')));
     await tester.pump();
-    await tester.tap(find.text('转账·拨款'));
+    await tester.tap(find.text('转账・拨款'));
     await tester.pumpAndSettle();
 
     // 切过来之后那一边应该已经没选中了。
@@ -357,7 +357,7 @@ void main() {
   testWidgets('转账只填了基金的一边：本地就说清楚，不等服务端 400', (tester) async {
     await pumpAddTx(tester);
 
-    await tester.tap(find.text('转账·拨款'));
+    await tester.tap(find.text('转账・拨款'));
     await tester.pumpAndSettle();
     await tapKeys(tester, '100');
     // 账户填了完整一对，基金只填转出那一边。
@@ -400,7 +400,7 @@ void main() {
   testWidgets('转账模式两对都没填时说清楚要填什么', (tester) async {
     await pumpAddTx(tester);
 
-    await tester.tap(find.text('转账·拨款'));
+    await tester.tap(find.text('转账・拨款'));
     await tester.pumpAndSettle();
     await tapKeys(tester, '100');
     await tester.tap(find.byKey(const ValueKey('save-tx')));

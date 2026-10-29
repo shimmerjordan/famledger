@@ -204,7 +204,7 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.text('转账·拨款'));
+      await tester.tap(find.text('转账・拨款'));
       await tester.pumpAndSettle();
       await tapKeys(tester, '100');
       return repo;

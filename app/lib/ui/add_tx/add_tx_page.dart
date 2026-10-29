@@ -851,9 +851,11 @@ class _AmountHeader extends StatelessWidget {
                   label: Text('支出'),
                 ),
                 ButtonSegment(value: Transaction.typeIncome, label: Text('收入')),
+                // 间隔号用全角「・」(U+30FB) 而不是「·」(U+00B7)：后者在 Roboto 里，网页版会把标签切成中英两段
+                // 字体，SegmentedButton 按文字本来宽度定尺寸时量窄了、折成两行。
                 ButtonSegment(
                   value: Transaction.typeTransfer,
-                  label: Text('转账·拨款'),
+                  label: Text('转账・拨款'),
                 ),
               ],
               selected: {type},
