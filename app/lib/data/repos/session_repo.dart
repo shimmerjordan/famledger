@@ -61,6 +61,16 @@ class SessionRepo {
   bool _needsSetup = false;
   String? _householdName;
 
+  /// 令牌过期时登录页要显示的那句话。
+  static const String expiredNotice = '登录已过期，请重新登录';
+
+  /// 启动时判「令牌已过期」留的余量（毫秒）：10 分钟，容设备时钟快一点。
+  static const int expiryLeewayMs = 10 * 60 * 1000;
+
+  /// [restore] 没恢复会话的原因（目前只有「令牌已过期」），给登录页顶上显示一句；
+  /// `SessionController.build()` 搬走后清掉。没话说就是 null。
+  String? lastNotice;
+
   Session? get current => _session;
 
   /// 上次连过的服务器地址（登出后还留着，方便直接回登录页）。
@@ -72,6 +82,9 @@ class SessionRepo {
   String? get householdName => _householdName;
 
   /// 启动时读回会话。任何异常都当作「没登录」，不能崩在启动路径上。
+  ///
+  /// 令牌自带过期时刻（[tokenExpiresAt]）：到点的不恢复，删掉会话、留下 [lastNotice]，
+  /// 直接停在登录页，不用等第一个请求撞 401。服务器地址留着，登录页直接用。
   Future<Session?> restore() async {
     _baseUrl = await _secure.read(baseUrlKey);
     final raw = await _secure.read(sessionKey);
@@ -79,13 +92,46 @@ class SessionRepo {
     try {
       final session = Session.fromJson(jsonMap(jsonDecode(raw)));
       if (session.token.isEmpty || session.baseUrl.isEmpty) return null;
-      _session = session;
       _baseUrl = session.baseUrl;
+      final expiresAt = tokenExpiresAt(session.token);
+      // 留 [expiryLeewayMs] 的余量：设备时钟快几分钟不至于每次启动都被登出（登得上、一重启就掉）；
+      // 真过期了，第一个请求撞 401 一样会回登录页。
+      if (expiresAt != null && expiresAt + expiryLeewayMs <= DateTime.now().millisecondsSinceEpoch) {
+        lastNotice = expiredNotice;
+        await _secure.delete(sessionKey);
+        return null;
+      }
+      _session = session;
       return session;
     } catch (_) {
       await _secure.delete(sessionKey);
       return null;
     }
+  }
+
+  /// 令牌第一段（base64url 的 JSON `{sub,tid,exp,iat}`，`exp` 单位秒）里的过期时刻，毫秒。
+  /// 格式看不懂、没有 `exp` 都返回 null —— 老令牌当作不会过期，交给服务端判。
+  static int? tokenExpiresAt(String token) {
+    final dot = token.indexOf('.');
+    if (dot <= 0) return null;
+    try {
+      final head = base64Url.decode(base64Url.normalize(token.substring(0, dot)));
+      final payload = jsonDecode(utf8.decode(head));
+      if (payload is! Map) return null;
+      final exp = payload['exp'];
+      final seconds = exp is num ? exp : (exp is String ? num.tryParse(exp) : null);
+      if (seconds == null || !seconds.isFinite) return null;
+      return (seconds * 1000).toInt();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 令牌被服务端打回（过期 / 吊销）：只把会话从内存和安全存储里拿掉，服务器地址留着，
+  /// 本地缓存也不动 —— 同一个人待会儿还要登回来，排着的账要留着。不通知服务端（令牌本来就不认了）。
+  Future<void> dropSession() async {
+    _session = null;
+    await _secure.delete(sessionKey);
   }
 
   /// 校验服务器地址：`GET /healthz` + `GET /api/v1/setup/status`。

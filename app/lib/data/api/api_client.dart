@@ -89,6 +89,11 @@ class ApiClient {
   /// 登录后设上；为 null 时不发 Authorization 头。
   String? token;
 
+  /// 带着令牌的请求被服务端 401 打回（令牌过期 / 吊销 / 不认）时，抛 [ApiException] 之前调一次。
+  /// 登录失败、改密码时旧密码错也是 401，但错误码是 `invalid_credentials`，不算。
+  /// 每次 401 都会调，几个并发请求同时撞上就调几次 —— 去重由接的人做。
+  void Function()? onUnauthorized;
+
   final String _prefix;
   final http.Client _inner;
   final bool _ownsInner;
@@ -128,7 +133,8 @@ class ApiClient {
     request.headers['accept'] = 'text/event-stream';
     request.headers['content-type'] = 'application/json; charset=utf-8';
     final t = token;
-    if (t != null && t.isNotEmpty) request.headers['authorization'] = 'Bearer $t';
+    final sentToken = t != null && t.isNotEmpty;
+    if (sentToken) request.headers['authorization'] = 'Bearer $t';
     request.body = jsonEncode(body ?? const <String, dynamic>{});
 
     final http.StreamedResponse response;
@@ -140,7 +146,7 @@ class ApiClient {
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
       final text = utf8.decode(await response.stream.toBytes(), allowMalformed: true);
-      throw _errorFrom(response.statusCode, _tryJson(text));
+      throw _failed(response.statusCode, _tryJson(text), sentToken: sentToken);
     }
 
     var buffer = '';
@@ -197,7 +203,8 @@ class ApiClient {
     final request = http.Request(method, uri(path, query));
     request.headers['accept'] = 'application/json';
     final t = token;
-    if (t != null && t.isNotEmpty) request.headers['authorization'] = 'Bearer $t';
+    final sentToken = t != null && t.isNotEmpty;
+    if (sentToken) request.headers['authorization'] = 'Bearer $t';
     if (hasBody) {
       request.headers['content-type'] = 'application/json; charset=utf-8';
       request.body = jsonEncode(body ?? const <String, dynamic>{});
@@ -223,7 +230,21 @@ class ApiClient {
       if (decoded is List) return {'items': decoded};
       return <String, dynamic>{};
     }
-    throw _errorFrom(response.statusCode, decoded);
+    throw _failed(response.statusCode, decoded, sentToken: sentToken);
+  }
+
+  /// 非 2xx 翻译成 [ApiException]；带着令牌去却被 401 打回的，先通知 [onUnauthorized]。
+  /// 回调自己出错不能盖过本来要抛的 401。
+  ApiException _failed(int status, Object? decoded, {required bool sentToken}) {
+    final error = _errorFrom(status, decoded);
+    if (sentToken && error.status == 401 && error.code != 'invalid_credentials') {
+      try {
+        onUnauthorized?.call();
+      } catch (_) {
+        // 接的人自己的问题，这里照常把 401 抛出去。
+      }
+    }
+    return error;
   }
 
   static Object? _tryJson(String text) {

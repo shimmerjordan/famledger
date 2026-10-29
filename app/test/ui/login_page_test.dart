@@ -15,12 +15,13 @@ import 'package:http/testing.dart';
 
 const _server = 'http://127.0.0.1:48090';
 
-/// 记住了 [_server] 的一台设备，服务端按参数回 `/setup/status`。
+/// 记住了 [_server] 的一台设备，服务端按参数回 `/setup/status`；[notice] 是登录页顶上要显示的那句。
 Future<(List<String>, GoRouter)> _pumpLogin(
   WidgetTester tester, {
   bool? needsSetup,
   bool offline = false,
   bool rememberServer = true,
+  String? notice,
 }) async {
   final calls = <String>[];
   final client = MockClient((req) async {
@@ -29,6 +30,11 @@ Future<(List<String>, GoRouter)> _pumpLogin(
     final body = switch (req.url.path) {
       '/healthz' => {'ok': true},
       '/api/v1/setup/status' => {'needsSetup': needsSetup, if (needsSetup == false) 'householdName': '测试家庭'},
+      '/api/v1/auth/login' => {
+        'token': 'tok-new',
+        'deviceId': 'dev',
+        'member': {'id': 'm1', 'username': 'mama', 'displayName': '妈妈', 'role': 'admin'},
+      },
       _ => {'error': {'code': 'not_found', 'message': '没有'}},
     };
     return http.Response(jsonEncode(body), 200, headers: {'content-type': 'application/json; charset=utf-8'});
@@ -44,6 +50,7 @@ Future<(List<String>, GoRouter)> _pumpLogin(
       GoRoute(path: '/login', builder: (context, state) => const LoginPage()),
       GoRoute(path: '/setup', builder: (context, state) => const Scaffold(body: Text('首启向导'))),
       GoRoute(path: '/connect', builder: (context, state) => const Scaffold(body: Text('连接'))),
+      GoRoute(path: '/home', builder: (context, state) => const Scaffold(body: Text('首页'))),
     ],
   );
   addTearDown(router.dispose);
@@ -55,6 +62,7 @@ Future<(List<String>, GoRouter)> _pumpLogin(
         perkNotificationSchedulerProvider.overrideWithValue(
           const UnsupportedPerkNotificationScheduler(PerkPushBlock.desktop),
         ),
+        if (notice != null) sessionNoticeProvider.overrideWith((ref) => notice),
       ],
       child: MaterialApp.router(routerConfig: router),
     ),
@@ -90,6 +98,35 @@ void main() {
     final (calls, router) = await _pumpLogin(tester, needsSetup: true, rememberServer: false);
     expect(calls, isEmpty);
     expect(router.routerDelegate.currentConfiguration.uri.path, '/login');
+  });
+
+  testWidgets('令牌过期回来的：输入框上面有一句「登录已过期，请重新登录」，登录成功后清掉', (tester) async {
+    final (calls, router) = await _pumpLogin(tester, needsSetup: false, notice: '登录已过期，请重新登录');
+    final notice = find.byKey(const ValueKey('login-notice'));
+    expect(notice, findsOneWidget);
+    expect(find.text('登录已过期，请重新登录'), findsOneWidget);
+    expect(
+      tester.getTopLeft(notice).dy,
+      lessThan(tester.getTopLeft(find.byType(TextField).first).dy),
+      reason: '提示在输入框上面',
+    );
+    expect(find.byIcon(Icons.error_outline), findsNothing, reason: '是说明不是报错');
+
+    await tester.enterText(find.byType(TextField).at(0), 'mama');
+    await tester.enterText(find.byType(TextField).at(1), 'secret');
+    await tester.tap(find.widgetWithText(FilledButton, '登录'));
+    await tester.pumpAndSettle();
+
+    expect(calls, contains('/api/v1/auth/login'));
+    expect(router.routerDelegate.currentConfiguration.uri.path, '/home');
+    final container = ProviderScope.containerOf(tester.element(find.byType(MaterialApp)), listen: false);
+    expect(container.read(sessionNoticeProvider), isNull, reason: '登回来了，那句话不用再说');
+    expect(container.read(sessionProvider)?.token, 'tok-new');
+  });
+
+  testWidgets('没有提示时登录页顶上什么都不显示', (tester) async {
+    await _pumpLogin(tester, needsSetup: false);
+    expect(find.byKey(const ValueKey('login-notice')), findsNothing);
   });
 
   test('问的途中换了服务器：这次结果作废，也不把地址写回旧的', () async {

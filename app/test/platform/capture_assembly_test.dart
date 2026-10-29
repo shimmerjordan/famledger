@@ -140,4 +140,19 @@ void main() {
     expect(after['version'], seed['version']);
     expect(after['totalDocs'], seed['totalDocs']);
   });
+
+  test('令牌被服务端 401 打回：删掉安全存储里的会话（地址留着），下一条通知变成「还没登录」、不再带令牌去请求', () async {
+    final runtime = build(MemoryLocalStore());
+    server.statusOverrides['POST /api/v1/transactions'] = 401;
+
+    final first = await runtime.handleNotification(notification('你有一笔35.00元的支出，来自美团'));
+    expect(first['decision'], isNot('error'), reason: '401 不能让后台管线崩：$first');
+    expect(secure.data.containsKey(SessionRepo.sessionKey), isFalse, reason: '会话删了');
+    expect(secure.data[SessionRepo.baseUrlKey], 'https://x.dev', reason: '服务器地址留着');
+    final callsBefore = server.calls.length;
+
+    final second = await runtime.handleNotification(notification('你有一笔42.00元的支出，来自滴滴出行'));
+    expect(second['title'], '家账还没登录');
+    expect(server.calls.length, callsBefore, reason: '没登录就一个请求都不发');
+  });
 }

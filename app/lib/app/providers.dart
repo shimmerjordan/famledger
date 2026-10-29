@@ -57,6 +57,10 @@ final logoutHooksProvider = Provider<LogoutHooks>((ref) => LogoutHooks());
 /// 内存里不留上一个人的设置（会员提醒的时间、「知道了」）。
 final localStoreEpochProvider = StateProvider<int>((ref) => 0);
 
+/// 登录页顶上要显示的一句话（「登录已过期，请重新登录」）；null = 没话说。
+/// 令牌过期时由 [SessionController.expire] 或启动时的 `restore()` 放进来，登录成功后登录页清掉。
+final sessionNoticeProvider = StateProvider<String?>((ref) => null);
+
 /// 当前会话；null = 没登录。
 final sessionProvider = NotifierProvider<SessionController, Session?>(
   SessionController.new,
@@ -65,10 +69,18 @@ final sessionProvider = NotifierProvider<SessionController, Session?>(
 class SessionController extends Notifier<Session?> {
   @override
   Session? build() {
-    final current = ref.read(sessionRepoProvider).current;
+    final repo = ref.read(sessionRepoProvider);
+    final current = repo.current;
     // 没登录就启动了（停在登录页）：把系统里排着的会员提醒撤干净 —— 上次退出登录时进程可能在撤到一半时被杀了，
     // 上一家的卡名不该再弹 30 天。登录着的由外壳里的排程接手（platform/perk_reminders.dart）。
     if (current == null) unawaited(clearPerkNotifications(ref.read(perkNotificationSchedulerProvider), DateTime.now()));
+    // 启动时 restore() 发现令牌已经过期：把那句话搬给登录页。build 里不许改别的 provider
+    // （Riverpod 会断言「modify other providers during their initialization」），推到下一个微任务。
+    final notice = repo.lastNotice;
+    if (notice != null) {
+      repo.lastNotice = null;
+      unawaited(Future.microtask(() => ref.read(sessionNoticeProvider.notifier).state = notice));
+    }
     return current;
   }
 
@@ -115,6 +127,26 @@ class SessionController extends Notifier<Session?> {
     ref.read(localStoreEpochProvider.notifier).state++;
   }
 
+  /// 令牌被服务端打回（过期 / 吊销）：删掉会话、回登录页，并让登录页说一句 [reason]。
+  ///
+  /// 和 [logout] 不同：**不**清本地缓存、不跑 logoutHooks —— 同一个人待会儿还会登回来，
+  /// outbox 里排着的账要等重新登录后再发（`TransactionsRepo.definitiveStatuses` 本来就不含 401）。
+  /// 几个并发请求同时撞上 401 会各调一次，`state == null` 就不再做第二遍。
+  ///
+  /// [token] 是撞上 401 的那个客户端当时拿的令牌：换过会话之后还在飞的慢请求（比如导入上传）回来报 401，
+  /// 不能把刚登进来的新会话也踢掉 —— 和现在的不是同一个就不理。
+  Future<void> expire(String reason, {String? token}) async {
+    if (state == null) return;
+    if (token != null && state!.token != token) return;
+    try {
+      await _repo.dropSession();
+    } catch (_) {
+      // 安全存储抽风也要把人送回登录页；下次启动 restore() 还会再判一次。
+    }
+    state = null;
+    ref.read(sessionNoticeProvider.notifier).state = reason;
+  }
+
   Future<void> changePassword({
     required String oldPassword,
     required String newPassword,
@@ -127,10 +159,14 @@ class SessionController extends Notifier<Session?> {
 }
 
 /// 带着当前会话令牌的 API 客户端；换账号会自动重建。
+/// 令牌被服务端打回就 [SessionController.expire]：删会话、回登录页。
 final apiProvider = Provider<ApiClient>((ref) {
   final session = ref.watch(sessionProvider);
   final baseUrl = session?.baseUrl ?? ref.read(sessionRepoProvider).storedBaseUrl ?? '';
   final client = ApiClient(baseUrl: baseUrl, token: session?.token);
+  final controller = ref.read(sessionProvider.notifier);
+  final token = session?.token;
+  client.onUnauthorized = () => unawaited(controller.expire(SessionRepo.expiredNotice, token: token));
   ref.onDispose(client.close);
   return client;
 });

@@ -1,7 +1,100 @@
+import 'dart:convert';
+
+import 'package:famledger/data/local/secure_store.dart';
 import 'package:famledger/data/repos/session_repo.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+/// 服务端那种令牌：`base64url(JSON{sub,tid,exp,iat})`（无填充）+ `.` + 签名；签名这里随便写。
+String token({int? exp}) {
+  final payload = {'sub': 'm1', 'tid': 't1', 'iat': 1700000000, if (exp != null) 'exp': exp};
+  final head = base64Url.encode(utf8.encode(jsonEncode(payload))).replaceAll('=', '');
+  return '$head.c2ln';
+}
+
+MemorySecureStore storedSession(String tok) => MemorySecureStore()
+  ..data[SessionRepo.baseUrlKey] = 'https://ledger.example.com'
+  ..data[SessionRepo.sessionKey] = jsonEncode({
+    'baseUrl': 'https://ledger.example.com',
+    'token': tok,
+    'deviceId': 'dev',
+    'me': {'id': 'm1', 'username': 'mama', 'displayName': '妈妈', 'role': 'admin'},
+  });
+
 void main() {
+  group('SessionRepo.tokenExpiresAt', () {
+    test('解析第一段 base64url JSON 里的 exp（秒 → 毫秒），没有填充也能解', () {
+      expect(SessionRepo.tokenExpiresAt(token(exp: 1700000000)), 1700000000 * 1000);
+      expect(SessionRepo.tokenExpiresAt(token(exp: 1)), 1000);
+    });
+
+    test('没有 exp、不是这种格式、第一段不是 JSON：都返回 null，当作不会过期', () {
+      expect(SessionRepo.tokenExpiresAt(token()), isNull);
+      expect(SessionRepo.tokenExpiresAt('tok'), isNull);
+      expect(SessionRepo.tokenExpiresAt(''), isNull);
+      expect(SessionRepo.tokenExpiresAt('.sig'), isNull);
+      expect(SessionRepo.tokenExpiresAt('!!!.sig'), isNull);
+      expect(SessionRepo.tokenExpiresAt('${base64Url.encode(utf8.encode('not json'))}.sig'), isNull);
+      expect(SessionRepo.tokenExpiresAt('${base64Url.encode(utf8.encode('[1,2]'))}.sig'), isNull);
+    });
+  });
+
+  group('SessionRepo.restore 与令牌过期', () {
+    test('令牌已过期：不恢复，删掉会话、留下提示，服务器地址还在', () async {
+      final secure = storedSession(token(exp: 1700000000)); // 2023-11-14，早过了
+      final repo = SessionRepo(secure: secure);
+      expect(await repo.restore(), isNull);
+      expect(repo.current, isNull);
+      expect(repo.lastNotice, '登录已过期，请重新登录');
+      expect(secure.data.containsKey(SessionRepo.sessionKey), isFalse);
+      expect(secure.data[SessionRepo.baseUrlKey], 'https://ledger.example.com');
+      expect(repo.storedBaseUrl, 'https://ledger.example.com', reason: '登录页要直接用这个地址');
+    });
+
+    test('令牌还没过期：照常恢复，没有提示', () async {
+      final future = DateTime.now().add(const Duration(days: 30)).millisecondsSinceEpoch ~/ 1000;
+      final secure = storedSession(token(exp: future));
+      final repo = SessionRepo(secure: secure);
+      expect((await repo.restore())?.me.username, 'mama');
+      expect(repo.lastNotice, isNull);
+      expect(secure.data.containsKey(SessionRepo.sessionKey), isTrue);
+    });
+
+    test('过期不到 10 分钟的还恢复（容设备时钟快一点；真过期了第一个请求会撞 401 回登录页）', () async {
+      final fiveMinAgo = DateTime.now().subtract(const Duration(minutes: 5)).millisecondsSinceEpoch ~/ 1000;
+      final repo = SessionRepo(secure: storedSession(token(exp: fiveMinAgo)));
+      expect((await repo.restore())?.me.username, 'mama');
+      expect(repo.lastNotice, isNull);
+    });
+
+    test('过期超过 10 分钟的不恢复', () async {
+      final longAgo = DateTime.now().subtract(const Duration(minutes: 15)).millisecondsSinceEpoch ~/ 1000;
+      final secure = storedSession(token(exp: longAgo));
+      final repo = SessionRepo(secure: secure);
+      expect(await repo.restore(), isNull);
+      expect(repo.lastNotice, '登录已过期，请重新登录');
+      expect(secure.data.containsKey(SessionRepo.sessionKey), isFalse);
+    });
+
+    test('没有 exp 的老令牌照常恢复（交给服务端判）', () async {
+      final secure = storedSession('tok');
+      final repo = SessionRepo(secure: secure);
+      expect((await repo.restore())?.token, 'tok');
+      expect(repo.lastNotice, isNull);
+      expect(secure.data.containsKey(SessionRepo.sessionKey), isTrue);
+    });
+
+    test('dropSession：只删会话，服务器地址留着', () async {
+      final secure = storedSession('tok');
+      final repo = SessionRepo(secure: secure);
+      await repo.restore();
+      await repo.dropSession();
+      expect(repo.current, isNull);
+      expect(secure.data.containsKey(SessionRepo.sessionKey), isFalse);
+      expect(secure.data[SessionRepo.baseUrlKey], 'https://ledger.example.com');
+      expect(repo.storedBaseUrl, 'https://ledger.example.com');
+    });
+  });
+
   group('SessionRepo.normalizeUrl', () {
     test('局域网裸 IP，没写端口 → 自动补 http:// 与默认端口', () {
       expect(SessionRepo.normalizeUrl('192.168.1.10'), 'http://192.168.1.10:48090');

@@ -68,7 +68,10 @@ class _LoginPageState extends ConsumerState<LoginPage> {
         _username.text.trim(),
         _password.text,
       );
-      if (mounted) context.go('/home');
+      if (!mounted) return;
+      // 登回来了，「登录已过期」那句话就不用再说了。
+      ref.read(sessionNoticeProvider.notifier).state = null;
+      context.go('/home');
     } catch (e) {
       if (mounted) setState(() => _error = describeError(e));
     } finally {
@@ -81,6 +84,8 @@ class _LoginPageState extends ConsumerState<LoginPage> {
     final theme = Theme.of(context);
     final server = ref.read(sessionProvider.notifier).storedBaseUrl ?? '';
     final household = ref.read(sessionProvider.notifier).householdName;
+    // 为什么又回到了登录页（令牌过期）：中性的一句话，不是错误。
+    final notice = ref.watch(sessionNoticeProvider);
     return AuthScaffold(
       title: household == null ? '登录' : '登录「$household」',
       subtitle: server.isEmpty ? null : server,
@@ -98,6 +103,25 @@ class _LoginPageState extends ConsumerState<LoginPage> {
         ],
       ),
       children: [
+        if (notice != null && notice.isNotEmpty) ...[
+          Row(
+            key: const ValueKey('login-notice'),
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(Icons.info_outline, size: 18, color: theme.colorScheme.onSurfaceVariant),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  notice,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+        ],
         TextField(
           controller: _username,
           autofocus: true,

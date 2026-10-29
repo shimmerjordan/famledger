@@ -329,4 +329,83 @@ void main() {
       );
     });
   });
+
+  group('令牌过期回调 onUnauthorized', () {
+    ApiClient client401(String code, {String? token}) => ApiClient(
+      baseUrl: 'https://x.dev',
+      token: token,
+      inner: MockClient(
+        (req) async => jsonResponse({
+          'error': {'code': code, 'message': '令牌无效或已过期'},
+        }, status: 401),
+      ),
+    );
+
+    test('带令牌的请求被 401 unauthorized 打回：先调 onUnauthorized，再照常抛 ApiException', () async {
+      var calls = 0;
+      final api = client401('unauthorized', token: 'tok')..onUnauthorized = () => calls++;
+      await expectLater(
+        api.get('/auth/me'),
+        throwsA(
+          isA<ApiException>()
+              .having((e) => e.isUnauthorized, 'isUnauthorized', true)
+              .having((e) => e.code, 'code', 'unauthorized'),
+        ),
+      );
+      expect(calls, 1);
+      await expectLater(api.patch('/transactions/t1', {'note': 'x'}), throwsA(isA<ApiException>()));
+      expect(calls, 2, reason: '每次 401 都调，去重由接的人做');
+    });
+
+    test('401 invalid_credentials（登录失败 / 改密码旧密码错）不算令牌过期，不调', () async {
+      var calls = 0;
+      final api = client401('invalid_credentials', token: 'tok')..onUnauthorized = () => calls++;
+      await expectLater(
+        api.post('/auth/password', {'oldPassword': 'x', 'newPassword': 'y'}),
+        throwsA(isA<ApiException>().having((e) => e.isUnauthorized, 'isUnauthorized', true)),
+      );
+      expect(calls, 0);
+    });
+
+    test('没带令牌的 401 不调', () async {
+      var calls = 0;
+      final api = client401('unauthorized')..onUnauthorized = () => calls++;
+      await expectLater(api.post('/auth/login', {}), throwsA(isA<ApiException>()));
+      expect(calls, 0);
+    });
+
+    test('回调自己出错不盖过本来要抛的 401', () async {
+      final api = client401('unauthorized', token: 'tok')
+        ..onUnauthorized = () => throw StateError('boom');
+      await expectLater(
+        api.get('/auth/me'),
+        throwsA(isA<ApiException>().having((e) => e.status, 'status', 401)),
+      );
+    });
+
+    test('SSE 的 401 也调', () async {
+      var calls = 0;
+      final api = ApiClient(
+        baseUrl: 'https://x.dev',
+        token: 'tok',
+        inner: MockClient.streaming(
+          (req, body) async => http.StreamedResponse(
+            Stream.value(
+              utf8.encode(
+                jsonEncode({
+                  'error': {'code': 'unauthorized', 'message': '令牌无效或已过期'},
+                }),
+              ),
+            ),
+            401,
+          ),
+        ),
+      )..onUnauthorized = () => calls++;
+      await expectLater(
+        api.sse('/ai/chat', {'messages': []}).toList(),
+        throwsA(isA<ApiException>().having((e) => e.isUnauthorized, 'isUnauthorized', true)),
+      );
+      expect(calls, 1);
+    });
+  });
 }

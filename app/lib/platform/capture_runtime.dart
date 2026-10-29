@@ -431,7 +431,8 @@ class CaptureRuntime {
   }
 
   Future<_Assembly?> _assemble() async {
-    final session = await SessionRepo(secure: _secure, httpClient: _httpClient).restore();
+    final sessionRepo = SessionRepo(secure: _secure, httpClient: _httpClient);
+    final session = await sessionRepo.restore();
     if (session == null) {
       _reset();
       return null;
@@ -451,6 +452,10 @@ class CaptureRuntime {
       inner: _httpClient,
       timeout: apiTimeout,
     );
+    // 令牌被服务端打回（过期 / 吊销）：这里是独立的后台引擎，拿不到主应用的 Riverpod 容器，
+    // 只把安全存储里的会话删掉 —— 下一个事件来时 restore() 读不到会话，这套装配自然拆掉，
+    // 不再拿这个令牌发请求；主应用下次请求撞上 401、或下次启动 restore() 时自然回登录页。
+    client.onUnauthorized = () => unawaited(_dropSession(sessionRepo));
     LedgerRepo? ledger;
     try {
       final overlay = _OverlayLocalStore(_cache);
@@ -544,6 +549,15 @@ class CaptureRuntime {
     if (old == null) return;
     old.ledger.dispose();
     if (_httpClient == null) old.client.close();
+  }
+
+  /// 删安全存储里的会话；删不掉也不能让后台管线崩 —— 下次启动 restore() 还会再判一次。
+  Future<void> _dropSession(SessionRepo repo) async {
+    try {
+      await repo.dropSession();
+    } catch (e) {
+      debugPrint('capture: 删过期会话失败 $e');
+    }
   }
 
   /// 两份模型内容是否一样（版本号不算）。
