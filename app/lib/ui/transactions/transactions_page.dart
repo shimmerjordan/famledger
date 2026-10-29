@@ -196,6 +196,17 @@ class _TransactionsPageState extends ConsumerState<TransactionsPage> {
     );
   }
 
+  /// 批量「计入 / 不计入账户余额」（[off] 为真 = 不计入）：转账也能改，两头一起不动。
+  Future<void> _setOffBalance(bool off) async {
+    final chosen = _chosen();
+    if (chosen.isEmpty || !_withinLimit(chosen.length)) return;
+    await _runBulk(
+      [for (final tx in chosen) tx.id],
+      patch: {'offBalance': off},
+      done: off ? '这 ${chosen.length} 笔不再计入账户余额' : '这 ${chosen.length} 笔计入账户余额了',
+    );
+  }
+
   /// 转账不参与改类别/基金（没有类别，基金又是成对的），这里不发给服务端，
   /// 提示里也说清楚哪几笔没动。
   static String _doneText(int changed, int transfers, String what) =>
@@ -322,6 +333,7 @@ class _TransactionsPageState extends ConsumerState<TransactionsPage> {
       categoryHint: categoryHint,
       onFund: ready && fundHint == null ? () => _changeFund(ledger) : null,
       fundHint: fundHint,
+      onBalance: ready ? _setOffBalance : null,
       onDelete: _busy ? null : _deleteSelected,
       onCancel: _clearSelection,
     );

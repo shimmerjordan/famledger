@@ -33,6 +33,7 @@ class _TxFilterSheetState extends State<_TxFilterSheet> {
   late String? _type = widget.initial.type;
   late String? _status = widget.initial.status;
   late String? _source = widget.initial.source;
+  late bool? _offBalance = widget.initial.offBalance;
   late String? _fundId = widget.initial.fundId;
   late String? _accountId = widget.initial.accountId;
   late String? _categoryId = widget.initial.categoryId;
@@ -61,6 +62,7 @@ class _TxFilterSheetState extends State<_TxFilterSheet> {
     _type = null;
     _status = null;
     _source = null;
+    _offBalance = null;
     _fundId = null;
     _accountId = null;
     _categoryId = null;
@@ -76,6 +78,7 @@ class _TxFilterSheetState extends State<_TxFilterSheet> {
       type: _type,
       status: _status,
       source: _source,
+      offBalance: _offBalance,
       fundId: _fundId,
       accountId: _accountId,
       categoryId: _categoryId,
@@ -134,6 +137,14 @@ class _TxFilterSheetState extends State<_TxFilterSheet> {
                       values: Transaction.sourceLabels,
                       selected: _source,
                       onSelected: (v) => setState(() => _source = v),
+                    ),
+                  ),
+                  PickerField(
+                    label: '账户余额',
+                    child: _Chips(
+                      values: const {'in': '计入', 'off': '不计入'},
+                      selected: _offBalance == null ? null : (_offBalance! ? 'off' : 'in'),
+                      onSelected: (v) => setState(() => _offBalance = v == null ? null : v == 'off'),
                     ),
                   ),
                   PickerField(

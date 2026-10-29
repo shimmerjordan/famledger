@@ -147,6 +147,7 @@ class ImportItem {
     this.fundId,
     this.categoryChanged = false,
     this.fundChanged = false,
+    this.offBalance = false,
   });
 
   final ImportRow row;
@@ -154,6 +155,9 @@ class ImportItem {
   final String? fundId;
   final bool categoryChanged;
   final bool fundChanged;
+
+  /// 不计入账户余额（核对页底栏「计入账户余额」关着）：只进收支统计、板块和预算，不加减账户余额。
+  final bool offBalance;
 
   /// 只有人手改过的标签才算「纠正」；机器猜的原样送回去训练只会自我强化。
   bool get teaches =>
@@ -173,6 +177,7 @@ class ImportItem {
     putIfNotNull(json, 'categoryId', categoryId);
     putIfNotNull(json, 'fundId', fundId);
     putIfNotNull(json, 'accountId', row.accountId);
+    if (offBalance) json['offBalance'] = true;
     return json;
   }
 
@@ -404,6 +409,8 @@ final importRepoProvider = Provider<ImportRepo>((ref) {
     token: api.token,
     timeout: const Duration(minutes: 2),
   );
+  // 令牌过期时和主客户端一样回登录页。
+  upload.onUnauthorized = api.onUnauthorized;
   ref.onDispose(upload.close);
   return ImportRepo(api, uploadApi: upload);
 });

@@ -80,7 +80,8 @@ class ImportDraft extends ChangeNotifier {
 
   int count(bool Function(ImportRow row) test) => rows.where(test).length;
 
-  List<ImportItem> items() => [
+  /// 要提交的那些；[offBalance] 为真 = 这批不计入账户余额（核对页底栏的开关）。
+  List<ImportItem> items({bool offBalance = false}) => [
     for (final i in includedIndices)
       ImportItem(
         row: rows[i],
@@ -88,6 +89,7 @@ class ImportDraft extends ChangeNotifier {
         fundId: _fundIds[i],
         categoryChanged: categoryChanged(i),
         fundChanged: fundChanged(i),
+        offBalance: offBalance,
       ),
   ];
 }

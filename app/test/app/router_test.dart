@@ -137,7 +137,7 @@ void main() {
     expect(find.byKey(const ValueKey('settings-pane')), findsOneWidget);
   });
 
-  testWidgets('切到「我的」：资产、账户、会员提醒、导入账单都挪走了', (tester) async {
+  testWidgets('切到「我的」：资产、账户、会员提醒都挪走了；导入账单在「智能与数据」里有入口', (tester) async {
     await pumpApp(
       tester,
       await boot(baseUrl: 'https://ledger.example.com', loggedIn: true),
@@ -152,9 +152,10 @@ void main() {
     await tester.dragUntilVisible(find.text('关于'), find.byType(ListView).last, const Offset(0, -200));
     expect(entry('服务器与账号'), findsOneWidget);
     expect(entry('关于'), findsOneWidget);
-    for (final gone in ['资产', '账户', '会员提醒', '导入账单']) {
+    for (final gone in ['资产', '账户', '会员提醒']) {
       expect(entry(gone), findsNothing, reason: '「$gone」不该再在「我的」里');
     }
+    expect(entry('导入账单'), findsOneWidget, reason: '账单页那个入口藏在图标里，「我的」再给一个');
   });
 
   testWidgets('宽屏「我的」：左边入口、右边嵌着子页（默认成员），点「类别」右边换成类别页；右上角能切外观', (tester) async {

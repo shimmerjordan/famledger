@@ -33,6 +33,7 @@ class Transaction {
     this.updatedAt,
     this.deletedAt,
     this.seq,
+    this.offBalance = false,
     this.pendingSync = false,
     this.serverDuplicate = false,
   });
@@ -100,6 +101,10 @@ class Transaction {
   final DateTime? deletedAt;
   final int? seq;
 
+  /// 不计入账户余额：照常进收支统计、板块余额和预算，只是不加减真账户的余额
+  /// （余额靠账户里的「现在余额」校准）。账单导入默认这样记。老服务端没这个字段时当 false。
+  final bool offBalance;
+
   /// 仅客户端：还在 outbox 里等着发给服务端。
   final bool pendingSync;
 
@@ -155,6 +160,7 @@ class Transaction {
     updatedAt: jsonDateOrNull(json['updatedAt']),
     deletedAt: jsonDateOrNull(json['deletedAt']),
     seq: jsonIntOrNull(json['seq']),
+    offBalance: jsonBool(json['offBalance']),
     pendingSync: jsonBool(json['pendingSync']),
   );
 
@@ -193,6 +199,7 @@ class Transaction {
     putIfNotNull(json, 'updatedAt', updatedAt == null ? null : Dates.isoLocal(updatedAt!));
     putIfNotNull(json, 'deletedAt', deletedAt == null ? null : Dates.isoLocal(deletedAt!));
     putIfNotNull(json, 'seq', seq);
+    if (offBalance) json['offBalance'] = true;
     if (pendingSync) json['pendingSync'] = true;
     return json;
   }
@@ -215,6 +222,7 @@ class Transaction {
     String? status,
     double? confidence,
     DateTime? deletedAt,
+    bool? offBalance,
     bool? pendingSync,
     bool? serverDuplicate,
   }) => Transaction(
@@ -247,6 +255,7 @@ class Transaction {
     updatedAt: updatedAt,
     deletedAt: deletedAt ?? this.deletedAt,
     seq: seq,
+    offBalance: offBalance ?? this.offBalance,
     pendingSync: pendingSync ?? this.pendingSync,
     serverDuplicate: serverDuplicate ?? this.serverDuplicate,
   );
@@ -277,6 +286,7 @@ class TransactionDraft {
     this.rawText,
     this.sourceApp,
     this.captureId,
+    this.offBalance = false,
   });
 
   final String clientId;
@@ -304,6 +314,9 @@ class TransactionDraft {
   final String? sourceApp;
   final String? captureId;
 
+  /// 不计入账户余额（见 [Transaction.offBalance]）；只在为真时写进请求体。
+  final bool offBalance;
+
   Map<String, dynamic> toJson() {
     final json = <String, dynamic>{
       'clientId': clientId,
@@ -330,6 +343,7 @@ class TransactionDraft {
     putIfNotNull(json, 'sourceApp', sourceApp);
     putIfNotNull(json, 'captureId', captureId);
     json['tags'] = tags;
+    if (offBalance) json['offBalance'] = true;
     return json;
   }
 
@@ -356,6 +370,7 @@ class TransactionDraft {
     rawText: jsonStringOrNull(json['rawText']),
     sourceApp: jsonStringOrNull(json['sourceApp']),
     captureId: jsonStringOrNull(json['captureId']),
+    offBalance: jsonBool(json['offBalance']),
   );
 
   /// 离线记账时先给 UI 一条「本地存在」的流水，id 借用 clientId。
@@ -384,6 +399,7 @@ class TransactionDraft {
     sourceApp: sourceApp,
     captureId: captureId,
     createdAt: DateTime.now(),
+    offBalance: offBalance,
     pendingSync: true,
   );
 }
@@ -400,6 +416,7 @@ class TxFilter {
     this.memberId,
     this.status,
     this.source,
+    this.offBalance,
     this.q,
     this.limit,
   });
@@ -413,6 +430,9 @@ class TxFilter {
   final String? memberId;
   final String? status;
   final String? source;
+
+  /// 账户余额：true = 只看不计入的，false = 只看计入的，null = 不限。
+  final bool? offBalance;
   final String? q;
   final int? limit;
 
@@ -426,6 +446,7 @@ class TxFilter {
       memberId == null &&
       status == null &&
       source == null &&
+      offBalance == null &&
       (q == null || q!.isEmpty);
 
   /// 除时间范围外还剩几个筛选项（UI 上显示「筛选 · 2」）。
@@ -437,6 +458,7 @@ class TxFilter {
     memberId,
     status,
     source,
+    offBalance,
     (q?.isEmpty ?? true) ? null : q,
   ].where((e) => e != null).length;
 
@@ -451,6 +473,7 @@ class TxFilter {
     if (memberId != null) q0['memberId'] = memberId!;
     if (status != null) q0['status'] = status!;
     if (source != null) q0['source'] = source!;
+    if (offBalance != null) q0['offBalance'] = offBalance! ? '1' : '0';
     if (q != null && q!.isNotEmpty) q0['q'] = q!;
     if (limit != null) q0['limit'] = '$limit';
     return q0;
@@ -466,6 +489,7 @@ class TxFilter {
     String? memberId,
     String? status,
     String? source,
+    bool? offBalance,
     String? q,
     int? limit,
     bool clearRange = false,
@@ -480,6 +504,7 @@ class TxFilter {
     memberId: clearFacets ? null : (memberId ?? this.memberId),
     status: clearFacets ? null : (status ?? this.status),
     source: clearFacets ? null : (source ?? this.source),
+    offBalance: clearFacets ? null : (offBalance ?? this.offBalance),
     q: clearFacets ? null : (q ?? this.q),
     limit: limit ?? this.limit,
   );

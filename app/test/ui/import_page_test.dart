@@ -818,21 +818,21 @@ void main() {
       return container;
     }
 
-    testWidgets('「我的」里不再有「导入账单」（只留账单页顶栏那个）；/import 照常，粘贴导入是 /import/paste', (tester) async {
+    testWidgets('「我的 › 智能与数据」有「导入账单」入口（账单页顶栏那个也在）；/import 照常，粘贴导入是 /import/paste', (tester) async {
       final h = Harness();
       final container = await boot(tester, h);
 
       await tester.tap(find.text('我的').last);
       await tester.pumpAndSettle();
       await tester.scrollUntilVisible(
-        find.text('关于'),
+        find.byKey(const ValueKey('settings-entry-/import')),
         200,
         scrollable: find.byType(Scrollable).last,
       );
-      expect(find.text('导入账单'), findsNothing);
+      expect(find.text('导入账单'), findsOneWidget);
 
       final router = container.read(routerProvider);
-      router.push('/import');
+      await tester.tap(find.byKey(const ValueKey('settings-entry-/import')));
       await tester.pumpAndSettle();
       expect(find.byType(ImportPage), findsOneWidget);
       expect(router.state.matchedLocation, '/import');

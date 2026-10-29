@@ -383,9 +383,13 @@ class _Merchant extends StatelessWidget {
     final note = tx.note ?? '';
     final primary = merchant.isNotEmpty ? merchant : note;
     final secondary = merchant.isNotEmpty && note.isNotEmpty ? note : '';
-    final Widget? badge = tx.pendingSync
-        ? TxStatusBadge.offline()
-        : (tx.status != 'confirmed' ? TxStatusBadge(status: tx.status) : null);
+    final badges = <Widget>[
+      if (tx.pendingSync)
+        TxStatusBadge.offline()
+      else if (tx.status != 'confirmed')
+        TxStatusBadge(status: tx.status),
+      if (tx.offBalance) TxStatusBadge.offBalance(),
+    ];
 
     return Row(
       children: [
@@ -405,7 +409,7 @@ class _Merchant extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                 ),
         ),
-        if (badge != null) ...[const SizedBox(width: 6), badge],
+        for (final badge in badges) ...[const SizedBox(width: 6), badge],
       ],
     );
   }
@@ -422,6 +426,7 @@ class TxSelectionBar extends StatelessWidget {
     required this.onCancel,
     this.onCategory,
     this.onFund,
+    this.onBalance,
     this.onDelete,
     this.categoryHint,
     this.fundHint,
@@ -430,6 +435,9 @@ class TxSelectionBar extends StatelessWidget {
   final int count;
   final VoidCallback? onCategory;
   final VoidCallback? onFund;
+
+  /// 批量「计入 / 不计入账户余额」：参数为真 = 不计入。
+  final ValueChanged<bool>? onBalance;
   final VoidCallback? onDelete;
   final VoidCallback onCancel;
 
@@ -461,6 +469,24 @@ class TxSelectionBar extends StatelessWidget {
             onPressed: onFund,
             icon: const Icon(Icons.savings_outlined, size: 18),
             label: const Text('改板块'),
+          ),
+        ),
+        // 两个选项收在一个菜单里：底栏放不下再多两个按钮。
+        PopupMenuButton<bool>(
+          key: const ValueKey('tx-bulk-balance'),
+          tooltip: '账户余额',
+          enabled: onBalance != null,
+          onSelected: onBalance,
+          itemBuilder: (context) => const [
+            PopupMenuItem(key: ValueKey('tx-bulk-balance-on'), value: false, child: Text('计入账户余额')),
+            PopupMenuItem(key: ValueKey('tx-bulk-balance-off'), value: true, child: Text('不计入账户余额')),
+          ],
+          child: IgnorePointer(
+            child: TextButton.icon(
+              onPressed: onBalance == null ? null : () {},
+              icon: const Icon(Icons.account_balance_wallet_outlined, size: 18),
+              label: const Text('余额'),
+            ),
           ),
         ),
         Tooltip(

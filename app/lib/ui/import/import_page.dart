@@ -101,7 +101,7 @@ class _ImportPageState extends ConsumerState<ImportPage> {
           const SizedBox(height: 6),
           Text(
             '支付宝、微信导出的账单，或者按模板填好的表格，csv 和 xlsx 都行。'
-            '先预览，核对完再导入。',
+            '先预览，核对完再导入。导入的账单可以选「不计入账户余额」：只进收支统计，余额在账户里直接校准。',
             style: theme.textTheme.bodyMedium,
           ),
           const SizedBox(height: LedgerLayout.itemGap),

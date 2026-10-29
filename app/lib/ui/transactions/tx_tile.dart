@@ -47,6 +47,14 @@ class TxTile extends StatelessWidget {
     final color = fund == null
         ? theme.colorScheme.onSurfaceVariant
         : fundColorOf(context, fund, index < 0 ? 0 : index);
+    // 金额下面的小标：状态（待上传 / 待确认 / 疑似重复 / 已作废）和「不计余额」可以并列。
+    final badges = <Widget>[
+      if (tx.pendingSync)
+        TxStatusBadge.offline()
+      else if (tx.status != 'confirmed')
+        TxStatusBadge(status: tx.status),
+      if (tx.offBalance) TxStatusBadge.offBalance(),
+    ];
 
     return ListTile(
       onTap: onTap,
@@ -91,12 +99,17 @@ class TxTile extends StatelessWidget {
           if (trailingBelow != null) ...[
             const SizedBox(height: 2),
             trailingBelow!,
-          ] else if (tx.pendingSync) ...[
+          ] else if (badges.isNotEmpty) ...[
             const SizedBox(height: 2),
-            TxStatusBadge.offline(),
-          ] else if (tx.status != 'confirmed') ...[
-            const SizedBox(height: 2),
-            TxStatusBadge(status: tx.status),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (var i = 0; i < badges.length; i++) ...[
+                  if (i > 0) const SizedBox(width: 4),
+                  badges[i],
+                ],
+              ],
+            ),
           ],
         ],
       ),
@@ -171,12 +184,16 @@ class _Subtitle extends StatelessWidget {
   }
 }
 
-/// 状态小标：待确认 / 疑似重复 / 已作废 / 待上传。
+/// 状态小标：待确认 / 疑似重复 / 已作废 / 待上传 / 不计余额。
 class TxStatusBadge extends StatelessWidget {
   const TxStatusBadge({super.key, required this.status});
 
   factory TxStatusBadge.offline({Key? key}) =>
       TxStatusBadge(key: key, status: 'offline');
+
+  /// 「不计入账户余额」的流水（账单导入进来的那种）：中性色，不是要处理的状态。
+  factory TxStatusBadge.offBalance({Key? key}) =>
+      TxStatusBadge(key: key, status: 'offBalance');
 
   final String status;
 
@@ -185,6 +202,7 @@ class TxStatusBadge extends StatelessWidget {
     'duplicate': '疑似重复',
     'void': '已作废',
     'offline': '待上传',
+    'offBalance': '不计余额',
   };
 
   @override

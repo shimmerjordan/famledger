@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -71,6 +73,12 @@ class _ImportPreviewPageState extends ConsumerState<ImportPreviewPage> {
   int _total = 0;
   ImportResult? _result;
 
+  /// 「计入账户余额」：支付宝 / 微信账单默认不计入（余额在账户里直接校准，不用一条条对），通用模板默认计入；
+  /// 本机记住上次的选择（[countInBalanceKey]）。
+  late bool _countInBalance = widget.preview.source == 'template';
+  bool _balanceTouched = false;
+  static const String countInBalanceKey = 'import.countInBalance';
+
   /// 整批都没送到时留在核对页，把原因写在底栏上方（改过的类别、勾选都还在）。
   String? _submitError;
 
@@ -78,6 +86,28 @@ class _ImportPreviewPageState extends ConsumerState<ImportPreviewPage> {
   void initState() {
     super.initState();
     _draft.addListener(_onDraftChanged);
+    unawaited(_loadBalancePref());
+  }
+
+  /// 上次导入时选的「计入 / 不计入」：读到了就按上次的，用户已经动过开关就不覆盖。
+  Future<void> _loadBalancePref() async {
+    bool? stored;
+    try {
+      stored = await ref.read(localStoreProvider).read<bool>(countInBalanceKey);
+    } catch (_) {
+      return;
+    }
+    final value = stored;
+    if (!mounted || value == null || _balanceTouched) return;
+    setState(() => _countInBalance = value);
+  }
+
+  void _setCountInBalance(bool value) {
+    setState(() {
+      _countInBalance = value;
+      _balanceTouched = true;
+    });
+    unawaited(ref.read(localStoreProvider).write(countInBalanceKey, value));
   }
 
   @override
@@ -158,7 +188,7 @@ class _ImportPreviewPageState extends ConsumerState<ImportPreviewPage> {
     }
   }
 
-  Future<void> _submit() => _send(_draft.items());
+  Future<void> _submit() => _send(_draft.items(offBalance: !_countInBalance));
 
   /// 结果页上的「重试没导进去的 N 笔」：草稿还在，照当初核对好的样子原样重发。
   Future<void> _retryFailed() {
@@ -166,7 +196,7 @@ class _ImportPreviewPageState extends ConsumerState<ImportPreviewPage> {
     final failed = {for (final f in previous.failures) f.clientId};
     return _send(
       [
-        for (final item in _draft.items())
+        for (final item in _draft.items(offBalance: !_countInBalance))
           if (failed.contains(item.row.clientId)) item,
       ],
       previous: previous,
@@ -280,6 +310,7 @@ class _ImportPreviewPageState extends ConsumerState<ImportPreviewPage> {
             _Stage.done => _ResultView(
               result: _result!,
               learn: _learn,
+              offBalance: !_countInBalance,
               onRetry: _result!.failed > 0 ? _retryFailed : null,
             ),
           },
@@ -425,6 +456,30 @@ class _ImportPreviewPageState extends ConsumerState<ImportPreviewPage> {
         ),
       ],
     );
+    // 「计入账户余额」：账单导入进来的流水默认不动余额 —— 余额在账户里直接校准，比一条条对省事。
+    final balanceRow = Row(
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('计入账户余额', style: theme.textTheme.bodyMedium),
+              Text(
+                _countInBalance ? '会加减对应账户的余额' : '这批只进收支统计，不改账户余额；余额在账户里直接校准',
+                key: const ValueKey('import-count-balance-note'),
+                style: theme.textTheme.bodySmall,
+              ),
+            ],
+          ),
+        ),
+        Switch(
+          key: const ValueKey('import-count-balance'),
+          value: _countInBalance,
+          onChanged: _setCountInBalance,
+        ),
+      ],
+    );
     final button = FilledButton(
       key: const ValueKey('import-submit'),
       onPressed: n > 0 ? _submit : null,
@@ -446,13 +501,20 @@ class _ImportPreviewPageState extends ConsumerState<ImportPreviewPage> {
                 padding: const EdgeInsets.only(bottom: 8),
               ),
             if (c.maxWidth < 560) ...[
+              balanceRow,
+              const SizedBox(height: 4),
               learnRow,
               const SizedBox(height: 8),
               button,
             ] else
               Row(
                 children: [
-                  Expanded(child: learnRow),
+                  Expanded(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [balanceRow, const SizedBox(height: 4), learnRow],
+                    ),
+                  ),
                   const SizedBox(width: LedgerLayout.groupGap),
                   button,
                 ],
@@ -895,10 +957,13 @@ class _Progress extends StatelessWidget {
 }
 
 class _ResultView extends StatelessWidget {
-  const _ResultView({required this.result, required this.learn, this.onRetry});
+  const _ResultView({required this.result, required this.learn, this.offBalance = false, this.onRetry});
 
   final ImportResult result;
   final bool learn;
+
+  /// 这批是按「不计入账户余额」导的：结果页说一声，免得回头纳闷余额怎么没动。
+  final bool offBalance;
 
   /// 有没导进去的才给：用这一页还拿着的草稿原样重发那几笔。
   final VoidCallback? onRetry;
@@ -939,6 +1004,12 @@ class _ResultView extends StatelessWidget {
         // 服务端按 clientId 认「导过没有」，连导进去后又删掉的也算。
         if (result.exists > 0)
           Text('以前导过的不会再记一遍，导进去后又删掉的也不会补回来。', style: theme.textTheme.bodySmall),
+        if (offBalance && result.created > 0)
+          Text(
+            '这批不计入账户余额：只进收支统计，余额在账户里直接校准；每笔的详情页里能单独改。',
+            key: const ValueKey('import-result-off-balance'),
+            style: theme.textTheme.bodySmall,
+          ),
         if (byMessage.isNotEmpty) ...[
           const SizedBox(height: LedgerLayout.itemGap),
           for (final e in byMessage.entries)

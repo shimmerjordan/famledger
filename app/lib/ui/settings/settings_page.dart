@@ -8,6 +8,7 @@ import '../../app/theme.dart';
 import '../../app/theme_mode.dart';
 import '../../core/colors.dart';
 import '../assets/asset_widgets.dart' show DetailPane;
+import '../import/import_page.dart';
 import '../widgets/widgets.dart';
 import 'about_page.dart';
 import 'ai_providers_page.dart';
@@ -45,8 +46,8 @@ class SettingsPage extends ConsumerWidget {
           emoji: me?.avatarEmoji,
           color: hexColor(me?.color) ?? theme.colorScheme.primary,
         ),
-        // 账户、会员提醒挪进了资产 tab（净资产明细里的「管理账户」、会员权益的「更多」菜单），
-        // 导入账单只留账单页右上角那一个入口。
+        // 账户、会员提醒挪进了资产 tab（净资产明细里的「管理账户」、会员权益的「更多」菜单）；
+        // 导入账单在账单页右上角有入口，这里的「智能与数据」再给一个（账单页那个藏在图标里，不好找）。
         _Group('家庭', [
           _Entry(Icons.people_outline, '成员', '/settings/members', selected: selected),
           _Entry(Icons.savings_outlined, '财富', '/funds', selected: selected),
@@ -59,6 +60,7 @@ class SettingsPage extends ConsumerWidget {
           _Entry(Icons.rule_outlined, '识别规则', '/settings/rules', selected: selected),
         ]),
         _Group('智能与数据', [
+          _Entry(Icons.upload_file_outlined, '导入账单', '/import', selected: selected),
           _Entry(Icons.smart_toy_outlined, 'AI 渠道', '/settings/ai', selected: selected),
           _Entry(Icons.backup_outlined, '备份与恢复', '/settings/backup', selected: selected),
         ]),
@@ -96,6 +98,7 @@ final selectedSettingsProvider = StateProvider<String>((ref) => '/settings/membe
 /// 路由路径 → 子页（和 app/router.dart 里的一一对应，这里只是不经路由直接嵌进右栏）。
 Widget settingsPageFor(String path) => switch (path) {
   '/funds' => const FundsPage(),
+  '/import' => const ImportPage(),
   '/settings/currency' => const CurrencyPage(),
   '/settings/categories' => const CategoriesPage(),
   '/settings/budgets' => const BudgetsPage(),
