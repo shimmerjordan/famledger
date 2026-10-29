@@ -45,7 +45,7 @@ const PNL_CATEGORY = {
   expense: { name: '投资亏损', icon: 'trending_down', color: '#c3656f' },
 };
 
-const txJson = (row) => rowToJson(row, { json: ['tags'] });
+const txJson = (row) => rowToJson(row, { json: ['tags'], bools: ['off_balance'] });
 
 function day(raw, field) {
   if (typeof raw !== 'string' || !DATE_RE.test(raw)) v.bad(field, `${field} 必须是 YYYY-MM-DD`);

@@ -22,6 +22,8 @@
 //      只补浮盈（估值 − 成本）；没挂账户的整份估值计入。只算估值算得出来、未归档未删除、
 //      还持有着的。「成本已在余额里」这个前提由 holdings.js 守着（有成本的持仓
 //      挂账户必须同时记转账、换账户补移仓转账、不许直接解绑），这里只管照算。
+//      股票账户（kind = 'stock'）不挂持仓，按整户市值记：余额是投入，浮盈 = 市值 − 账户余额，
+//      补进资产；没填过市值（value_cents 为空）的按投入算，只在 investAccountsCents 里。
 //   6. **债务**：每笔债务背后一个 kind = 'debt' 的内部账户，余额就是还剩多少（借出为正、借入为负）。
 //      `debts.counted` 的才进资产负债（人情默认不计）；分项里不算进现金流。
 //   5. **实物估值进净资产**：物品估值按 lib/valuation.js 现算，只算未归档、在用或闲置的。
@@ -53,7 +55,7 @@ const RECENT_LIMIT = 10;
 
 // transactions.js 没有导出它的 txJson，这里保持同一份形状：tags 是 JSON 列，
 // 其余原样 camelCase。`recent` 因此与 `GET /transactions` 的 items 逐字段一致。
-const txJson = (row) => rowToJson(row, { json: ['tags'] });
+const txJson = (row) => rowToJson(row, { json: ['tags'], bools: ['off_balance'] });
 
 const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
@@ -204,7 +206,8 @@ function computeOverview(db, month = currentMonth()) {
   // 归档的也给 —— 归档只是「别在记账时挑到它」，钱还在里面。债务的内部账户（kind = 'debt'）也在列，
   // App 靠它的余额算每笔债务还剩多少。
   const accountRows = db.all(
-    'SELECT id, kind, currency, initial_balance_cents FROM accounts WHERE deleted_at IS NULL ORDER BY sort_order, created_at',
+    'SELECT id, kind, currency, initial_balance_cents, value_cents, archived FROM accounts WHERE deleted_at IS NULL' +
+      ' ORDER BY sort_order, created_at',
   );
   // 每个账户的 balanceCents 是它自己币种的原生值（流水就记在这个币种里）；只在往折成基准币的分项累加时才用 conv。
   const accounts = accountRows.map((r) => ({
@@ -232,16 +235,25 @@ function computeOverview(db, month = currentMonth()) {
       .map((d) => [d.account_id, d]),
   );
   const kindById = new Map(accountRows.map((r) => [r.id, r.kind]));
+  // 股票账户填过的市值（原生币）；没填过的不在这里，按投入算。
+  const valueById = new Map(
+    accountRows.filter((r) => r.kind === 'stock' && r.value_cents !== null).map((r) => [r.id, Number(r.value_cents) || 0]),
+  );
 
   // 正余额是资产，负余额（通常是信用卡的欠款）取绝对值进负债。信用卡还成正数
   // 了（多还了钱）就照样是资产 —— 按余额的正负分，不按账户类型分。
-  // 分项：现金流 = 非投资、非债务账户；投资账户单列（证券户里的钱算理财）；债务按方向分应收、应付，
+  // 分项：现金流 = 非投资、非债务账户；投资账户、股票账户单列（证券户里的钱算理财）；债务按方向分应收、应付，
   // 只有「计入净资产」的进资产负债（人情默认不计）。原生金额进各币种的桶，折算后进基准币的合计。
   let assetsCents = 0;
   let liabilitiesCents = 0;
   let cashCents = 0;
   let investAccountsCents = 0;
   const debts = { receivableCents: 0, payableCents: 0, countedReceivableCents: 0, countedPayableCents: 0, count: 0 };
+  /** 股票账户：余额（投入）和填过的市值都是原生币，下面和持仓一起进理财分项。 */
+  const stockAccounts = [];
+  // 归档的股票账户当作销了户：投入（余额）和别的归档账户一样还算钱，但旧市值不再补浮盈、也不进 investByKind
+  //（App 的理财估值同样只看没归档的）。
+  const archivedIds = new Set(accountRows.filter((r) => r.archived).map((r) => r.id));
   for (const a of accounts) {
     const kind = kindById.get(a.accountId);
     const b = bucket(a.currency);
@@ -260,9 +272,12 @@ function computeOverview(db, month = currentMonth()) {
       debts.countedPayableCents += Math.max(0, -bal);
       b.debts.countedReceivableCents += Math.max(0, native);
       b.debts.countedPayableCents += Math.max(0, -native);
-    } else if (kind === 'invest') {
+    } else if (kind === 'invest' || kind === 'stock') {
       investAccountsCents += bal;
       b.investAccountsCents += native;
+      if (kind === 'stock' && !archivedIds.has(a.accountId)) {
+        stockAccounts.push({ currency: a.currency, balanceCents: native, valueCents: valueById.get(a.accountId) ?? null });
+      }
     } else {
       cashCents += bal;
       b.cashCents += native;
@@ -301,6 +316,28 @@ function computeOverview(db, month = currentMonth()) {
     k.costCents += cost;
     k.count++;
     byKind.set(p.kind, k);
+  }
+  // 股票账户按整户市值记（口径第 4 条）：投入已经在 investAccountsCents 里（账户余额），填过市值的只补浮盈
+  // （市值 − 余额，可为负），和挂了账户的持仓同一个算法；没填过市值的不多算也不少算。
+  // investByKind 里和逐只记的股票持仓合在同一个 'stock' 下，没市值的按投入当估值。
+  for (const s of stockAccounts) {
+    const k = byKind.get('stock') || { kind: 'stock', valueCents: 0, costCents: 0, count: 0 };
+    k.valueCents += conv(s.valueCents ?? s.balanceCents, s.currency);
+    k.costCents += conv(s.balanceCents, s.currency);
+    k.count++;
+    byKind.set('stock', k);
+    if (s.valueCents === null) continue;
+    const market = conv(s.valueCents, s.currency);
+    const cost = conv(s.balanceCents, s.currency);
+    investMarketCents += market;
+    investCostCents += cost;
+    investNetCents += market - cost;
+    assetsCents += market - cost;
+    const b = bucket(s.currency);
+    b.investMarketCents += s.valueCents;
+    b.investCostCents += s.balanceCents;
+    b.investNetCents += s.valueCents - s.balanceCents;
+    b.assetsCents += s.valueCents - s.balanceCents;
   }
 
   const netWorthExPhysicalCents = assetsCents - liabilitiesCents;

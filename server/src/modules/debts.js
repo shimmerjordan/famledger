@@ -18,6 +18,13 @@
 //   7. 手动微调：总额（amountCents）随时能改；还剩多少（remainingCents）= 校准，差额进内部账户期初、留一行「校准」备忘；
 //      方向、币种在内部账户还没有流水时能改（有流水就是两种钱/两个方向混着算，409）。备忘行能改金额、日期、说明，
 //      也能删：改 / 删会把它当初对期初的影响一起改回来（起始、追加那几行连总额一起改）。
+//   8. 关联已有流水：借出 / 收回 / 借入 / 还款的钱常常已经被自动记账或导入记成一笔支出 / 收入了，再记一笔转账
+//      账户就被扣两次。新建的 recordTransaction 多一种 `{ transactionId }`，收回 / 追加多一个顶层 `transactionId`
+//      （都和 accountId 二选一）：借款类把那笔改成「真账户 ↔ 内部账户」的转账（类别、板块清掉；金额、日期、商户、
+//      备注、状态、off_balance 都不动），不再新记；人情不改那笔（随礼本来就是支出），只当钱那一边已经记过，
+//      改期初、备忘 recorded。那笔「不计入账户余额」也照样不动：真账户照旧靠校准，内部账户那一侧照常算
+//      （lib/stats_sql.js 的 deltaMap）。校验都是 400：invalid_transactionId（不存在 / 已删 / 作废 / 还没确认 / 已是转账 /
+//      没账户 / 挂在别的债务上 / 类型和方向不配）、currency_mismatch、amount_mismatch。
 
 const crypto = require('node:crypto');
 
@@ -35,7 +42,7 @@ const MAX_AMOUNT = 1e14;
 const MEMO_MAX = 200;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-const txJson = (row) => rowToJson(row, { json: ['tags'] });
+const txJson = (row) => rowToJson(row, { json: ['tags'], bools: ['off_balance'] });
 
 function day(raw, field) {
   if (typeof raw !== 'string' || !DATE_RE.test(raw)) v.bad(field, `${field} 必须是 YYYY-MM-DD`);
@@ -105,22 +112,85 @@ module.exports = (ctx) => {
   const balanceOf = (account) =>
     (Number(account.initial_balance_cents) || 0) + (sql.deltaMap(db, 'account', account.id).get(account.id) || 0);
 
+  /** 错误消息里的金额：人民币带 ¥，别的币种带代码。 */
+  const money = (cents, currency) => `${currency === 'CNY' ? '¥' : `${currency} `}${(cents / 100).toFixed(2)}`;
+
+  /**
+   * 「关联已有流水」（文件头第 8 条）：找出那笔并核对它能不能当这次往来。借款类接着会把它改成转账
+   * （借出 / 还款是花出去的钱，要一笔支出；收回 / 借入是收进来的钱，要一笔收入），人情只核对不改。
+   * @param {number} effect 对内部账户余额的影响（> 0 要支出，< 0 要收入）
+   * @param {number} amount 这次的金额，必须和那笔一样
+   * @returns {object} 那笔流水的行
+   */
+  function linkedTransaction(debt, rawId, effect, amount) {
+    const id = v.str(rawId, 'transactionId', { max: 64 });
+    const reject = (message) => {
+      throw new HttpError(400, 'invalid_transactionId', message);
+    };
+    const tx = db.get('SELECT * FROM transactions WHERE id = ? AND deleted_at IS NULL', id);
+    if (!tx) reject('那笔流水不存在或已经删了');
+    if (tx.status === 'duplicate' || tx.status === 'void') reject('那笔流水已经作废（或是重复的），换一笔');
+    // 待确认的不行：余额只算已确认的流水，关联了也不会动债务的「还剩多少」，之后一确认钱就进了内部账户。
+    if (tx.status !== 'confirmed') reject('那笔流水还没确认；先在待确认里确认它，再关联');
+    if (tx.type === 'transfer') reject('那笔流水已经是转账了，不能再当作往来');
+    if (!tx.account_id) reject('那笔流水没有账户，不知道钱从哪走；先给它选个账户');
+    const acc = db.get('SELECT name, kind, deleted_at FROM accounts WHERE id = ?', tx.account_id);
+    if (!acc || acc.deleted_at) reject('那笔流水的账户已经删了');
+    if (acc.kind === 'debt') reject('那笔流水已经是另一笔债务的往来了');
+    // 人情关联不改那笔流水，只在备忘里记下它的 id（move 里）；同一笔不能再关联第二次，不然期初就加两遍。
+    const prior = db.get(
+      'SELECT counterparty FROM debts WHERE deleted_at IS NULL AND instr(memo_log, ?) > 0 LIMIT 1',
+      `"transactionId":"${id}"`,
+    );
+    if (prior) reject(`那笔流水已经关联到人情「${prior.counterparty}」了，不能再用一次`);
+    if (tx.type !== (effect > 0 ? 'expense' : 'income')) {
+      reject(effect > 0
+        ? '借出 / 还钱是花出去的钱，要关联一笔支出；那笔是收入'
+        : '收回 / 借入是收进来的钱，要关联一笔收入；那笔是支出');
+    }
+    if (tx.currency !== debt.currency) {
+      throw new HttpError(
+        400, 'currency_mismatch',
+        `这笔债务是 ${debt.currency}，那笔流水是 ${tx.currency}（「${acc.name}」）：钱要从同币种的账户走（换汇先在记一笔里转账）`,
+        { field: 'transactionId' },
+      );
+    }
+    if (Number(tx.amount_cents) !== amount) {
+      throw new HttpError(
+        400, 'amount_mismatch',
+        `那笔流水是 ${money(tx.amount_cents, tx.currency)}，和这里填的 ${money(amount, debt.currency)} 不一样；改一边再试`,
+        { field: 'transactionId' },
+      );
+    }
+    return tx;
+  }
+
   /**
    * 钱这一次怎么动。`effect` 是对内部账户余额的影响（+ 让「别人欠我」变多 / 「我欠别人」变少）。
-   * 有 `accountId`：借款类记一笔转账；人情记一笔支出/收入并改期初。没有：只改期初、留一行备忘。
-   * @returns {object[]} 记下的流水
+   * 有 `accountId`：借款类记一笔转账；人情记一笔支出/收入并改期初。有 `transactionId`（关联已有流水，文件头第 8 条）：
+   * 借款类把那笔改成转账；人情不动那笔，只改期初。都没有：只改期初、留一行备忘。
+   * @returns {{txs: object[], memo: object|null}} 记下 / 改过的流水，和要追加的备忘
    */
-  function move(debt, account, { effect, amount, accountId, occurredOn, merchant, note }, reqCtx) {
+  function move(debt, account, { effect, amount, accountId, transactionId, occurredOn, merchant, note }, reqCtx) {
     const txs = [];
-    if (accountId && debt.kind !== 'favor') {
-      const [from, to] = effect > 0 ? [accountId, account.id] : [account.id, accountId];
-      txs.push(record({
-        type: 'transfer', amountCents: amount, occurredAt: noonOf(occurredOn), accountId: from, toAccountId: to,
-        merchant, note: note || '',
-      }, reqCtx));
+    const linked = transactionId ? linkedTransaction(debt, transactionId, effect, amount) : null;
+    if (debt.kind !== 'favor' && (accountId || linked)) {
+      if (linked) {
+        // 类别、板块清掉（借出不是花钱，板块余额回去）；金额、日期、商户、备注、状态、off_balance 都不传，沿用。
+        const [from, to] = effect > 0 ? [linked.account_id, account.id] : [account.id, linked.account_id];
+        txs.push(ctx.updateTransaction(linked.id, {
+          type: 'transfer', accountId: from, toAccountId: to, categoryId: null, fundId: null, toFundId: null,
+        }, reqCtx));
+      } else {
+        const [from, to] = effect > 0 ? [accountId, account.id] : [account.id, accountId];
+        txs.push(record({
+          type: 'transfer', amountCents: amount, occurredAt: noonOf(occurredOn), accountId: from, toAccountId: to,
+          merchant, note: note || '',
+        }, reqCtx));
+      }
       return { txs, memo: null };
     }
-    // 人情的钱：内部余额变多 = 我随礼出去了（支出），变少 = 我收到礼了（收入）。
+    // 人情的钱：内部余额变多 = 我随礼出去了（支出），变少 = 我收到礼了（收入）。关联了已有流水的，那笔本来就记着，不动。
     if (accountId) {
       const kind = effect > 0 ? 'expense' : 'income';
       txs.push(record({
@@ -132,7 +202,13 @@ module.exports = (ctx) => {
       'UPDATE accounts SET initial_balance_cents = initial_balance_cents + ?, updated_at = ?, seq = ? WHERE id = ?',
       effect * amount, db.now(), db.nextSeq(), account.id,
     );
-    return { txs, memo: { on: occurredOn, amountCents: effect * amount, note: note || merchant, recorded: !!accountId } };
+    return {
+      txs,
+      memo: {
+        on: occurredOn, amountCents: effect * amount, note: note || merchant, recorded: !!(accountId || linked),
+        ...(linked ? { transactionId: linked.id } : {}),
+      },
+    };
   }
 
   function appendMemo(debtId, memo) {
@@ -150,6 +226,16 @@ module.exports = (ctx) => {
 
   /** 每次新建都是同一个请求体对象，onWrite 靠它拿到 fromBody 里校验过的东西。 */
   const pendingCreate = new WeakMap();
+
+  /** 内部账户上的流水（POST /debts 幂等回放时的 transactions）。 */
+  function flowsOf(accountId) {
+    if (!accountId) return [];
+    return db.all(
+      'SELECT * FROM transactions WHERE deleted_at IS NULL AND (account_id = ? OR to_account_id = ?)' +
+        ' ORDER BY occurred_at, created_at',
+      accountId, accountId,
+    ).map(txJson);
+  }
   /** PATCH 里要在 onWrite 做的：校准还剩多少、翻转方向。键同样是请求体对象。 */
   const pendingPatch = new WeakMap();
 
@@ -183,6 +269,9 @@ module.exports = (ctx) => {
       note: { type: 'string', max: 500 },
     },
     toJson: (row) => rowToJson(row, { bools: ['archived', 'counted'], json: ['memo_log'] }),
+    // 起始那笔钱（新记的转账 / 关联后改成转账的那笔，人情是空）也在建债务的回应里，App 不用再拉一次；
+    // 幂等回放时按内部账户上的流水给。
+    createExtra: (row, body) => ({ transactions: pendingCreate.get(body)?.txs ?? flowsOf(row.account_id) }),
 
     fromBody(body, isPatch, row) {
       const out = {};
@@ -232,7 +321,18 @@ module.exports = (ctx) => {
           ? 0
           : v.int(body.settledCents, 'settledCents', { min: 0, max: MAX_AMOUNT });
         if (settled > out.amount_cents) v.bad('settledCents', '已经收回的不能比总数还多');
-        pendingCreate.set(body, { accountId: rt ? moneyAccount(rt.accountId, 'accountId', out.currency) : null, settled });
+        // 起始那笔钱：新记一笔（accountId）还是已经记过了（transactionId，文件头第 8 条），二选一。
+        // 那笔流水本身在 onWrite 里核对、转换（要等内部账户建出来）。
+        let accountId = null;
+        let transactionId = null;
+        if (rt) {
+          if (!v.isMissing(rt.accountId) && !v.isMissing(rt.transactionId)) {
+            throw new HttpError(400, 'invalid_recordTransaction', 'accountId 和 transactionId 只能给一个：钱是新记一笔，还是已经记过了？');
+          }
+          if (!v.isMissing(rt.transactionId)) transactionId = v.str(rt.transactionId, 'transactionId', { max: 64 });
+          else accountId = moneyAccount(rt.accountId, 'accountId', out.currency);
+        }
+        pendingCreate.set(body, { accountId, transactionId, settled });
       }
       return out;
     },
@@ -281,7 +381,7 @@ module.exports = (ctx) => {
         }
         return;
       }
-      const { accountId = null, settled = 0 } = pendingCreate.get(body) || {};
+      const { accountId = null, transactionId = null, settled = 0 } = pendingCreate.get(body) || {};
       const sign = row.direction === 'lend' ? 1 : -1;
       const now = db.now();
       const id = crypto.randomUUID();
@@ -297,19 +397,26 @@ module.exports = (ctx) => {
       const merchant = row.kind === 'favor'
         ? `人情 ${row.counterparty}`
         : `${row.direction === 'lend' ? '借给' : '借入'} ${row.counterparty}`;
-      const { memo } = move(row, account, {
-        effect: sign, amount: row.amount_cents, accountId, occurredOn: row.started_on, merchant,
+      const { txs, memo } = move(row, account, {
+        effect: sign, amount: row.amount_cents, accountId, transactionId, occurredOn: row.started_on, merchant,
         note: row.note || '',
       }, reqCtx);
+      const pending = pendingCreate.get(body) || {};
+      pending.txs = txs.map(txJson);
+      pendingCreate.set(body, pending);
       if (memo) db.run('UPDATE debts SET memo_log = ? WHERE id = ?', appendMemo(row.id, { ...memo, note: '起始' }), row.id);
+      // 已收回的部分：起始经账户记的，收回也经同一个账户；起始是关联已有流水的（accountId 为空），
+      // 收回那笔没得关联，按「不记流水」处理 —— 改期初、留备忘。
       if (settled > 0) {
         const note = row.direction === 'lend' ? '之前已收回' : '之前已还';
         const backMerchant = row.kind === 'favor'
           ? `${row.direction === 'lend' ? '收回人情' : '还人情'} ${row.counterparty}`
           : `${row.direction === 'lend' ? '收回' : '还'} ${row.counterparty}`;
-        const back = move(row, account, {
+        const backMove = move(row, account, {
           effect: -sign, amount: settled, accountId, occurredOn: row.started_on, merchant: backMerchant, note,
-        }, reqCtx).memo;
+        }, reqCtx);
+        pending.txs.push(...backMove.txs.map(txJson));
+        const back = backMove.memo;
         if (back) db.run('UPDATE debts SET memo_log = ? WHERE id = ?', appendMemo(row.id, { ...back, note, action: 'settle' }), row.id);
         logActivity(db, { memberId: reqCtx.member.id, action: 'settle', entity: 'debt', entityId: row.id });
       }
@@ -356,7 +463,12 @@ module.exports = (ctx) => {
       const d = crud.mustExist(reqCtx.params.id);
       const account = d.account_id && db.get('SELECT * FROM accounts WHERE id = ? AND deleted_at IS NULL', d.account_id);
       if (!account) throw new HttpError(409, 'debt_account_missing', '这笔债务的内部账户不见了，删了重记吧');
+      // 钱怎么走：新记一笔（accountId）还是关联已有流水（transactionId，文件头第 8 条），二选一。
+      if (!v.isMissing(b.accountId) && !v.isMissing(b.transactionId)) {
+        throw new HttpError(400, 'invalid_transactionId', 'accountId 和 transactionId 只能给一个：钱是新记一笔，还是已经记过了？');
+      }
       const accountId = v.isMissing(b.accountId) ? null : moneyAccount(b.accountId, 'accountId', d.currency);
+      const transactionId = v.isMissing(b.transactionId) ? null : v.str(b.transactionId, 'transactionId', { max: 64 });
 
       const sign = d.direction === 'lend' ? 1 : -1;
       const outstanding = sign * balanceOf(account);
@@ -370,7 +482,7 @@ module.exports = (ctx) => {
         : action === 'settle'
           ? `${d.direction === 'lend' ? '收回' : '还'} ${cp}`
           : `${d.direction === 'lend' ? '借给' : '借入'} ${cp}`;
-      const { txs, memo } = move(d, account, { effect, amount, accountId, occurredOn, merchant, note }, reqCtx);
+      const { txs, memo } = move(d, account, { effect, amount, accountId, transactionId, occurredOn, merchant, note }, reqCtx);
 
       const sets = ['updated_at = ?', 'seq = ?'];
       const args = [db.now(), db.nextSeq()];

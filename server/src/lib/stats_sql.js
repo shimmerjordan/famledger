@@ -13,11 +13,18 @@
 //     早餐钱就掉到上个月去了。`test/stats.test.js` 里有一条用例专钉这个。
 //   · 转账的两头各算各的：`account_id`/`fund_id` 是转出侧，`to_*` 是转入侧。
 //     「拨款」只有基金对 → 账户余额不动；「还信用卡」只有账户对 → 基金余额不动。
+//   · `off_balance = 1`（「不计入账户余额」：账单导入进来、余额靠账户校准的那种）的流水**只**在
+//     `deltaMap` 的 account 侧被排除 —— 不进真账户的余额（于是不进现金流、资产负债、净资产，账户
+//     「现在余额」校准也自然不算它）；债务内部账户（kind = 'debt'）那一侧照常算：一笔不计余额的流水
+//     转成债务往来后，真账户仍不动（它的余额是校准出来的，已经反映了这笔钱），内部账户记上「还剩多少」。
+//     收支统计、按类别 / 成员 / 板块的聚合、板块余额、预算、趋势、日历都照常算它 —— 别的函数不过滤。
 
 const invest = require('./invest');
 
 /** 只有确认且未软删的流水算数。 */
 const CONFIRMED = "deleted_at IS NULL AND status = 'confirmed'";
+/** 同上，带表别名 `t`：deltaMap 要 JOIN accounts，它也有 deleted_at，不带别名会歧义。 */
+const CONFIRMED_T = "t.deleted_at IS NULL AND t.status = 'confirmed'";
 
 // 本地日期的前缀。不要换成 strftime —— 见文件头。只用来**分组**；过滤某个月用 [monthRange]：
 // `substr(occurred_at, 1, 7) = ?` 走不了 idx_tx_occurred，每次统计都全表扫；
@@ -91,6 +98,8 @@ function filterClause({ fundId = null, categoryId = null } = {}) {
 /**
  * 每个账户（或基金）的流水净额，**不含** `initial_balance_cents`。
  * 转出侧：收入 +、支出 −、转账 −；转入侧：+。
+ * account 侧不算「不计入账户余额」（off_balance = 1）的流水，但债务内部账户（kind = 'debt'）那一侧照常算
+ * （口径见文件头）；fund 侧没有这回事，板块余额照算。
  * @param {object} db lib/db.js 的句柄
  * @param {'account'|'fund'} side
  * @param {string|null} [onlyId] 只算这一个 id（省掉全表分组）
@@ -100,13 +109,18 @@ function deltaMap(db, side, onlyId = null) {
   const [from, to] = side === 'fund' ? ['fund_id', 'to_fund_id'] : ['account_id', 'to_account_id'];
   const only = onlyId ? '= ?' : 'IS NOT NULL';
   const args = onlyId ? [onlyId, onlyId] : [];
+  // 两段子查询各 JOIN 一次 accounts，看的是**那一侧**账户的 kind：一笔「真账户 → 内部账户」的不计余额转账，
+  // 转出侧被排除、转入侧照算。
+  const [joinFrom, joinTo, keep] = side === 'account'
+    ? [' JOIN accounts a ON a.id = t.account_id', ' JOIN accounts a ON a.id = t.to_account_id', " AND (t.off_balance = 0 OR a.kind = 'debt')"]
+    : ['', '', ''];
   const rows = db.all(
     `SELECT ref, SUM(delta) AS delta FROM (
-       SELECT ${from} AS ref, SUM(CASE WHEN type = 'income' THEN amount_cents ELSE -amount_cents END) AS delta
-         FROM transactions WHERE ${CONFIRMED} AND ${from} ${only} GROUP BY ${from}
+       SELECT t.${from} AS ref, SUM(CASE WHEN t.type = 'income' THEN t.amount_cents ELSE -t.amount_cents END) AS delta
+         FROM transactions t${joinFrom} WHERE ${CONFIRMED_T} AND t.${from} ${only}${keep} GROUP BY t.${from}
        UNION ALL
-       SELECT ${to} AS ref, SUM(COALESCE(to_amount_cents, amount_cents)) AS delta
-         FROM transactions WHERE ${CONFIRMED} AND type = 'transfer' AND ${to} ${only} GROUP BY ${to}
+       SELECT t.${to} AS ref, SUM(COALESCE(t.to_amount_cents, t.amount_cents)) AS delta
+         FROM transactions t${joinTo} WHERE ${CONFIRMED_T} AND t.type = 'transfer' AND t.${to} ${only}${keep} GROUP BY t.${to}
      ) AS both GROUP BY ref`,
     ...args,
   );

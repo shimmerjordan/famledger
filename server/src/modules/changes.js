@@ -20,10 +20,10 @@ const MAX_LIMIT = 2000;
  */
 const SYNCED = [
   ['members', { omit: ['password_hash'], bools: ['archived'] }],
-  ['accounts', { bools: ['archived'], json: ['match_hints'] }],
+  ['accounts', { bools: ['archived'], json: ['match_hints', 'value_log'] }],
   ['funds', { bools: ['archived', 'is_default'], json: ['opening_balances'] }],
   ['categories', { bools: ['archived'] }],
-  ['transactions', { json: ['tags'] }],
+  ['transactions', { json: ['tags'], bools: ['off_balance'] }],
   ['budgets', {}],
   ['rules', { bools: ['enabled'] }],
   ['assets', { bools: ['archived'], json: ['origin'] }],

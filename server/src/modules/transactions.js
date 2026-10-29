@@ -8,6 +8,8 @@
 //   3. 服务端查重：只有通知/分享抓来的记录才查 —— 手工录入的「两杯一样的咖啡」
 //      是真的两杯。命中就落成 status:'duplicate' 并把响应标上 duplicate:true。
 //   4. 软删 + seq：删除只是墓碑，别的设备靠 GET /changes 才知道该删。
+//   5. `offBalance`（列 off_balance）：账单导入进来、余额靠账户校准的那种流水，不进真账户的余额，
+//      但照常进收支统计、板块余额、预算；债务内部账户那一侧照常算。口径在 lib/stats_sql.js 的 deltaMap。
 //
 // 时间模型：`occurredAt` 原样存客户端给的「带时区偏移的本地时间」（如
 // `2026-09-05T01:00:00+08:00`），服务端**不做时区换算**。所以按日期筛选比的是
@@ -35,12 +37,20 @@ const OFFSET_SLACK_MS = 26 * 3600 * 1000;
 const MAX_BATCH = 200;
 const MAX_BULK = 500;
 /** 批量修改只开放多选后真会一起改的几项；时间、金额这类逐条不同的不在其列。 */
-const BULK_FIELDS = ['categoryId', 'fundId', 'accountId', 'memberId', 'status'];
+const BULK_FIELDS = ['categoryId', 'fundId', 'accountId', 'memberId', 'status', 'offBalance'];
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 const MAX_AMOUNT = 1e14;
 
-const txJson = (row) => rowToJson(row, { json: ['tags'] });
+const txJson = (row) => rowToJson(row, { json: ['tags'], bools: ['off_balance'] });
+
+/** 查询串里的开关：`1`/`0`/`true`/`false`。 */
+function queryFlag(raw, field) {
+  const s = String(raw);
+  if (s === '1' || s === 'true') return 1;
+  if (s === '0' || s === 'false') return 0;
+  return v.bad(field, `${field} 必须是 1 或 0`);
+}
 
 /** `YYYY-MM-DDTHH:MM:SS[.mmm](Z|±HH:MM)` —— 偏移必须写出来，否则「哪一天」没有答案。 */
 const ISO_OFFSET_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$/;
@@ -227,6 +237,8 @@ module.exports = (ctx) => {
         : (row ? row.tags : '[]'),
       source,
       status,
+      // 新建缺省计入余额；PATCH 没传就沿用（转成债务往来时也不动它，见 debts.js）。
+      off_balance: given('offBalance') ? (v.bool(b.offBalance, 'offBalance') ? 1 : 0) : (row ? row.off_balance : 0),
       confidence: given('confidence') ? (v.isMissing(b.confidence) ? null : v.num(b.confidence, 'confidence', { min: 0, max: 1 })) : (row ? row.confidence : null),
       raw_text: given('rawText') ? v.optStr(b.rawText, 'rawText', { max: 4000 }) : (row ? row.raw_text : null),
       source_app: given('sourceApp') ? v.optStr(b.sourceApp, 'sourceApp', { max: 120 }) : (row ? row.source_app : null),
@@ -359,6 +371,7 @@ module.exports = (ctx) => {
     if (has('accountId')) add('(account_id = ? OR to_account_id = ?)', q.accountId, q.accountId);
     if (has('categoryId')) add('category_id = ?', q.categoryId);
     if (has('memberId')) add('member_id = ?', q.memberId);
+    if (has('offBalance')) add('off_balance = ?', queryFlag(q.offBalance, 'offBalance'));
     for (const [param, upper] of [['from', false], ['to', true]]) {
       if (!has(param)) continue;
       const b = bound(q[param], param, upper);
@@ -401,15 +414,23 @@ module.exports = (ctx) => {
     db.run('UPDATE transactions SET deleted_at = ?, updated_at = ?, seq = ? WHERE id = ?', now, now, db.nextSeq(), id);
   }
 
-  function patch(req, res, reqCtx) {
-    const row = mustExist(reqCtx.params.id);
-    const cols = normalize(reqCtx.body, { row, member: reqCtx.member });
-    const next = db.tx(() => {
+  /**
+   * 改一条已有的流水：PATCH 的全部校验（没传的沿用旧值、转账成对）+ 写入 + 活动日志。
+   * 债务把一笔已有的支出 / 收入转成往来也走这里（`ctx.updateTransaction`），不走 HTTP。
+   * @returns {object} 改完后的行
+   */
+  function updateOne(id, body, reqCtx) {
+    const row = mustExist(id);
+    const cols = normalize(body, { row, member: reqCtx.member });
+    return db.tx(() => {
       writeCols(row.id, cols, db.now());
       logActivity(db, { memberId: reqCtx.member.id, action: 'update', entity: 'transaction', entityId: row.id });
       return reread(row.id);
     });
-    sendJson(res, 200, { transaction: txJson(next) });
+  }
+
+  function patch(req, res, reqCtx) {
+    sendJson(res, 200, { transaction: txJson(updateOne(reqCtx.params.id, reqCtx.body, reqCtx)) });
   }
 
   function remove(req, res, reqCtx) {
@@ -481,6 +502,8 @@ module.exports = (ctx) => {
 
   // 资产/投资模块「同时记账」要复用同一套校验与写入；它们按字母序先加载，只能在请求时再取。
   ctx.createTransaction = createOne;
+  // 债务「关联已有流水」把一笔支出 / 收入改成转账：同一套 PATCH 校验与写入。
+  ctx.updateTransaction = updateOne;
   return {
     name: 'transactions',
     routes: [
