@@ -44,7 +44,13 @@ class AssetsHomeCard extends ConsumerWidget {
     final itemsRecorded = ledger.activeAssets.isNotEmpty;
     final invest = summarizeHoldings(ledger.holdings, now);
     final investBy = summarizeHoldingsByCurrency(ledger.holdings, now);
+    // 股票账户按整户市值记，和持仓一起算进「理财」格（余额从总览拿，没回来按初始余额）。
+    final stocks = summarizeStockAccounts(ledger.activeAccounts, (id) => overview?.balanceOf(id), now);
     CurrencyAmounts by<T>(Map<String, T> m, int Function(T) pick) => CurrencyAmounts({for (final e in m.entries) e.key: pick(e.value)});
+    final investMarket = by(investBy, (p) => p.marketCents) + by(stocks, (s) => s.marketCents);
+    final investGain = by(investBy, (p) => p.gainCents) + by(stocks, (s) => s.gainCents);
+    final investEmpty = invest.isEmpty && stocks.isEmpty;
+    final investKinds = invest.byKind.length + (stocks.isEmpty ? 0 : 1);
     final debts = ledger.activeDebts;
     final cards = perkMemberships(ledger.memberships);
     final toClaim = cards.isEmpty
@@ -72,10 +78,10 @@ class AssetsHomeCard extends ConsumerWidget {
       _Tile(
         key: const ValueKey('home-asset-invest'),
         label: '理财',
-        value: invest.isEmpty ? notYet : CurrencyTotal(by(investBy, (p) => p.marketCents)),
-        note: invest.isEmpty
-            ? '基金、定期、活期……'
-            : '浮动 ${f(by(investBy, (p) => p.gainCents), signed: true)} · ${invest.byKind.length} 类',
+        value: investEmpty ? notYet : CurrencyTotal(investMarket),
+        note: investEmpty
+            ? '基金、股票账户、定期、活期……'
+            : '浮动 ${f(investGain, signed: true)} · $investKinds 类',
         onTap: () => context.go('/assets?tab=invest'),
       ),
       _Tile(

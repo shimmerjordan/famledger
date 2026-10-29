@@ -28,19 +28,19 @@ List<Map<String, dynamic>> mixed() => [
 Finder tile(String id) => find.byKey(ValueKey('holding-$id'));
 
 void main() {
-  group('理财按品类分组', () {
-    testWidgets('组头带小计；定期写利率和到期、到期了标出来；活期写年化和更新日期', (tester) async {
+  group('理财各品类', () {
+    testWidgets('不按品类分组，品类写在行里；定期写利率和到期、到期了标出来；活期写年化和更新日期', (tester) async {
       await pumpAssetsAt(tester, bootAssets(AssetsBackend(holdings: mixed())), '/assets?tab=invest');
 
       for (final kind in ['fund', 'fixed', 'demand']) {
-        expect(find.byKey(ValueKey('invest-kind-$kind')), findsOneWidget, reason: kind);
+        expect(find.byKey(ValueKey('invest-kind-$kind')), findsNothing, reason: '$kind：不再出组头');
       }
       // 定期：本金 10 万 + 181 天利息 1066.16（到期日停）
       expect(find.descendant(of: tile('h5'), matching: find.text('¥101,066.16')), findsOneWidget);
       expect(find.descendant(of: tile('h5'), matching: find.text('已到期')), findsOneWidget);
-      expect(find.descendant(of: tile('h5'), matching: find.text(holdingSubtitle(['招商银行', '2.15%', '已到期 449 天']))), findsOneWidget);
+      expect(find.descendant(of: tile('h5'), matching: find.text(holdingSubtitle(['定期存款', '招商银行', '2.15%', '已到期 449 天']))), findsOneWidget);
       expect(find.descendant(of: tile('h6'), matching: find.text('¥10,100.00')), findsOneWidget);
-      expect(find.descendant(of: tile('h6'), matching: find.text(holdingSubtitle(['支付宝', '年化 1.80%', '9月1日 更新']))), findsOneWidget);
+      expect(find.descendant(of: tile('h6'), matching: find.text(holdingSubtitle(['活期存款', '支付宝', '年化 1.80%', '9月1日 更新']))), findsOneWidget);
       // 理财估值 = 1200 + 101066.16 + 10100
       expect(find.text('¥112,366.16'), findsOneWidget);
     });

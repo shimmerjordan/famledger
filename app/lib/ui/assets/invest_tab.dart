@@ -10,10 +10,13 @@ import '../../core/money.dart';
 import '../../data/models/models.dart';
 import '../../data/repos/holdings_repo.dart';
 import '../../data/repos/ledger_repo.dart';
+import '../settings/account_form.dart';
 import '../widgets/widgets.dart';
+import 'absorb_sheet.dart';
 import 'asset_providers.dart';
 import 'asset_widgets.dart';
 import 'holding_detail_page.dart';
+import 'stock_account_page.dart';
 
 /// 理财：估值合计、收益，下面按品类分组（基金、股票、活期、定期……），每组一个小计；结清的收在最后。
 class InvestTab extends ConsumerStatefulWidget {
@@ -75,17 +78,42 @@ class _InvestTabState extends ConsumerState<InvestTab> {
     final banner = SyncErrorBanner(error: _syncError, onRetry: _sync);
     // ≥ 840：左边列表、右边嵌着选中那只持仓的详情页。
     final twoPane = widthClassOf(context) == WidthClass.expanded;
+    // 股票账户的投入 = 账户余额，在总览里。
+    final overview = ref.watch(statsProvider(Dates.currentMonth())).valueOrNull;
     final all = ledger.valueOrNull?.activeHoldings ?? const <Holding>[];
+    final stockAccounts = ledger.valueOrNull?.activeAccounts.where((a) => a.isStock).toList() ?? const <Account>[];
     final selected = ref.watch(selectedHoldingProvider);
-    final shown = twoPane
-        ? (all.any((h) => h.id == selected) ? selected : all.firstOrNull?.id)
-        : null;
-    if (twoPane && shown != selected) pinSelection(ref, selectedHoldingProvider, shown);
+    final selectedAccount = ref.watch(selectedStockAccountProvider);
+    // 右栏二选一：一笔持仓或一个股票账户。都没选（或选的不在了）就默认第一个股票账户，再没有就第一笔持仓。
+    String? shown;
+    String? shownAccount;
+    if (twoPane) {
+      if (all.any((h) => h.id == selected)) {
+        shown = selected;
+      } else if (stockAccounts.any((a) => a.id == selectedAccount)) {
+        shownAccount = selectedAccount;
+      } else if (stockAccounts.isNotEmpty) {
+        shownAccount = stockAccounts.first.id;
+      } else {
+        shown = all.firstOrNull?.id;
+      }
+      if (shown != selected) pinSelection(ref, selectedHoldingProvider, shown);
+      if (shownAccount != selectedAccount) pinSelection(ref, selectedStockAccountProvider, shownAccount);
+    }
     void open(Holding h) {
       if (twoPane) {
+        ref.read(selectedStockAccountProvider.notifier).state = null;
         ref.read(selectedHoldingProvider.notifier).state = h.id;
       } else {
         context.push('/assets/holdings/${h.id}');
+      }
+    }
+    void openAccount(Account a) {
+      if (twoPane) {
+        ref.read(selectedHoldingProvider.notifier).state = null;
+        ref.read(selectedStockAccountProvider.notifier).state = a.id;
+      } else {
+        context.push('/assets/accounts/${a.id}');
       }
     }
 
@@ -99,17 +127,26 @@ class _InvestTabState extends ConsumerState<InvestTab> {
           onRetry: () => ref.invalidate(ledgerProvider),
           data: (data) {
             final holdings = data.activeHoldings;
-            if (holdings.isEmpty) {
+            final accounts = data.activeAccounts.where((a) => a.isStock).toList();
+            if (holdings.isEmpty && accounts.isEmpty) {
               return ListView(
                 children: [
                   banner,
                   const SizedBox(height: 40),
                   EmptyState(
                     title: '还没有理财',
-                    message: '基金、股票、定期、活期、保险存单都能记，估值和收益自动算。',
+                    message: '基金、定期、活期、保险存单一笔一笔记；股票按账户汇总，只记整户市值。估值和收益自动算。',
                     icon: Icons.savings_outlined,
                     actionLabel: '添加理财',
                     onAction: () => context.push('/assets/holdings/new'),
+                  ),
+                  Center(
+                    child: TextButton.icon(
+                      key: const ValueKey('invest-empty-stock'),
+                      onPressed: () => showAccountForm(context, initialKind: Account.kindStock),
+                      icon: const Icon(Icons.show_chart, size: 18),
+                      label: const Text('新建股票账户'),
+                    ),
                   ),
                 ],
               );
@@ -119,12 +156,10 @@ class _InvestTabState extends ConsumerState<InvestTab> {
             final summary = summarizeHoldings(holdings, now);
             // 金额按币种分开（美股按美元算），笔数、品类这些不分。
             final byCurrency = summarizeHoldingsByCurrency(holdings, now);
-            CurrencyAmounts kindValue(String kind) => CurrencyAmounts({
-              for (final e in summarizeHoldingsByCurrency(held.where((h) => h.kind == kind), now).entries)
-                e.key: e.value.marketCents,
-            });
-            // 只有一个品类时不出组头：小计和顶上的合计是同一个数。
-            final grouped = summary.byKind.length > 1;
+            final stocks = summarizeStockAccounts(accounts, (id) => overview?.balanceOf(id), now);
+            final stockMarket = CurrencyAmounts({for (final e in stocks.entries) e.key: e.value.marketCents});
+            // 逐只记的老股票：提醒可以并进股票账户。
+            final legacyStocks = held.where((h) => h.kind == Holding.kindStock).toList();
             return ListView(
               padding: (twoPane ? EdgeInsets.zero : readableInsets(box.maxWidth)).copyWith(bottom: 96),
               children: [
@@ -132,6 +167,7 @@ class _InvestTabState extends ConsumerState<InvestTab> {
                 _Header(
                   summary: summary,
                   byCurrency: byCurrency,
+                  stocks: stocks,
                   priceAt: _latestPriceAt(held),
                   refreshing: _refreshing,
                   refreshError: _refreshError,
@@ -140,12 +176,26 @@ class _InvestTabState extends ConsumerState<InvestTab> {
                   holdings: holdings,
                   onRefresh: _refreshQuotes,
                 ),
-                for (final kind in summary.byKind) ...[
-                  if (grouped) _KindHeader(total: kind, value: kindValue(kind.kind)),
-                  for (final h in held)
-                    if (h.kind == kind.kind)
-                      HoldingTile(holding: h, now: now, selected: h.id == shown, onTap: () => open(h)),
+                if (accounts.isNotEmpty) ...[
+                  SectionHeader(
+                    '股票账户',
+                    trailing: CurrencyTotal(stockMarket, size: MoneySize.small, muted: true),
+                  ),
+                  for (final a in accounts)
+                    StockAccountTile(
+                      account: a,
+                      metrics: stockAccountMetrics(a, overview?.balanceOf(a.id), now),
+                      selected: a.id == shownAccount,
+                      onTap: () => openAccount(a),
+                    ),
                 ],
+                if (legacyStocks.isNotEmpty) _MergeHint(onMerge: () => showAbsorbSheet(context, candidates: held)),
+                if (held.isNotEmpty && accounts.isNotEmpty) ...[
+                  const SizedBox(height: LedgerLayout.itemGap),
+                  const SectionHeader('持仓'),
+                ],
+                // 不按品类分组（品类写在行里第一段）：一个列表从头看到尾。
+                for (final h in held) HoldingTile(holding: h, now: now, selected: h.id == shown, onTap: () => open(h)),
                 if (cleared.isNotEmpty) ...[
                   const SizedBox(height: LedgerLayout.groupGap),
                   const SectionHeader('已结清'),
@@ -161,9 +211,11 @@ class _InvestTabState extends ConsumerState<InvestTab> {
     return AdaptiveTwoPane(
       main: list,
       sideWidth: LedgerLayout.detailPaneWidth,
-      side: shown == null
-          ? const EmptyState(title: '选一笔理财看详情', compact: true)
-          : DetailPane(key: ValueKey('holding-pane-$shown'), child: HoldingDetailPage(shown)),
+      side: shownAccount != null
+          ? DetailPane(key: ValueKey('stock-pane-$shownAccount'), child: StockAccountPage(shownAccount))
+          : shown == null
+              ? const EmptyState(title: '选一笔理财看详情', compact: true)
+              : DetailPane(key: ValueKey('holding-pane-$shown'), child: HoldingDetailPage(shown)),
     );
   }
 
@@ -185,6 +237,7 @@ class _Header extends StatelessWidget {
     required this.refreshing,
     required this.holdings,
     required this.onRefresh,
+    this.stocks = const {},
     this.priceAt,
     this.refreshError,
     this.refreshNote,
@@ -195,6 +248,9 @@ class _Header extends StatelessWidget {
 
   /// 每个币种一份小结（金额不折算）；估值、收益、涨跌按币种分开显示。
   final Map<String, PortfolioSummary> byCurrency;
+
+  /// 股票账户的小结（按币种）：整户市值算进估值，浮盈算进浮动收益。
+  final Map<String, StockAccountSummary> stocks;
   final DateTime? priceAt;
   final bool refreshing;
   final Object? refreshError;
@@ -210,15 +266,25 @@ class _Header extends StatelessWidget {
       color: theme.colorScheme.error,
     );
     final failed = lastRefresh?.failed ?? const <QuoteFailure>[];
-    // 收益率只在一种币时有意义（美元的收益除以人民币的成本不成话）。
-    final rate = byCurrency.length <= 1 ? summary.gainRate : null;
     CurrencyAmounts by(int Function(PortfolioSummary p) pick) =>
         CurrencyAmounts({for (final e in byCurrency.entries) e.key: pick(e.value)});
+    CurrencyAmounts byStock(int Function(StockAccountSummary s) pick) =>
+        CurrencyAmounts({for (final e in stocks.entries) e.key: pick(e.value)});
+    // 股票账户按整户市值算进估值和浮动收益。收益率只在一种币时有意义（美元的收益除以人民币的成本不成话）。
+    final market = by((p) => p.marketCents) + byStock((s) => s.marketCents);
+    final gain = by((p) => p.gainCents) + byStock((s) => s.gainCents);
+    double? rate;
+    if ({...byCurrency.keys, ...stocks.keys}.length <= 1) {
+      final cost = summary.costCents + stocks.values.fold<int>(0, (sum, s) => sum + s.valuedInvestedCents);
+      final gained = summary.gainCents + stocks.values.fold<int>(0, (sum, s) => sum + s.gainCents);
+      rate = cost > 0 ? gained / cost : null;
+    }
+    final unvaluedStocks = stocks.values.fold<int>(0, (sum, s) => sum + s.unvaluedCount);
     final hasUnits = holdings.any((h) => !h.archived && !h.isCleared && h.isUnit);
     final canRefresh = wantsAutoQuotes(holdings);
     return SegmentSummary(
       label: '理财估值',
-      value: CurrencyTotal(by((p) => p.marketCents), size: MoneySize.title),
+      value: CurrencyTotal(market, size: MoneySize.title),
       trailing: canRefresh
           ? TextButton.icon(
               onPressed: refreshing ? null : onRefresh,
@@ -243,7 +309,7 @@ class _Header extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text('浮动收益 ', style: theme.textTheme.bodySmall),
-                CurrencyTotal(by((p) => p.gainCents), signed: true, size: MoneySize.small),
+                CurrencyTotal(gain, signed: true, size: MoneySize.small),
                 if (rate != null) ...[
                   const SizedBox(width: 4),
                   RateText(rate, small: true),
@@ -289,6 +355,12 @@ class _Header extends StatelessWidget {
           Text(
             '${summary.unpricedCount} 只还没有价格，没算进估值'
             '${_waitingForQuotes ? '；行情刚刷过，几分钟后再点「刷新行情」' : ''}',
+            style: theme.textTheme.bodySmall,
+          ),
+        if (unvaluedStocks > 0)
+          Text(
+            '$unvaluedStocks 个股票账户还没填市值，先按投入算',
+            key: const ValueKey('invest-unvalued-stocks'),
             style: theme.textTheme.bodySmall,
           ),
       ],
@@ -391,33 +463,90 @@ String? maturityLabel(HoldingMetrics m) {
   return '已到期\u00A0${-d}\u00A0天';
 }
 
-/// 一个品类的组头：名字、笔数，右边小计。
-class _KindHeader extends StatelessWidget {
-  const _KindHeader({required this.total, required this.value});
+/// 一个股票账户：整户市值、投入、浮盈。没填过市值的按投入算并提醒；超过 31 天没更新标「该更新了」。
+class StockAccountTile extends StatelessWidget {
+  const StockAccountTile({super.key, required this.account, required this.metrics, this.onTap, this.selected = false});
 
-  final KindTotal total;
-
-  /// 这个品类的估值，按币种分开。
-  final CurrencyAmounts value;
+  final Account account;
+  final StockAccountMetrics metrics;
+  final VoidCallback? onTap;
+  final bool selected;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Padding(
-      key: ValueKey('invest-kind-${total.kind}'),
-      padding: const EdgeInsets.fromLTRB(
-        LedgerLayout.pagePadding,
-        LedgerLayout.itemGap,
-        LedgerLayout.pagePadding,
-        0,
+    final a = account;
+    final m = metrics;
+    final gain = m.gainCents;
+    final sub = holdingSubtitle([
+      '投入 ${Money.format(m.investedCents, currency: a.currency)}',
+      if (m.unvalued) ...['按投入算', '填一下市值'] else if (a.valueOn != null) '${_md(a.valueOn!)} 更新',
+    ]);
+    return ListTile(
+      key: ValueKey('stock-account-${a.id}'),
+      selected: selected,
+      onTap: onTap ?? () => context.push('/assets/accounts/${a.id}'),
+      contentPadding: const EdgeInsets.symmetric(horizontal: LedgerLayout.pagePadding, vertical: 4),
+      leading: const AssetAvatar(Icons.show_chart),
+      title: Row(
+        children: [
+          Flexible(child: Text(a.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodyLarge)),
+          if (m.stale) ...[const SizedBox(width: 6), const TagLabel('该更新了', tone: TagTone.warning)],
+        ],
       ),
+      subtitle: Padding(
+        padding: const EdgeInsets.only(top: 2),
+        child: Text(sub, maxLines: 2, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodySmall),
+      ),
+      trailing: Column(
+        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          MultiCurrencyAmount(m.marketCents, currency: a.currency),
+          if (gain != null) ...[
+            const SizedBox(height: 2),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                MultiCurrencyAmount(gain, currency: a.currency, signed: true, size: MoneySize.small),
+                const SizedBox(width: 4),
+                RateText(m.gainRate, small: true),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// 还有逐只记的股票时的提示：可以并进股票账户。
+class _MergeHint extends StatelessWidget {
+  const _MergeHint({required this.onMerge});
+
+  final VoidCallback onMerge;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      key: const ValueKey('stock-merge-hint'),
+      margin: const EdgeInsets.fromLTRB(LedgerLayout.pagePadding, LedgerLayout.itemGap, LedgerLayout.pagePadding, 0),
+      padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
+      decoration: BoxDecoration(color: LedgerColors.of(context).surface2, borderRadius: BorderRadius.circular(12)),
       child: Row(
         children: [
-          Text(Holding.kindLabels[total.kind] ?? '其他', style: theme.textTheme.titleSmall),
-          const SizedBox(width: 6),
-          Text('${total.heldCount} 笔', style: theme.textTheme.bodySmall),
-          const SizedBox(width: 8),
-          Expanded(child: CurrencyTotal(value, size: MoneySize.small, alignEnd: true)),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('股票可以按账户汇总记了', style: theme.textTheme.titleSmall),
+                Text('市值记在股票账户上，不用一只一只记；并进去的持仓归档', style: theme.textTheme.bodySmall),
+              ],
+            ),
+          ),
+          TextButton(key: const ValueKey('stock-merge-hint-action'), onPressed: onMerge, child: const Text('合并')),
         ],
       ),
     );
@@ -452,16 +581,19 @@ class HoldingTile extends StatelessWidget {
     final daily = m.dailyGainCents;
     final inst = h.institution != null && h.institution!.isNotEmpty ? h.institution : null;
     // 每段整段不折（keepTogether）：放不下折成两行时只在「·」处折。
+    // 不按品类分组了：品类写在行里第一段。每段整段不折（keepTogether）：放不下折成两行时只在「·」处折。
     final sub = holdingSubtitle(
       m.cleared
-          ? [if (code != null) code, if (inst != null) inst, h.mode == InvestMode.unit ? '已清仓' : '已结清']
+          ? [h.kindLabel, if (code != null) code, if (inst != null) inst, h.mode == InvestMode.unit ? '已清仓' : '已结清']
           : switch (h.mode) {
               InvestMode.unit => [
+                h.kindLabel,
                 if (code != null) code,
                 '持有 ${m.days} 天',
                 if (daily != null) '日均 ${Money.format(daily.round(), signed: true, currency: h.currency)}',
               ],
               InvestMode.deposit => [
+                h.kindLabel,
                 if (inst != null) inst,
                 if (h.rateE6 != null)
                   h.rateMaxE6 != null
@@ -470,6 +602,7 @@ class HoldingTile extends StatelessWidget {
                 if (maturityLabel(m) case final due?) due,
               ],
               InvestMode.balance => [
+                h.kindLabel,
                 if (inst != null) inst,
                 if (h.rateE6 != null) '年化 ${formatRateE6(h.rateE6!)}',
                 h.valueOn == null ? '按本金' : '${_md(h.valueOn!)} 更新',

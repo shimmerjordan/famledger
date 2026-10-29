@@ -81,7 +81,8 @@ void main() {
       );
 
       expect(find.text('招商中证白酒'), findsOneWidget);
-      expect(find.text(holdingSubtitle(['161725', '持有 10 天', '日均 +¥20.00'])), findsOneWidget);
+      // 不按品类分组了：品类写在行里第一段。
+      expect(find.text(holdingSubtitle(['基金', '161725', '持有 10 天', '日均 +¥20.00'])), findsOneWidget);
       expect(
         keepTogether('日均 +¥20.00'),
         '日\u2060均\u2060\u00A0\u2060+\u2060¥\u20602\u20600\u2060.\u20600\u20600',
@@ -103,7 +104,7 @@ void main() {
       );
 
       expect(find.text('已结清'), findsOneWidget);
-      expect(find.text(holdingSubtitle(['005827', '已清仓'])), findsOneWidget);
+      expect(find.text(holdingSubtitle(['基金', '005827', '已清仓'])), findsOneWidget);
       expect(find.descendant(of: find.byKey(const ValueKey('holding-h4')), matching: find.text('+¥123.45')), findsOneWidget);
       expect(topOf(tester, '易方达蓝筹'), greaterThan(topOf(tester, '贵州茅台')));
     });
@@ -250,8 +251,10 @@ void main() {
       final backend = AssetsBackend();
       await pumpAssetsAt(tester, bootAssets(backend), '/assets?tab=invest');
 
+      // 顶栏「添加理财」先弹选择（记一笔理财 / 新建股票账户）。
       await tester.tap(find.byTooltip('添加理财'));
       await settle(tester);
+      await tapVisible(tester, find.byKey(const ValueKey('invest-add-holding')));
       expect(find.text('添加理财'), findsWidgets);
       final record = tester.widget<SwitchListTile>(
         find.byKey(const ValueKey('holding-record')),
@@ -303,8 +306,10 @@ void main() {
         'refreshedAt': testNow.toUtc().toIso8601String(),
         'throttled': true,
       };
+      // 顶栏「添加理财」先弹选择（记一笔理财 / 新建股票账户）。
       await tester.tap(find.byTooltip('添加理财'));
       await settle(tester);
+      await tapVisible(tester, find.byKey(const ValueKey('invest-add-holding')));
       await tester.enterText(find.byKey(const ValueKey('holding-name')), '沪深300ETF');
       await tester.enterText(find.byKey(const ValueKey('holding-code')), '510300');
       await tester.tap(find.byKey(const ValueKey('holding-market-sh')));

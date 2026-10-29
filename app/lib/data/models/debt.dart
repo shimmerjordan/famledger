@@ -139,6 +139,7 @@ class DebtMemo {
     this.note = '',
     this.recorded = false,
     this.action,
+    this.transactionId,
   });
 
   final String on;
@@ -151,17 +152,22 @@ class DebtMemo {
   /// settle | add；起始那一行没有。
   final String? action;
 
+  /// 人情关联了已有流水时记下那笔的 id（流水本身不动）；服务端据此拒绝同一笔再关联，App 据此不再出「债务」一段。
+  final String? transactionId;
+
   factory DebtMemo.fromJson(Map<String, dynamic> json) => DebtMemo(
     on: jsonString(json['on']),
     amountCents: jsonInt(json['amountCents']),
     note: jsonString(json['note']),
     recorded: jsonBool(json['recorded']),
     action: jsonStringOrNull(json['action']),
+    transactionId: jsonStringOrNull(json['transactionId']),
   );
 
   Map<String, dynamic> toJson() {
     final json = <String, dynamic>{'on': on, 'amountCents': amountCents, 'note': note, 'recorded': recorded};
     putIfNotNull(json, 'action', action);
+    putIfNotNull(json, 'transactionId', transactionId);
     return json;
   }
 }

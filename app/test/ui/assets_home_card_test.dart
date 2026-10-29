@@ -170,7 +170,7 @@ void main() {
     for (final key in ['home-asset-invest', 'home-asset-debts', 'home-asset-items', 'home-asset-perks']) {
       expect(inTile(key, find.text('还没记')), findsOneWidget, reason: key);
     }
-    expect(inTile('home-asset-invest', find.text('基金、定期、活期……')), findsOneWidget);
+    expect(inTile('home-asset-invest', find.text('基金、股票账户、定期、活期……')), findsOneWidget);
     expect(inTile('home-asset-debts', find.text('借出、借入、人情')), findsOneWidget);
     await tapVisible(tester, find.byKey(const ValueKey('home-asset-invest')));
     expect(find.text('还没有理财'), findsOneWidget);

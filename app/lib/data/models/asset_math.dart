@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import '../../core/money.dart';
+import 'account.dart';
 import 'asset.dart';
 import 'asset_valuation.dart';
 import 'holding.dart';
@@ -473,6 +474,107 @@ int? parseRateE6(String raw) {
   if (m == null) return null;
   final frac = (m[2] ?? '').padRight(4, '0');
   return int.parse(m[1]!) * 10000 + int.parse(frac);
+}
+
+// —— 股票账户 ——
+
+/// 一个股票账户今天的样子：市值（没填过就按投入算）、投入（账户余额 = 转进去的本金）、浮盈、多久没更新。
+class StockAccountMetrics {
+  const StockAccountMetrics({
+    required this.marketCents,
+    required this.investedCents,
+    required this.unvalued,
+    required this.stale,
+    this.gainCents,
+    this.gainRate,
+    this.valuedOn,
+  });
+
+  /// 填过市值就是市值，没填过按投入算。
+  final int marketCents;
+
+  /// 账户余额（转进去的本金）；总览还没回来时按初始余额。
+  final int investedCents;
+
+  /// 市值 − 投入；没填过市值是 null。
+  final int? gainCents;
+
+  /// 投入为 0 时说不出比例。
+  final double? gainRate;
+
+  /// 还没填过市值。
+  final bool unvalued;
+
+  /// 市值超过 [valueStaleAfter] 没更新。
+  final bool stale;
+
+  /// 市值是哪天的数。
+  final DateTime? valuedOn;
+}
+
+StockAccountMetrics stockAccountMetrics(Account a, int? balanceCents, DateTime now) {
+  final invested = balanceCents ?? a.initialBalanceCents;
+  final value = a.valueCents;
+  final on = parseDay(a.valueOn);
+  final gain = value == null ? null : value - invested;
+  return StockAccountMetrics(
+    marketCents: value ?? invested,
+    investedCents: invested,
+    gainCents: gain,
+    gainRate: gain == null || invested <= 0 ? null : gain / invested,
+    unvalued: value == null,
+    stale: value != null && on != null && localDay(now).difference(on) > valueStaleAfter,
+    valuedOn: on,
+  );
+}
+
+/// 一组股票账户的合计（一个币种一份）。
+class StockAccountSummary {
+  const StockAccountSummary({
+    this.marketCents = 0,
+    this.investedCents = 0,
+    this.valuedInvestedCents = 0,
+    this.gainCents = 0,
+    this.count = 0,
+    this.unvaluedCount = 0,
+  });
+
+  final int marketCents;
+  final int investedCents;
+
+  /// 填过市值的那些账户的投入（算收益率用：浮盈 / 这个）。
+  final int valuedInvestedCents;
+
+  /// 只含填过市值的那些（没填过的浮盈不知道，不算 0）。
+  final int gainCents;
+  final int count;
+  final int unvaluedCount;
+
+  bool get isEmpty => count == 0;
+}
+
+/// 按币种分开的股票账户小结：只算未归档的 stock 账户；余额由 [balanceOf] 给（总览里的），没有就按初始余额。
+Map<String, StockAccountSummary> summarizeStockAccounts(
+  Iterable<Account> accounts,
+  int? Function(String id) balanceOf,
+  DateTime now,
+) {
+  final out = <String, StockAccountSummary>{};
+  for (final a in accounts) {
+    if (!a.isStock || a.archived) continue;
+    final m = stockAccountMetrics(a, balanceOf(a.id), now);
+    final cur = a.currency.toUpperCase();
+    final s = out[cur] ?? const StockAccountSummary();
+    out[cur] = StockAccountSummary(
+      marketCents: s.marketCents + m.marketCents,
+      investedCents: s.investedCents + m.investedCents,
+      valuedInvestedCents: s.valuedInvestedCents + (m.unvalued ? 0 : m.investedCents),
+      gainCents: s.gainCents + (m.gainCents ?? 0),
+      count: s.count + 1,
+      unvaluedCount: s.unvaluedCount + (m.unvalued ? 1 : 0),
+    );
+  }
+  return out;
 }
 
 // —— 格式 ——

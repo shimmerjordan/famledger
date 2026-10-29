@@ -63,6 +63,16 @@ class TradeResult {
   final bool replayed;
 }
 
+/// 把持仓并进股票账户的结果：账户的新样子、归档后的持仓、记下的「移仓」转账。
+class AbsorbResult {
+  const AbsorbResult({required this.account, this.holdings = const [], this.transactions = const [], this.replayed = false});
+
+  final Account account;
+  final List<Holding> holdings;
+  final List<Transaction> transactions;
+  final bool replayed;
+}
+
 /// 持仓的增删改、加减仓、刷新行情（`server/src/modules/holdings.js`）。
 ///
 /// 写成功后同 [AssetsRepo]：先落本地，再增量同步。
@@ -237,6 +247,36 @@ class HoldingsRepo {
     final holding = await _apply(res);
     return TradeResult(
       holding: holding,
+      transactions: jsonList(res['transactions'], Transaction.fromJson),
+      replayed: jsonBool(res['replayed']),
+    );
+  }
+
+  /// 把逐只记的持仓并进一个股票账户（`POST /accounts/:id/absorb`，server/src/modules/accounts.js）：
+  /// 挂着账户的成本记一笔「移仓」转账到股票账户、没挂的进股票账户期初，持仓归档；给了 [valueCents] 顺手把市值写上。
+  /// [clientId] 是幂等键：回应丢了再发也只移仓一次。
+  Future<AbsorbResult> absorbHoldings(
+    String accountId, {
+    required List<String> holdingIds,
+    int? valueCents,
+    String? valueOn,
+    String? clientId,
+  }) async {
+    final body = <String, dynamic>{'holdingIds': holdingIds};
+    putIfNotNull(body, 'valueCents', valueCents);
+    if (valueCents != null) putIfNotNull(body, 'valueOn', valueOn);
+    putIfNotNull(body, 'clientId', clientId);
+    final res = await _api.post('/accounts/$accountId/absorb', body);
+    final account = Account.fromJson(unwrap(res, 'account'));
+    final holdings = jsonList(res['holdings'], Holding.fromJson);
+    await _ledger.putAccount(account);
+    for (final h in holdings) {
+      await _ledger.putHolding(h);
+    }
+    await _syncQuietly();
+    return AbsorbResult(
+      account: account,
+      holdings: holdings,
       transactions: jsonList(res['transactions'], Transaction.fromJson),
       replayed: jsonBool(res['replayed']),
     );

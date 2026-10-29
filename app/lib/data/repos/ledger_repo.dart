@@ -62,6 +62,10 @@ class LedgerData {
   List<Benefit> get activeBenefits => benefits.where((b) => !b.archived).toList();
   List<Debt> get activeDebts => debts.where((d) => !d.archived).toList();
 
+  /// 这笔流水已经作为人情关联到的债务（人情不改流水，只在备忘里记 id）；没有就 null。归档的也算。
+  Debt? favorLinkedDebt(String txId) =>
+      debts.where((d) => d.memoLog.any((m) => m.transactionId == txId)).firstOrNull;
+
   List<Category> expenseCategories() =>
       index?.expenseCategories ?? categories.where((c) => !c.archived && c.kind == 'expense').toList();
 
@@ -427,6 +431,9 @@ class LedgerRepo {
 
   Future<void> putHolding(Holding item) =>
       _put(holdings, item, (e) => e.id);
+
+  /// 账户走 updateAccount 就够；只有「把持仓并进股票账户」那种一次改好几样的接口拿到账户行后从这里落。
+  Future<void> putAccount(Account item) => _put(accounts, item, (e) => e.id);
 
   Future<void> dropHolding(String id) => _drop(holdings, id, (e) => e.id);
 

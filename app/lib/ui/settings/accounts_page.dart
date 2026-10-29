@@ -5,6 +5,7 @@ import '../../app/providers.dart';
 import '../../app/theme.dart';
 import '../../core/colors.dart';
 import '../../core/dates.dart';
+import '../../core/money.dart';
 import '../../data/models/models.dart';
 import '../../data/repos/ledger_repo.dart';
 import '../widgets/widgets.dart';
@@ -269,6 +270,7 @@ const Map<String, String> _kindIcons = {
   'wechat': 'payments',
   'credit': 'credit_card',
   'invest': 'trending_up',
+  'stock': 'show_chart',
   'other': 'more_horiz',
 };
 
@@ -300,9 +302,13 @@ class _AccountTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    // 股票账户右边是市值（填过的话），副标题写投入；别的账户右边就是余额。
+    final stockValue = account.isStock ? account.valueCents : null;
     final hints = [
       if (kindLabel != null) kindLabel!,
       if (owner != null) owner! else if (sharedLabel) '家庭共用',
+      if (account.isStock && balanceCents != null) '投入 ${Money.format(balanceCents!, currency: account.currency)}',
+      if (account.isStock && stockValue == null) '还没填市值',
       ..._hintLabels(account),
     ].join(' · ');
 
@@ -326,7 +332,7 @@ class _AccountTile extends StatelessWidget {
             ),
       trailing: balanceCents == null
           ? const Skeleton(width: 64, height: 16)
-          : MultiCurrencyAmount(balanceCents!, currency: account.currency),
+          : MultiCurrencyAmount(stockValue ?? balanceCents!, currency: account.currency),
       onTap: onTap,
     );
   }

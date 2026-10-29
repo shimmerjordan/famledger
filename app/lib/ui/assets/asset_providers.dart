@@ -57,3 +57,6 @@ void refreshNetWorth(WidgetRef ref) {
 final selectedFundProvider = StateProvider<String?>((ref) => null);
 final selectedAssetProvider = StateProvider<String?>((ref) => null);
 final selectedHoldingProvider = StateProvider<String?>((ref) => null);
+
+/// 理财段右栏选中的股票账户（和 [selectedHoldingProvider] 二选一：选了账户就把持仓的清掉，反之亦然）。
+final selectedStockAccountProvider = StateProvider<String?>((ref) => null);

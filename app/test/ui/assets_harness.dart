@@ -155,6 +155,10 @@ class AssetsBackend {
 
   /// 债务（modules/debts.js）：每笔背后一个 kind = 'debt' 的内部账户，余额记在 [accountBalances] 里。
   final Map<String, Map<String, dynamic>> debts = {};
+
+  /// 流水（债务「关联已有流水」、流水详情用）：`GET /transactions?type=&accountId=` 按这里筛，`GET /transactions/:id`
+  /// 取一条；关联进债务时照 debts.js 把那笔改成转账。平时为空（债务详情的「往来」也就回空）。
+  final List<Map<String, dynamic>> transactions = [];
   final List<Map<String, dynamic>> accounts;
 
   /// `/changes` 里的家庭成员（会员卡的持有人 chip 用）。
@@ -271,6 +275,8 @@ class AssetsBackend {
       res = _holdings(req.method, seg, body);
     } else if (seg.isNotEmpty && seg.first == 'debts') {
       res = _debts(req.method, seg, body);
+    } else if (seg.isNotEmpty && seg.first == 'accounts') {
+      res = _accounts(req.method, seg, body);
     } else if (seg.isNotEmpty && seg.first == 'funds') {
       // 板块：只管新建 / 修改（每月进账规则跟着请求体原样存下）。
       if (req.method == 'POST' && seg.length == 1) {
@@ -283,8 +289,29 @@ class AssetsBackend {
         res = _error(404, 'not_found', '板块不存在');
       }
     } else if (req.method == 'GET' && path == '/transactions') {
-      // 债务详情的「往来」按账户查流水；这个假服务端不记流水，回空。
-      res = _ok({'items': <Object>[]});
+      // 按类型 / 账户筛 [transactions]（平时为空：债务详情的「往来」就回空）。
+      final q = req.url.queryParameters;
+      res = _ok({
+        'items': [
+          for (final t in transactions)
+            if ((q['type'] == null || t['type'] == q['type']) &&
+                (q['accountId'] == null || t['accountId'] == q['accountId'] || t['toAccountId'] == q['accountId']))
+              t,
+        ],
+      });
+    } else if (req.method == 'GET' && seg.length == 2 && seg.first == 'transactions') {
+      final t = transactions.where((t) => t['id'] == seg[1]).firstOrNull;
+      res = t == null ? _error(404, 'not_found', '这笔流水不存在') : _ok({'transaction': t});
+    } else if (req.method == 'POST' && path == '/transactions') {
+      // 记一笔（股票账户的转入 / 转出）：存进 [transactions]，转账两头的余额跟着动。
+      final row = <String, dynamic>{'id': _id('tx'), 'status': 'confirmed', 'source': 'manual', 'currency': 'CNY', ...body};
+      transactions.add(row);
+      if (row['type'] == 'transfer') {
+        final amount = row['amountCents'] as int;
+        accountBalances[row['accountId'] as String] = (accountBalances[row['accountId']] ?? 0) - amount;
+        accountBalances[row['toAccountId'] as String] = (accountBalances[row['toAccountId']] ?? 0) + amount;
+      }
+      res = _ok({'transaction': row}, 201);
     } else if (seg.isNotEmpty && PerksFake.resources.contains(seg.first)) {
       res = perks.handle(req.method, seg, body, req.url.queryParameters);
     } else if (seg.isNotEmpty && ImportFake.resources.contains(seg.first)) {
@@ -342,12 +369,21 @@ class AssetsBackend {
     var investAccounts = 0;
     accountBalances.forEach((id, v) {
       if (kindOf[id] == 'debt') return;
-      if (kindOf[id] == 'invest') {
+      if (kindOf[id] == 'invest' || kindOf[id] == 'stock') {
         investAccounts += v;
       } else {
         cash += v;
       }
     });
+    // 股票账户（stats.js 第 4 条）：填过市值的补浮盈（市值 − 余额），市值进估值。
+    var stockNet = 0;
+    var stockMarket = 0;
+    for (final a in accounts) {
+      if (a['kind'] != 'stock' || a['valueCents'] == null) continue;
+      final value = a['valueCents'] as int;
+      stockNet += value - (accountBalances[a['id']] ?? 0);
+      stockMarket += value;
+    }
     // 债务：按方向分应收应付，只有计入净资产的进净资产（stats.js 第 6 条）。
     var receivable = 0, payable = 0, countedReceivable = 0, countedPayable = 0;
     for (final d in debts.values) {
@@ -362,7 +398,7 @@ class AssetsBackend {
       }
     }
     final uncountedDebts = (receivable - countedReceivable) - (payable - countedPayable);
-    final exPhysical = accountsNet - uncountedDebts + investNetCents;
+    final exPhysical = accountsNet - uncountedDebts + investNetCents + stockNet;
     final counted = (settings['assets'] as Map)['netWorthIncludesPhysical'] == true;
     final p = physical;
     final included = p == null || !counted ? 0 : p['includedCents'] as int;
@@ -387,11 +423,11 @@ class AssetsBackend {
         for (final e in accountBalances.entries)
           {'accountId': e.key, 'balanceCents': e.value},
       ],
-      if (investMarketCents != null) 'investMarketCents': investMarketCents,
+      if (investMarketCents != null || stockMarket > 0) 'investMarketCents': (investMarketCents ?? 0) + stockMarket,
       if (!legacyOverview) ...{
         'cashCents': cash,
         'investAccountsCents': investAccounts,
-        'investNetCents': investNetCents,
+        'investNetCents': investNetCents + stockNet,
         if (debts.isNotEmpty)
           'debts': {
             'receivableCents': receivable,
@@ -585,6 +621,21 @@ class AssetsBackend {
     return _error(404, 'not_found', '没有这个接口');
   }
 
+  /// 照 debts.js 的「关联已有流水」：借款类把那笔支出 / 收入改成真账户和内部账户之间的转账
+  /// （effect > 0 钱出真账户，< 0 钱进真账户），类别、板块清掉；人情不改那笔。返回改后的那笔（人情 null）。
+  Map<String, dynamic>? _linkTx(String id, String internalId, int effect, {required bool favor}) {
+    final t = transactions.firstWhere((t) => t['id'] == id);
+    if (favor) return null;
+    final real = t['accountId'] as String;
+    t['type'] = 'transfer';
+    t['accountId'] = effect > 0 ? real : internalId;
+    t['toAccountId'] = effect > 0 ? internalId : real;
+    t['categoryId'] = null;
+    t['fundId'] = null;
+    t['toFundId'] = null;
+    return t;
+  }
+
   http.Response _debts(String method, List<String> seg, Map<String, dynamic> body) {
     if (method == 'POST' && seg.length == 1) {
       final id = 'd${++_debtIds}';
@@ -593,7 +644,9 @@ class AssetsBackend {
       final kind = body['kind'] as String? ?? 'loan';
       final amount = body['amountCents'] as int;
       final cp = body['counterparty'] as String;
-      final via = (body['recordTransaction'] as Map?)?['accountId'] as String?;
+      final rt = body['recordTransaction'] as Map?;
+      final via = rt?['accountId'] as String?;
+      final linkId = rt?['transactionId'] as String?;
       final settled = body['settledCents'] as int? ?? 0;
       final sign = lend ? 1 : -1;
       accounts.add({
@@ -605,6 +658,8 @@ class AssetsBackend {
       // 记账前已经收回 / 还掉的部分：按不记流水收回一次（debts.js）。
       accountBalances[accountId] = sign * (amount - settled);
       if (via != null) accountBalances[via] = (accountBalances[via] ?? 0) - sign * amount;
+      // 关联已有流水：真账户早被那笔扣过了，只把那笔改成转账。
+      if (linkId != null) _linkTx(linkId, accountId, sign, favor: kind == 'favor');
       final row = <String, dynamic>{
         'id': id,
         'accountId': accountId,
@@ -617,9 +672,10 @@ class AssetsBackend {
         'counted': body['counted'] ?? kind != 'favor',
         'memberId': body['memberId'],
         'note': body['note'],
+        'currency': body['currency'] ?? 'CNY',
         'memoLog': [
-          if (via == null || kind == 'favor')
-            {'on': body['startedOn'], 'amountCents': sign * amount, 'note': '起始', 'recorded': via != null},
+          if ((via == null && linkId == null) || kind == 'favor')
+            {'on': body['startedOn'], 'amountCents': sign * amount, 'note': '起始', 'recorded': via != null || linkId != null},
           if (settled > 0)
             {'on': '2026-09-23', 'amountCents': -sign * settled, 'note': lend ? '之前已收回' : '之前已还', 'recorded': false, 'action': 'settle'},
         ],
@@ -662,27 +718,130 @@ class AssetsBackend {
       final effect = add ? sign : -sign;
       accountBalances[accountId] = (accountBalances[accountId] ?? 0) + effect * amount;
       final via = body['accountId'] as String?;
+      final linkId = body['transactionId'] as String?;
+      if (via != null && linkId != null) return _error(400, 'invalid_transactionId', 'accountId 和 transactionId 只能给一个');
       if (via != null) accountBalances[via] = (accountBalances[via] ?? 0) - effect * amount;
+      final linked = linkId == null ? null : _linkTx(linkId, accountId, effect, favor: row['kind'] == 'favor');
       if (add) row['amountCents'] = (row['amountCents'] as int) + amount;
-      if (via == null || row['kind'] == 'favor') {
+      if ((via == null && linkId == null) || row['kind'] == 'favor') {
         row['memoLog'] = [
           ...(row['memoLog'] as List),
           {
             'on': body['occurredOn'],
             'amountCents': effect * amount,
             'note': body['note'] ?? '',
-            'recorded': via != null,
+            'recorded': via != null || linkId != null,
             'action': add ? 'add' : 'settle',
           },
         ];
       }
-      return _ok({'debt': row, 'transactions': <Object>[]});
+      return _ok({'debt': row, 'transactions': [if (linked != null) linked]});
     }
     if (method == 'DELETE') {
       debts.remove(seg[1]);
       final gone = {...row, 'deletedAt': testNow.toUtc().toIso8601String()};
       _tombstones.add({...gone, 'kind': 'debtRow', 'debtKind': row['kind']});
       return _ok({'debt': gone});
+    }
+    return _error(404, 'not_found', '没有这个接口');
+  }
+
+  /// 股票账户的市值（照 accounts.js）：`valueCents: null` 清掉；给了就写市值、日期，valueLog 同一天覆盖、按日期排。
+  void _applyValue(Map<String, dynamic> row, Map<String, dynamic> body) {
+    if (!body.containsKey('valueCents')) return;
+    final value = body['valueCents'];
+    if (value == null) {
+      row['valueCents'] = null;
+      row['valueOn'] = null;
+      return;
+    }
+    final on = body['valueOn'] as String? ?? '2026-09-23';
+    row['valueCents'] = value;
+    row['valueOn'] = on;
+    final log = [
+      for (final e in (row['valueLog'] as List? ?? const []))
+        if (e['on'] != on) Map<String, dynamic>.from(e as Map),
+      {'on': on, 'valueCents': value},
+    ]..sort((a, b) => (a['on'] as String).compareTo(b['on'] as String));
+    row['valueLog'] = log;
+  }
+
+  /// 账户：新建、改（含市值）、把持仓并进股票账户（照 server/src/modules/accounts.js）。
+  http.Response _accounts(String method, List<String> seg, Map<String, dynamic> body) {
+    if (method == 'POST' && seg.length == 1) {
+      final id = _id('acc');
+      final row = <String, dynamic>{
+        'id': id,
+        'kind': 'other',
+        'sortOrder': accounts.length,
+        'archived': false,
+        'valueLog': <Object>[],
+        ...body,
+      }..remove('clientId')..remove('valueCents')..remove('valueOn');
+      if (row['kind'] != 'stock' && (body['valueCents'] != null || body['valueOn'] != null)) {
+        return _error(400, 'invalid_valueCents', '只有股票账户记市值');
+      }
+      _applyValue(row, body);
+      accounts.add(row);
+      accountBalances[id] = (body['initialBalanceCents'] as int?) ?? 0;
+      return _ok({'account': row}, 201);
+    }
+    final row = accounts.where((a) => a['id'] == seg[1]).firstOrNull;
+    if (row == null) return _error(404, 'not_found', '账户不存在');
+    if (method == 'PATCH' && seg.length == 2) {
+      final kind = body['kind'] as String? ?? row['kind'];
+      if (kind != 'stock' && body['valueCents'] != null) return _error(400, 'invalid_valueCents', '只有股票账户记市值');
+      final oldInitial = row['initialBalanceCents'] as int? ?? 0;
+      row.addAll({...body}..remove('valueCents')..remove('valueOn')..remove('currentBalanceCents'));
+      if (body.containsKey('initialBalanceCents')) {
+        accountBalances[row['id'] as String] =
+            (accountBalances[row['id']] ?? 0) + ((body['initialBalanceCents'] as int?) ?? 0) - oldInitial;
+      }
+      if (kind != 'stock') {
+        row['valueCents'] = null;
+        row['valueOn'] = null;
+      }
+      _applyValue(row, body);
+      return _ok({'account': row});
+    }
+    if (method == 'POST' && seg.length == 3 && seg[2] == 'absorb') {
+      if (row['kind'] != 'stock') return _error(400, 'invalid_accountId', '只能并进股票账户');
+      final id = row['id'] as String;
+      final ids = (body['holdingIds'] as List).cast<String>();
+      final txs = <Map<String, dynamic>>[];
+      var intoInitial = 0;
+      for (final hid in ids) {
+        final h = holdings[hid];
+        if (h == null || h['archived'] == true) return _error(400, 'invalid_holdingIds', '持仓 $hid 不能并');
+        final cost = h['costCents'] as int;
+        final linked = h['accountId'] as String?;
+        final alive = linked != null && accounts.any((a) => a['id'] == linked);
+        if (cost > 0 && alive && linked != id) {
+          accountBalances[linked] = (accountBalances[linked] ?? 0) - cost;
+          accountBalances[id] = (accountBalances[id] ?? 0) + cost;
+          txs.add({
+            'id': _id('tx'),
+            'clientId': _id('c'),
+            'type': 'transfer',
+            'amountCents': cost,
+            'currency': 'CNY',
+            'occurredAt': '2026-09-23T12:00:00+08:00',
+            'accountId': linked,
+            'toAccountId': id,
+            'merchant': '移仓 ${h['name']}',
+            'source': 'manual',
+            'status': 'confirmed',
+          });
+        } else if (cost > 0 && !alive) {
+          intoInitial += cost;
+        }
+        h['archived'] = true;
+      }
+      row['initialBalanceCents'] = (row['initialBalanceCents'] as int? ?? 0) + intoInitial;
+      accountBalances[id] = (accountBalances[id] ?? 0) + intoInitial;
+      _applyValue(row, body);
+      transactions.addAll(txs);
+      return _ok({'account': row, 'holdings': [for (final hid in ids) holdings[hid]], 'transactions': txs});
     }
     return _error(404, 'not_found', '没有这个接口');
   }

@@ -7,21 +7,27 @@ import '../../core/colors.dart';
 import '../../core/dates.dart';
 import '../../core/money.dart';
 import '../../data/models/models.dart';
+import '../assets/asset_widgets.dart' show DayButton, localDate, pickPastDay;
 import '../transactions/tx_providers.dart';
 import '../widgets/widgets.dart';
 import 'manage_widgets.dart';
 
 /// 新建/编辑账户。编辑时能直接填「现在余额」校准（差额进初始余额，不多记流水）、看这个账户的流水、删掉没流水的账户。
-Future<void> showAccountForm(BuildContext context, {Account? account}) =>
+/// 股票账户（kind = stock）多一栏「当前市值」：照券商 App 填，浮盈 = 市值 − 投入。
+/// [initialKind] 给新建时预选的类型（理财段的「新建股票账户」）。
+Future<void> showAccountForm(BuildContext context, {Account? account, String? initialKind}) =>
     showManageSheet<void>(
       context,
-      (context) => AccountFormSheet(account: account),
+      (context) => AccountFormSheet(account: account, initialKind: initialKind),
     );
 
 class AccountFormSheet extends ConsumerStatefulWidget {
-  const AccountFormSheet({super.key, this.account});
+  const AccountFormSheet({super.key, this.account, this.initialKind});
 
   final Account? account;
+
+  /// 新建时预选的类型。
+  final String? initialKind;
 
   @override
   ConsumerState<AccountFormSheet> createState() => _AccountFormSheetState();
@@ -46,7 +52,13 @@ class _AccountFormSheetState extends ConsumerState<AccountFormSheet> {
     text: _hintText('keywords'),
   );
 
-  late String _kind = widget.account?.kind ?? 'bank';
+  late String _kind = widget.account?.kind ?? widget.initialKind ?? 'bank';
+
+  /// 股票账户的「当前市值」：照券商 App 填；留空 = 不填（按投入算）。
+  late final TextEditingController _value = TextEditingController(
+    text: widget.account?.valueCents == null ? '' : Money.input(widget.account!.valueCents!),
+  );
+  late DateTime _valueOn = localDate(widget.account?.valueOn) ?? DateTime.now();
 
   /// 新建默认家庭基准币；有流水后服务端不让改（409 currency_locked，错误照常显示）。
   late String _currency = widget.account?.currency ?? ref.read(baseCurrencyProvider);
@@ -112,6 +124,7 @@ class _AccountFormSheetState extends ConsumerState<AccountFormSheet> {
     _name.dispose();
     _balance.dispose();
     _current.dispose();
+    _value.dispose();
     _tails.dispose();
     _packages.dispose();
     _keywords.dispose();
@@ -136,6 +149,27 @@ class _AccountFormSheetState extends ConsumerState<AccountFormSheet> {
       return;
     }
 
+    // 市值只有股票账户有：填了（或原来有、现在清空了）才发；没动过就不发，免得每次改名都给今天记一条市值。
+    final valuePatch = <String, dynamic>{};
+    if (_kind == Account.kindStock) {
+      final raw = _value.text.trim();
+      final was = widget.account?.valueCents;
+      if (raw.isEmpty) {
+        if (was != null) valuePatch['valueCents'] = null;
+      } else {
+        final value = Money.tryParse(raw);
+        if (value == null || value < 0) {
+          setState(() => _error = '市值看不懂：$raw');
+          return;
+        }
+        final on = Dates.isoDate(_valueOn);
+        if (value != was || on != widget.account?.valueOn) {
+          valuePatch['valueCents'] = value;
+          valuePatch['valueOn'] = on;
+        }
+      }
+    }
+
     final hints = <String, dynamic>{};
     final tails = _splitHints(_tails);
     final packages = _splitHints(_packages);
@@ -154,6 +188,7 @@ class _AccountFormSheetState extends ConsumerState<AccountFormSheet> {
       'icon': _icon,
       'color': _color,
       'matchHints': hints,
+      ...valuePatch,
     };
 
     setState(() {
@@ -283,19 +318,60 @@ class _AccountFormSheetState extends ConsumerState<AccountFormSheet> {
         ),
         ManageField(
           label: '类型',
-          child: Wrap(
-            spacing: 8,
-            runSpacing: 8,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              for (final kind in Account.kinds)
-                ChoiceChip(
-                  label: Text(Account.kindLabels[kind] ?? kind),
-                  selected: _kind == kind,
-                  onSelected: (_) => setState(() => _kind = kind),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final kind in Account.kinds)
+                    ChoiceChip(
+                      key: ValueKey('account-kind-$kind'),
+                      label: Text(Account.kindLabels[kind] ?? kind),
+                      selected: _kind == kind,
+                      onSelected: (_) => setState(() => _kind = kind),
+                    ),
+                ],
+              ),
+              if (_kind == Account.kindStock)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(
+                    '只记整户市值，不逐只记股票；转进转出的钱记成转账，浮盈 = 市值 − 投入',
+                    style: theme.textTheme.bodySmall,
+                  ),
                 ),
             ],
           ),
         ),
+        if (_kind == Account.kindStock)
+          ManageField(
+            label: '当前市值',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  key: const ValueKey('account-value'),
+                  controller: _value,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: InputDecoration(
+                    prefixText: '${Money.symbolFor(_currency).trim()} ',
+                    hintText: '照券商 App 上的总市值填；留空就按投入算',
+                  ),
+                ),
+                const SizedBox(height: 8),
+                DayButton(
+                  key: const ValueKey('account-value-on'),
+                  day: _valueOn,
+                  onPressed: () async {
+                    final picked = await pickPastDay(context, initial: _valueOn, help: '市值是哪天的');
+                    if (picked != null) setState(() => _valueOn = picked);
+                  },
+                ),
+              ],
+            ),
+          ),
         ManagePicker<String>(
           label: '归属成员',
           value: _owner,
@@ -305,7 +381,8 @@ class _AccountFormSheetState extends ConsumerState<AccountFormSheet> {
           ],
           onChanged: (value) => setState(() => _owner = value),
         ),
-        if (_now != null)
+        // 股票账户的余额是「投入」，不是能照着券商 App 抄的数（那是上面的市值）：不给校准栏，免得把投入改成市值、浮盈归零。
+        if (_now != null && _kind != Account.kindStock)
           ManageField(
             label: '现在余额',
             child: TextField(
@@ -338,7 +415,11 @@ class _AccountFormSheetState extends ConsumerState<AccountFormSheet> {
                     prefixText: '${Money.symbolFor(_currency).trim()} ',
                     hintText: '0.00',
                     helperText: [
-                      _kind == 'credit' ? '信用卡已欠的钱填负数' : '开始记账那天这个账户里有多少',
+                      _kind == 'credit'
+                          ? '信用卡已欠的钱填负数'
+                          : _kind == Account.kindStock
+                              ? '开始记之前已经投进去的本金'
+                              : '开始记账那天这个账户里有多少',
                       // 有流水后服务端不让改币种（409 currency_locked，错误照常显示）。
                       if (!_isNew) '记过流水后币种不能改',
                     ].join('；'),

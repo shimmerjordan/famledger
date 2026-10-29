@@ -7,6 +7,7 @@ import '../../data/models/models.dart';
 import '../../data/repos/holdings_repo.dart';
 import '../debts/debts_tab.dart';
 import '../perk_import/perk_import_providers.dart';
+import '../settings/account_form.dart';
 import 'asset_providers.dart';
 import 'asset_routes.dart';
 import '../perks/perk_providers.dart';
@@ -76,6 +77,40 @@ Future<void> showPerkAddSheet(BuildContext context) => showModalBottomSheet<void
         onTap: () {
           Navigator.of(sheet).pop();
           context.push('/assets/memberships/new');
+        },
+      ),
+      const SizedBox(height: 16),
+    ],
+  ),
+);
+
+/// 理财 tab 的「添加」：记一笔理财（基金、定期、活期……逐笔记），或新建一个股票账户（股票按整户市值记）。
+Future<void> showInvestAddSheet(BuildContext context) => showModalBottomSheet<void>(
+  useRootNavigator: true,
+  context: context,
+  showDragHandle: true,
+  useSafeArea: true,
+  builder: (sheet) => Column(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      ListTile(
+        key: const ValueKey('invest-add-holding'),
+        leading: const Icon(Icons.savings_outlined),
+        title: const Text('记一笔理财'),
+        subtitle: const Text('基金、定期、活期、保险存单……一笔一笔记'),
+        onTap: () {
+          Navigator.of(sheet).pop();
+          context.push('/assets/holdings/new');
+        },
+      ),
+      ListTile(
+        key: const ValueKey('invest-add-stock'),
+        leading: const Icon(Icons.show_chart),
+        title: const Text('新建股票账户'),
+        subtitle: const Text('股票不逐只记：整户记一个市值，转进转出记转账'),
+        onTap: () {
+          Navigator.of(sheet).pop();
+          showAccountForm(context, initialKind: Account.kindStock);
         },
       ),
       const SizedBox(height: 16),
@@ -236,7 +271,7 @@ class _AssetsPageState extends ConsumerState<AssetsPage>
               key: const ValueKey('assets-add'),
               onPressed: () => switch (_index) {
                 AssetsPage.perksTab => showPerkAddSheet(context),
-                AssetsPage.investTab => context.push('/assets/holdings/new'),
+                AssetsPage.investTab => showInvestAddSheet(context),
                 AssetsPage.debtsTab => context.push('/assets/debts/new'),
                 _ => context.push('/assets/items/new'),
               },

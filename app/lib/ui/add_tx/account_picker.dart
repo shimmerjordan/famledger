@@ -62,6 +62,7 @@ class AccountPicker extends StatelessWidget {
     'bank' => 'account_balance',
     'credit' => 'credit_card',
     'invest' => 'trending_up',
+    'stock' => 'show_chart',
     _ => 'wallet',
   };
 }
