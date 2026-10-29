@@ -18,6 +18,7 @@ import 'asset_form_page.dart';
 import 'assets_page.dart';
 import 'holding_detail_page.dart';
 import 'holding_form_page.dart';
+import 'stock_account_page.dart';
 
 /// 资产 tab 各段在地址里的名字（`/assets?tab=…`）。不带 tab 时：头一次打开是第一段「基金」，
 /// 之后保持当前段（见 [requestedAssetsTab]）。
@@ -40,6 +41,7 @@ int? requestedAssetsTab(Uri uri) {
   return switch (segments[1]) {
     'items' => AssetsPage.itemsTab,
     'holdings' => AssetsPage.investTab,
+    'accounts' => AssetsPage.investTab,
     'debts' => AssetsPage.debtsTab,
     'memberships' || 'benefits' || 'platforms' => AssetsPage.perksTab,
     'import' => uri.queryParameters['want'] == ImportWant.items.wire ? AssetsPage.itemsTab : AssetsPage.perksTab,
@@ -104,7 +106,8 @@ GoRoute assetsTabRoute({GlobalKey<NavigatorState>? pagesOn}) {
           page('edit', (context, state) => AssetFormPage(id: state.pathParameters['id'])),
         ],
       ),
-      page('debts/new', (context, state) => const DebtFormPage()),
+      // `?txId=`：从流水详情「记成一笔新债务」进来，表单按那笔流水预填并直接关联它。
+      page('debts/new', (context, state) => DebtFormPage(txId: state.uri.queryParameters['txId'])),
       page(
         'debts/:id',
         (context, state) => DebtDetailPage(state.pathParameters['id']!),
@@ -112,6 +115,8 @@ GoRoute assetsTabRoute({GlobalKey<NavigatorState>? pagesOn}) {
           page('edit', (context, state) => DebtFormPage(id: state.pathParameters['id'])),
         ],
       ),
+      // 股票账户（按整户市值记的那种账户）的详情：归理财段。
+      page('accounts/:id', (context, state) => StockAccountPage(state.pathParameters['id']!)),
       page('holdings/new', (context, state) => const HoldingFormPage()),
       page(
         'holdings/:id',

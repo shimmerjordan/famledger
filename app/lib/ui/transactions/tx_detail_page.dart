@@ -6,6 +6,7 @@ import '../../app/providers.dart';
 import '../../app/theme.dart';
 import '../../core/colors.dart';
 import '../../core/dates.dart';
+import '../../core/ids.dart';
 import '../../core/money.dart';
 import '../../data/models/models.dart';
 import '../../data/repos/ledger_repo.dart';
@@ -14,6 +15,8 @@ import '../add_tx/category_grid.dart';
 import '../add_tx/fund_picker.dart';
 import '../add_tx/member_picker.dart';
 import '../add_tx/picker_field.dart';
+import '../assets/asset_providers.dart';
+import '../debts/debt_widgets.dart';
 import '../widgets/widgets.dart';
 import 'tx_providers.dart';
 import 'tx_tile.dart';
@@ -45,6 +48,9 @@ class _TxDetailPageState extends ConsumerState<TxDetailPage> {
 
   String? _type;
   DateTime? _occurredAt;
+
+  /// 「计入账户余额」改成的值；null = 沿用这笔原来的。
+  bool? _offBalance;
 
   /// 用户亲手改过的那些字段。key 在 map 里 = 改过（值可以是 null，
   /// 表示「这一侧就是不填」——转账从「账户+基金两对」改成只留一对时要用到）。
@@ -241,6 +247,7 @@ class _TxDetailPageState extends ConsumerState<TxDetailPage> {
       'categoryId': isTransfer ? null : _value(_kCategory, tx.categoryId),
       'toFundId': isTransfer ? toFundId : null,
       'toAccountId': isTransfer ? toAccountId : null,
+      if (_offBalance != null) 'offBalance': _offBalance,
     };
     await _run(
       () async {
@@ -252,6 +259,98 @@ class _TxDetailPageState extends ConsumerState<TxDetailPage> {
       },
       done: '已保存',
       pop: true,
+    );
+  }
+
+  /// 这笔能不能当债务往来：支出 / 收入、走了账户、已确认（待确认的余额里没有它）、账户不是哪笔债务的内部账户
+  /// （那就已经是往来了）、也没被人情关联过（那段改成说明）。
+  static bool _canLinkDebt(Transaction tx, LedgerData ledger) =>
+      (tx.isExpense || tx.isIncome) &&
+      tx.accountId != null &&
+      tx.status == 'confirmed' &&
+      ledger.account(tx.accountId)?.isDebt != true &&
+      ledger.favorLinkedDebt(tx.id) == null;
+
+  /// 支出能接：借出的债务（再借给）、借入的债务（还钱）；收入能接：借入的（又借了）、借出的（还回来）。
+  /// 人情按同样的方向：随礼是支出、收礼是收入。
+  static ({bool add, String label}) _debtOption(Debt d, {required bool expense}) {
+    final cp = d.counterparty;
+    if (d.isFavor) {
+      if (expense) return d.isLend ? (add: true, label: '又随了 $cp 的礼') : (add: false, label: '还了 $cp 的人情');
+      return d.isLend ? (add: false, label: '$cp 回礼了') : (add: true, label: '又收了 $cp 的礼');
+    }
+    if (expense) return d.isLend ? (add: true, label: '再借给 $cp') : (add: false, label: '还 $cp');
+    return d.isLend ? (add: false, label: '$cp 还回来') : (add: true, label: '又借了 $cp 的');
+  }
+
+  /// 「关联到已有债务」：列出能接这笔钱的债务（同币种；还钱 / 收回的要还欠着这么多），每行写清会发生什么，
+  /// 点了就按这笔的金额、日期记成那笔债务的往来 —— 服务端把这笔改成转账，账户不会扣两次。
+  Future<void> _linkDebt(Transaction tx, LedgerData ledger) async {
+    // 还剩多少在总览里：等它回来再筛（取不到就不筛，服务端的 over_settle 会拦）。
+    StatsOverview? overview;
+    try {
+      overview = await ref.read(statsProvider(Dates.currentMonth()).future);
+    } catch (_) {
+      overview = ref.read(debtBalancesProvider);
+    }
+    if (!mounted) return;
+    final options = <({Debt debt, bool add, String label})>[];
+    for (final d in ledger.activeDebts) {
+      if (d.currency.toUpperCase() != tx.currency.toUpperCase()) continue;
+      final option = _debtOption(d, expense: tx.isExpense);
+      final left = outstandingOf(d, overview);
+      if (!option.add && left != null && left < tx.amountCents) continue;
+      options.add((debt: d, add: option.add, label: option.label));
+    }
+    final money = Money.format(tx.amountCents, currency: tx.currency);
+    final picked = await showModalBottomSheet<({Debt debt, bool add, String label})>(
+      useRootNavigator: true,
+      context: context,
+      showDragHandle: true,
+      useSafeArea: true,
+      builder: (sheet) => ListView(
+        shrinkWrap: true,
+        padding: const EdgeInsets.only(bottom: LedgerLayout.pagePadding),
+        children: [
+          SectionHeader('这 $money 是哪笔债务的往来'),
+          if (options.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: LedgerLayout.pagePadding),
+              child: Text(
+                '没有能接这笔钱的债务（要同币种，还钱 / 收回的要还欠着这么多）。可以「记成一笔新债务」。',
+                style: Theme.of(sheet).textTheme.bodySmall,
+              ),
+            ),
+          for (final o in options)
+            ListTile(
+              key: ValueKey('link-debt-${o.debt.id}'),
+              leading: Icon(debtIcon(o.debt)),
+              title: Text(o.label),
+              subtitle: Text(
+                [o.debt.title, o.debt.kindLabel, if (outstandingOf(o.debt, overview) case final left?) '还剩 ${Money.format(left, currency: o.debt.currency)}'].join(' · '),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              onTap: () => Navigator.of(sheet).pop(o),
+            ),
+        ],
+      ),
+    );
+    if (picked == null || !mounted) return;
+    await _run(
+      () async {
+        await ref.read(debtsRepoProvider).move(
+          picked.debt.id,
+          add: picked.add,
+          amountCents: tx.amountCents,
+          occurredOn: Dates.isoDate(tx.occurredAt),
+          transactionId: tx.id,
+          clientId: newClientId(),
+        );
+        refreshMoneyViews(ref);
+        return picked.debt.isFavor ? '已记成「${picked.label}」' : '已记成「${picked.label}」，这笔流水变成了转账';
+      },
+      done: '已关联',
     );
   }
 
@@ -383,9 +482,11 @@ class _TxDetailPageState extends ConsumerState<TxDetailPage> {
             segments: const [
               ButtonSegment(value: Transaction.typeExpense, label: Text('支出')),
               ButtonSegment(value: Transaction.typeIncome, label: Text('收入')),
+              // 间隔号用全角「・」(U+30FB) 而不是「·」(U+00B7)：后者在 Roboto 里，网页版会把标签切成中英两段
+              // 字体，SegmentedButton 按文字本来宽度定尺寸时量窄了、折成两行。
               ButtonSegment(
                 value: Transaction.typeTransfer,
-                label: Text('转账·拨款'),
+                label: Text('转账・拨款'),
               ),
             ],
             selected: {type},
@@ -474,6 +575,21 @@ class _TxDetailPageState extends ConsumerState<TxDetailPage> {
             ),
           ),
         ],
+        // 走了账户的流水才有「计不计入账户余额」可说（账单导入进来的默认不计入：余额在账户里校准）。
+        if (isTransfer ? (accountId != null || toAccountId != null) : accountId != null)
+          _section(
+            key: 'balance',
+            label: '账户余额',
+            value: _plain((_offBalance ?? tx.offBalance) ? '不计入' : '计入', ''),
+            child: SwitchListTile(
+              key: const ValueKey('tx-off-balance'),
+              contentPadding: EdgeInsets.zero,
+              value: !(_offBalance ?? tx.offBalance),
+              onChanged: (v) => setState(() => _offBalance = !v),
+              title: const Text('计入账户余额'),
+              subtitle: const Text('关掉后这笔只进收支统计、板块和预算，不加减账户余额 —— 余额在账户里直接校准'),
+            ),
+          ),
         _section(
           key: 'time',
           label: '时间',
@@ -522,6 +638,50 @@ class _TxDetailPageState extends ConsumerState<TxDetailPage> {
             ],
           ),
         ),
+        // 借出、收回、借入、还款的钱常常先被自动记账 / 导入记成了支出 / 收入：从这里把它交给债务，不再记第二笔。
+        if (ledger != null && _canLinkDebt(tx, ledger))
+          PickerField(
+            label: '债务',
+            trailing: Text('借出、收回、借入、还款', style: theme.textTheme.bodySmall),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    OutlinedButton.icon(
+                      key: const ValueKey('tx-link-debt'),
+                      onPressed: _busy ? null : () => _linkDebt(tx, ledger),
+                      icon: const Icon(Icons.handshake_outlined, size: 18),
+                      label: const Text('关联到已有债务'),
+                    ),
+                    OutlinedButton.icon(
+                      key: const ValueKey('tx-new-debt'),
+                      onPressed: _busy ? null : () => context.push('/assets/debts/new?txId=${tx.id}'),
+                      icon: const Icon(Icons.add, size: 18),
+                      label: const Text('记成一笔新债务'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '这笔是借出去 / 收回来的钱？关联后它变成账户和债务之间的转账，不再算${tx.isExpense ? '支出' : '收入'}，账户也不会扣两次。',
+                  style: theme.textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+        // 已经作为人情关联过的：这一段改成说明，别再邀请用户点第二次（服务端也会拒）。
+        if (ledger?.favorLinkedDebt(tx.id) case final linked? when tx.isExpense || tx.isIncome)
+          PickerField(
+            label: '债务',
+            child: Text(
+              '已记成人情「${linked.counterparty}」的往来：钱这一边就是这笔，不用再记。',
+              key: const ValueKey('tx-favor-linked'),
+              style: theme.textTheme.bodyMedium,
+            ),
+          ),
         if (tx.source != 'manual' || tx.rawText != null)
           PickerField(label: '来源', child: _Provenance(tx: tx)),
         if (_error != null)

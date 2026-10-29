@@ -21,6 +21,8 @@ class DebtsRepo {
   final LedgerRepo _ledger;
 
   /// [accountId] 非空 = 钱经这个账户走：借款类记一笔转账，人情记一笔支出 / 收入（类别「人情」）。
+  /// [transactionId] 非空 = 起始那笔钱已经记过流水了（自动记账 / 导入的那笔）：借款类把它改成真账户和内部账户之间的
+  /// 转账，账户不会扣两次；人情不动那笔，只当钱那边已经记过。和 [accountId] 二选一（都给服务端 400）。
   /// [settledCents]：记账前已经收回 / 还掉的部分，服务端同一个事务里按不记流水收回一次（不用建完再点「收回」）。
   /// [clientId] 是幂等键，同一张表单重试时沿用。
   Future<Debt> create({
@@ -34,10 +36,12 @@ class DebtsRepo {
     String? memberId,
     String? note,
     String? accountId,
+    String? transactionId,
     int? settledCents,
     String? currency,
     String? clientId,
   }) async {
+    assert(accountId == null || transactionId == null, 'accountId 和 transactionId 只能给一个');
     final body = <String, dynamic>{
       if (currency != null) 'currency': currency,
       'direction': direction,
@@ -51,6 +55,7 @@ class DebtsRepo {
     putIfNotNull(body, 'memberId', memberId);
     if (note != null && note.isNotEmpty) body['note'] = note;
     if (accountId != null) body['recordTransaction'] = {'accountId': accountId};
+    if (transactionId != null) body['recordTransaction'] = {'transactionId': transactionId};
     if (settledCents != null && settledCents > 0) body['settledCents'] = settledCents;
     putIfNotNull(body, 'clientId', clientId);
     return _apply(await _api.post('/debts', body));
@@ -105,21 +110,26 @@ class DebtsRepo {
       _apply(await _api.patch('/debts/$id', {'archived': archived}));
 
   /// 收回 / 还钱（[add] 为假）或再借（[add] 为真）。[accountId] 为空 = 不记流水，只改账。
+  /// [transactionId] 非空 = 这笔钱已经记过流水了：借款类把那笔改成转账（结果在 [DebtMoveResult.transactions] 里），
+  /// 人情不动那笔。和 [accountId] 二选一（都给服务端 400）；金额必须和那笔一样（不然 400 `amount_mismatch`）。
   Future<DebtMoveResult> move(
     String id, {
     required bool add,
     required int amountCents,
     required String occurredOn,
     String? accountId,
+    String? transactionId,
     String? note,
     String? clientId,
   }) async {
+    assert(accountId == null || transactionId == null, 'accountId 和 transactionId 只能给一个');
     final body = <String, dynamic>{
       'action': add ? 'add' : 'settle',
       'amountCents': amountCents,
       'occurredOn': occurredOn,
     };
     putIfNotNull(body, 'accountId', accountId);
+    putIfNotNull(body, 'transactionId', transactionId);
     if (note != null && note.isNotEmpty) body['note'] = note;
     putIfNotNull(body, 'clientId', clientId);
     final res = await _api.post('/debts/$id/settle', body);

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -12,6 +14,7 @@ import '../add_tx/account_picker.dart';
 import '../add_tx/picker_field.dart';
 import '../assets/asset_providers.dart';
 import '../assets/asset_widgets.dart';
+import '../transactions/pick_tx_sheet.dart';
 import '../widgets/widgets.dart';
 import 'debt_widgets.dart';
 
@@ -21,10 +24,15 @@ import 'debt_widgets.dart';
 /// 支出 / 收入（类别「人情」）。平时金额经详情页的「收回 / 再借」改；记错了在编辑页直接改总额、还剩多少
 /// （校准，留一行备忘），还没有往来流水时方向、币种也能改。
 /// 新建时能顺带填「已经收回 / 已经还了」多少（以前的账收回过一部分），存的时候一起记，不用建完再去点「收回」。
+/// 钱已经被自动记账 / 导入记成一笔支出 / 收入的，勾「这笔钱已经记过流水了」选那笔：服务端把它改成转账，账户不会扣两次；
+/// 从流水详情「记成一笔新债务」进来时（[txId]）直接按那笔预填并关联。
 class DebtFormPage extends ConsumerStatefulWidget {
-  const DebtFormPage({super.key, this.id});
+  const DebtFormPage({super.key, this.id, this.txId});
 
   final String? id;
+
+  /// 新建时按这笔流水预填（金额、日期、方向、币种）并关联它。
+  final String? txId;
 
   @override
   ConsumerState<DebtFormPage> createState() => _DebtFormPageState();
@@ -60,6 +68,12 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
   bool _countedTouched = false;
   bool _record = true;
   String? _accountId;
+
+  /// 「这笔钱已经记过流水了」：选一笔已有的支出 / 收入当起始那笔，不再新记。
+  bool _linkExisting = false;
+  Transaction? _linkedTx;
+  bool _txLoading = false;
+  String? _txError;
   bool _bound = false;
   bool _busy = false;
   String? _error;
@@ -68,9 +82,59 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
   bool get _editing => widget.id != null;
   bool get _favor => _kind == Debt.kindFavor;
 
+  /// 要关联的那笔是支出还是收入：借出（随礼）是花出去的钱，借入（收礼）是收进来的钱。
+  String get _linkType => _direction == Debt.lend ? Transaction.typeExpense : Transaction.typeIncome;
+
   DateTime _today() {
     final now = ref.read(assetClockProvider)();
     return DateTime(now.year, now.month, now.day);
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    final txId = widget.txId;
+    if (txId != null && !_editing) unawaited(_prefillFrom(txId));
+  }
+
+  /// 从流水详情「记成一笔新债务」进来：按那笔预填金额、日期、方向、币种，并直接进入「已记过流水」模式。
+  Future<void> _prefillFrom(String txId) async {
+    setState(() => _txLoading = true);
+    try {
+      final tx = await ref.read(transactionsRepoProvider).get(txId);
+      if (!mounted) return;
+      setState(() {
+        _txLoading = false;
+        _record = true;
+        _linkExisting = true;
+        _linkedTx = tx;
+        _direction = tx.isIncome ? Debt.borrow : Debt.lend;
+        _currency = tx.currency;
+        _amount.text = Money.input(tx.amountCents);
+        _startedOn = DateTime(tx.occurredAt.year, tx.occurredAt.month, tx.occurredAt.day);
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _txLoading = false;
+        _txError = describeError(error);
+      });
+    }
+  }
+
+  Future<void> _pickTx() async {
+    final tx = await showPickTransactionSheet(
+      context,
+      type: _linkType,
+      currency: _currency,
+      amountCents: parseMoneyField(_amount.text),
+    );
+    if (tx == null || !mounted) return;
+    setState(() {
+      _linkedTx = tx;
+      _amount.text = Money.input(tx.amountCents);
+      _error = null;
+    });
   }
 
   @override
@@ -117,6 +181,7 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
     // 人情是情分不是钱：默认不进净资产（用户自己改过就听用户的）。
     if (!_countedTouched) _counted = kind != Debt.kindFavor;
     _accountId = null;
+    _linkedTx = null;
   });
 
   /// 「已经收回」那一栏怎么叫：借出是收回，借入是还；人情是收回 / 还的人情。
@@ -174,6 +239,12 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
         return calibrate ? '已保存，还剩 ${Money.format(remaining!, currency: _currency)}' : '已保存';
       });
     }
+    // 关联已有流水时金额跟着那笔走：先问选了没有，再看金额。
+    final linking = _record && _linkExisting;
+    if (linking && _linkedTx == null) {
+      setState(() => _error = '选那笔流水，或关掉「这笔钱已经记过流水了」');
+      return;
+    }
     final amount = parseMoneyField(_amount.text);
     if (amount == null || amount <= 0) {
       setState(() => _error = '多少钱？例如 5000');
@@ -193,7 +264,7 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
       });
       return;
     }
-    if (_record && _accountId == null) {
+    if (_record && !linking && _accountId == null) {
       setState(() => _error = '选一个账户，或关掉「同时记一笔」');
       return;
     }
@@ -208,7 +279,8 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
         counted: _counted,
         memberId: _memberId,
         note: _note.text.trim(),
-        accountId: _record ? _accountId : null,
+        accountId: _record && !linking ? _accountId : null,
+        transactionId: linking ? _linkedTx!.id : null,
         settledCents: settled,
         currency: _currency == ref.read(baseCurrencyProvider) ? null : _currency,
         clientId: _clientId,
@@ -217,7 +289,10 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
       final back = settled ?? 0;
       return [
         '记好了',
-        if (_record) back > 0 ? '记了 ${Money.format(amount)} 和 ${Money.format(back)} 两笔流水' : '也记了一笔 ${Money.format(amount)}',
+        if (linking)
+          _favor ? '那笔${_direction == Debt.lend ? '支出' : '收入'}算作这份人情的钱，没再记一笔' : '那笔流水变成了转账，账户不会扣两次'
+        else if (_record)
+          back > 0 ? '记了 ${Money.format(amount)} 和 ${Money.format(back)} 两笔流水' : '也记了一笔 ${Money.format(amount)}',
         if (back > 0) back == amount ? '已结清' : '还剩 ${Money.format(amount - back)}',
       ].join('，');
     });
@@ -285,6 +360,8 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
                 onSelectionChanged: (s) => setState(() {
                   _direction = s.first;
                   _accountId = null;
+                  // 方向换了，要关联的就从支出换成收入（或反过来），原来选的那笔不算数。
+                  _linkedTx = null;
                 }),
               ),
             ),
@@ -338,8 +415,14 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
                       key: const ValueKey('debt-amount'),
                       controller: _amount,
                       onChanged: _onTotalChanged,
+                      // 关联了已有流水：金额跟着那笔走（服务端要求一样），改金额就换一笔。
+                      readOnly: _linkedTx != null,
                       keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      decoration: InputDecoration(prefixText: '${Money.symbolFor(_currency).trim()} ', hintText: '5000'),
+                      decoration: InputDecoration(
+                        prefixText: '${Money.symbolFor(_currency).trim()} ',
+                        hintText: '5000',
+                        helperText: _linkedTx == null ? null : '金额跟着那笔流水；改金额就换一笔',
+                      ),
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -351,6 +434,7 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
                     onChanged: (c) => setState(() {
                       _currency = c;
                       _accountId = null;
+                      _linkedTx = null;
                     }),
                   ),
                 ],
@@ -470,21 +554,60 @@ class _DebtFormPageState extends ConsumerState<DebtFormPage> {
                     : '不记流水：以前的旧账，只记个数',
               ),
             ),
-            if (_record)
-              PickerField(
-                label: _accountLabel,
-                topGap: LedgerLayout.itemGap,
-                child: AccountPicker(
-                  keyPrefix: 'debt-account',
-                  accounts: [
-                    for (final a in ledger.activeAccounts)
-                      if (a.currency.toUpperCase() == _currency.toUpperCase()) a,
-                  ],
-                  selectedId: _accountId,
-                  emptyHint: '还没有账户',
-                  onSelected: (id) => setState(() => _accountId = id),
-                ),
+            if (_record) ...[
+              // 钱已经被自动记账 / 导入记过了：选那笔，服务端把它改成转账，不再新记、账户不扣两次。
+              SwitchListTile(
+                key: const ValueKey('debt-link-existing'),
+                value: _linkExisting,
+                onChanged: (v) => setState(() {
+                  _linkExisting = v;
+                  if (!v) _linkedTx = null;
+                }),
+                title: const Text('这笔钱已经记过流水了'),
+                subtitle: const Text('自动记账 / 导入的那笔，选它就不会再扣一次'),
               ),
+              if (_linkExisting)
+                PickerField(
+                  label: _linkedTx == null ? '选那笔${_linkType == Transaction.typeExpense ? '支出' : '收入'}' : '关联的流水',
+                  topGap: LedgerLayout.itemGap,
+                  child: _linkedTx == null
+                      ? Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            OutlinedButton.icon(
+                              key: const ValueKey('debt-pick-tx'),
+                              onPressed: _txLoading ? null : _pickTx,
+                              icon: const Icon(Icons.receipt_long_outlined, size: 18),
+                              label: Text(_txLoading ? '正在读那笔流水…' : '选流水'),
+                            ),
+                            if (_txError != null)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 6),
+                                child: Text(
+                                  '那笔流水读不出来：$_txError',
+                                  style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.error),
+                                ),
+                              ),
+                          ],
+                        )
+                      : LinkedTxRow(key: const ValueKey('debt-linked-tx'), tx: _linkedTx!, ledger: ledger, onTap: _pickTx),
+                )
+              else
+                PickerField(
+                  label: _accountLabel,
+                  topGap: LedgerLayout.itemGap,
+                  child: AccountPicker(
+                    keyPrefix: 'debt-account',
+                    accounts: [
+                      for (final a in ledger.activeAccounts)
+                        if (a.currency.toUpperCase() == _currency.toUpperCase()) a,
+                    ],
+                    selectedId: _accountId,
+                    emptyHint: '还没有账户',
+                    onSelected: (id) => setState(() => _accountId = id),
+                  ),
+                ),
+            ],
           ],
           PickerField(
             label: '备注（选填）',

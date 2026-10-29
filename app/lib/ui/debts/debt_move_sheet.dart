@@ -11,10 +11,12 @@ import '../add_tx/account_picker.dart';
 import '../add_tx/picker_field.dart';
 import '../assets/asset_providers.dart';
 import '../assets/asset_widgets.dart';
+import '../transactions/pick_tx_sheet.dart';
 import '../widgets/widgets.dart';
 import 'debt_widgets.dart';
 
 /// 收回 / 还钱（[add] 为假）或再借（[add] 为真）。成功返回 true。
+/// 钱已经被自动记账 / 导入记过的，勾「这笔钱已经记过流水了」选那笔：服务端把它改成转账，账户不扣两次。
 Future<bool?> showDebtMoveSheet(BuildContext context, Debt debt, {required bool add}) => showModalBottomSheet<bool>(
   useRootNavigator: true,
   context: context,
@@ -40,11 +42,33 @@ class _DebtMoveSheetState extends ConsumerState<DebtMoveSheet> {
   /// 默认记流水：钱真的经过某个账户（人情是记一笔支出 / 收入）。
   bool _record = true;
   String? _accountId;
+
+  /// 「这笔钱已经记过流水了」：选一笔已有的支出 / 收入当这次往来。
+  bool _linkExisting = false;
+  Transaction? _linkedTx;
   bool _busy = false;
   String? _error;
   final String _clientId = newClientId();
 
   Debt get _d => widget.debt;
+
+  /// 钱进真账户的（收回、再借入、收礼）要关联一笔收入，出去的（还钱、再借出、随礼）要一笔支出。
+  String get _linkType => _d.isLend != widget.add ? Transaction.typeIncome : Transaction.typeExpense;
+
+  Future<void> _pickTx() async {
+    final tx = await showPickTransactionSheet(
+      context,
+      type: _linkType,
+      currency: _d.currency,
+      amountCents: parseMoneyField(_amount.text),
+    );
+    if (tx == null || !mounted) return;
+    setState(() {
+      _linkedTx = tx;
+      _amount.text = Money.input(tx.amountCents);
+      _error = null;
+    });
+  }
 
   /// 收回 / 还钱：先填上还剩多少，多数是一次还清。
   String _prefill() {
@@ -86,7 +110,12 @@ class _DebtMoveSheetState extends ConsumerState<DebtMoveSheet> {
       setState(() => _error = '最多 ${Money.format(left)}');
       return;
     }
-    if (_record && _accountId == null) {
+    final linking = _record && _linkExisting;
+    if (linking && _linkedTx == null) {
+      setState(() => _error = '选那笔流水，或关掉「这笔钱已经记过流水了」');
+      return;
+    }
+    if (_record && !linking && _accountId == null) {
       setState(() => _error = '选一个账户，或关掉「同时记一笔」');
       return;
     }
@@ -100,16 +129,22 @@ class _DebtMoveSheetState extends ConsumerState<DebtMoveSheet> {
         add: widget.add,
         amountCents: amount,
         occurredOn: Dates.isoDate(_day),
-        accountId: _record ? _accountId : null,
+        accountId: _record && !linking ? _accountId : null,
+        transactionId: linking ? _linkedTx!.id : null,
         note: _note.text.trim(),
         clientId: _clientId,
       );
       refreshMoneyViews(ref);
       if (!mounted) return;
+      final money = Money.format(amount, currency: _d.currency);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            result.replayed ? '刚才那次其实已经记上了，没有重复记' : '已记：${debtMoveLabel(_d, add: widget.add)} ${Money.format(amount)}',
+            result.replayed
+                ? '刚才那次其实已经记上了，没有重复记'
+                : linking && !_d.isFavor
+                    ? '已记：${debtMoveLabel(_d, add: widget.add)} $money，那笔流水变成了转账'
+                    : '已记：${debtMoveLabel(_d, add: widget.add)} $money',
           ),
         ),
       );
@@ -147,8 +182,15 @@ class _DebtMoveSheetState extends ConsumerState<DebtMoveSheet> {
                   key: const ValueKey('debt-move-amount'),
                   controller: _amount,
                   autofocus: true,
+                  // 关联了已有流水：金额跟着那笔走，改金额就换一笔。
+                  readOnly: _linkedTx != null,
                   keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                  decoration: const InputDecoration(prefixText: '¥ ', hintText: '2000'),
+                  // 这笔债务是什么币就写什么符号（美元的债不是 ¥）。
+                  decoration: InputDecoration(
+                    prefixText: '${Money.symbolFor(_d.currency).trim()} ',
+                    hintText: '2000',
+                    helperText: _linkedTx == null ? null : '金额跟着那笔流水；改金额就换一笔',
+                  ),
                 ),
               ),
               PickerField(label: '哪天', child: DayButton(day: _day, onPressed: () async {
@@ -175,18 +217,51 @@ class _DebtMoveSheetState extends ConsumerState<DebtMoveSheet> {
                       : '不记流水，只改这笔债务还剩多少（以前的旧账、抵了、免了）',
                 ),
               ),
-              if (_record)
-                PickerField(
-                  label: _accountLabel,
-                  topGap: LedgerLayout.itemGap,
-                  child: AccountPicker(
-                    keyPrefix: 'debt-move-account',
-                    accounts: accounts,
-                    selectedId: _accountId,
-                    emptyHint: '还没有账户',
-                    onSelected: (id) => setState(() => _accountId = id),
-                  ),
+              if (_record) ...[
+                SwitchListTile(
+                  key: const ValueKey('debt-move-link'),
+                  value: _linkExisting,
+                  onChanged: (v) => setState(() {
+                    _linkExisting = v;
+                    if (!v) _linkedTx = null;
+                  }),
+                  title: const Text('这笔钱已经记过流水了'),
+                  subtitle: const Text('自动记账 / 导入的那笔，选它就不会再扣一次'),
                 ),
+                if (_linkExisting)
+                  PickerField(
+                    label: _linkedTx == null ? '选那笔${_linkType == Transaction.typeExpense ? '支出' : '收入'}' : '关联的流水',
+                    topGap: LedgerLayout.itemGap,
+                    child: _linkedTx == null
+                        ? Align(
+                            alignment: Alignment.centerLeft,
+                            child: OutlinedButton.icon(
+                              key: const ValueKey('debt-move-pick-tx'),
+                              onPressed: _pickTx,
+                              icon: const Icon(Icons.receipt_long_outlined, size: 18),
+                              label: const Text('选流水'),
+                            ),
+                          )
+                        : LinkedTxRow(
+                            key: const ValueKey('debt-move-linked-tx'),
+                            tx: _linkedTx!,
+                            ledger: ref.watch(ledgerProvider).valueOrNull,
+                            onTap: _pickTx,
+                          ),
+                  )
+                else
+                  PickerField(
+                    label: _accountLabel,
+                    topGap: LedgerLayout.itemGap,
+                    child: AccountPicker(
+                      keyPrefix: 'debt-move-account',
+                      accounts: accounts,
+                      selectedId: _accountId,
+                      emptyHint: '还没有账户',
+                      onSelected: (id) => setState(() => _accountId = id),
+                    ),
+                  ),
+              ],
               FormSubmit(
                 key: const ValueKey('debt-move-submit'),
                 label: debtMoveLabel(_d, add: widget.add),
