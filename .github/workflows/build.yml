@@ -254,6 +254,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # JDK 钉在 17，不跟 runner 镜像的默认走：ubuntu-latest 从 2026-10-19 起
+      # 陆续换成 Ubuntu 26.04，那边默认 JDK 25，而 Gradle 8.12 最高只能跑在
+      # JDK 23 上——内嵌的 Kotlin 编译器认不出 25 的版本号，一编 .gradle.kts
+      # 就失败，报错只有一行「25.0.5」。17 是 24.04 镜像的默认，以前每次发布
+      # 都是用它编的；想换 25 得先把 Gradle 升到 9.1 以上。
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: 3.32.1

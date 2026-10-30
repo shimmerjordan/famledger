@@ -61,6 +61,9 @@
   失败的写也算成「发出去了」，CI 一换到 24.22 就每次必挂。现在只数写成功的，并且每写一块让同进程的客户端读走一块，结论不再
   取决于机器的 TCP 缓冲有多大。ReDoS 测试每页的时限从 200ms 放宽到 1 秒：线性实现一页十几毫秒，平方级要几秒到几分钟，
   照样分得开，CI 机器忙时也不误报。
+- **发布流水线的 APK 构建钉住 JDK 17**：GitHub 从 10 月 19 日起把 `ubuntu-latest` 陆续切到 Ubuntu 26.04，那边默认的 JDK 是 25，
+  而 Gradle 8.12 最高只能跑在 JDK 23 上，一启动就失败（报错只有一行 `25.0.5`），排到新镜像的发布每次必挂。Android 这一步现在
+  自己装 Temurin 17（旧镜像的默认、以前每次发布用的就是它），不再跟着镜像默认走。
 - **校准相关的接口**：
   - `PATCH /funds/:id` 收 `openingBalances`（整份替换）、`currentBalances`（按币种校准），返回 `openingBalances`；`/changes` 同步带上。
   - `PATCH /accounts/:id` 收 `currentBalanceCents`；债务的内部账户不能直接改期初、类型（到债务里改）。
