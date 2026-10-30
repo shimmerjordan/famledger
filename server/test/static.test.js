@@ -196,3 +196,36 @@ test('空文件：200、Content-Length 0、没有正文', async (t) => {
   assert.equal(r.text, '');
   assert.equal((await a.raw('GET', '/healthz')).text, 'ok', '同一条连接接着能用');
 });
+
+test('客户端下到一半断开：读文件的流跟着关掉，不一直占着文件描述符', async () => {
+  // pipe 在下游提前关闭时只解除管道、把读流停住，并不关它：以前每断一次大文件的下载（main.dart.js 好几 MB，
+  // 手机切网、页面没加载完就关掉都会这样）就漏一个 fd，一直漏到进程重启。
+  const webRoot = buildWebRoot();
+  fs.writeFileSync(path.join(webRoot, 'assets', 'big.bin'), Buffer.alloc(1 << 20, 0x61));
+  const { fallback } = require('../src/modules/static')({ cfg: { webRoot }, log: { error() {} } });
+
+  let stream;
+  const createReadStream = fs.createReadStream;
+  fs.createReadStream = (...args) => (stream = createReadStream(...args));
+  let started;
+  const firstChunk = new Promise((r) => (started = r));
+  // 收到第一块就再也不回调：像一个卡住的客户端，读流被背压停在半路。
+  const res = new Writable({ highWaterMark: 1, write: () => started() });
+  res.writeHead = () => {};
+  try {
+    assert.equal(fallback({ method: 'GET', url: '/assets/big.bin', headers: {} }, res), true);
+  } finally {
+    fs.createReadStream = createReadStream;
+  }
+  await firstChunk;
+  res.destroy(); // 客户端断开：真的 ServerResponse 这时也是发 'close'
+
+  const closed = await new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), 1000);
+    stream.once('close', () => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
+  assert.ok(closed, '客户端断开以后读流一直开着');
+});

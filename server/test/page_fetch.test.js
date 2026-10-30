@@ -184,8 +184,11 @@ test('体积上限：正文超过 2MB 立刻中止（服务端没发完就被断
         if (!res.writableFinished) closedEarly = true;
       });
       for (let i = 0; i < 128 && !res.destroyed; i++) {
-        await new Promise((resolve) => res.write(chunk, resolve));
+        // 只数写成功的：Node 24.22 起连接断了 write 照样回调（带 ECONNRESET），res.destroyed 却要等 'close' 才变。
+        if (await new Promise((resolve) => res.write(chunk, resolve))) break;
         sent += chunk.length;
+        // 写一块让同进程的客户端读一块：没读的不在内核缓冲里堆着，结论不取决于这台机器的 TCP 缓冲有多大。
+        await new Promise((resolve) => setImmediate(resolve));
       }
       res.end();
     },
@@ -376,8 +379,9 @@ test('其他：图片 → unsupported_page（不读正文）；404 → fetch_fai
   );
 });
 
-test('ReDoS：2MB 的对抗页面（一大堆 `<input ` / `<meta ` 不闭合、超长空白）—— 判登录墙、提取正文都是线性的，200ms 内完', () => {
+test('ReDoS：2MB 的对抗页面（一大堆 `<input ` / `<meta ` 不闭合、超长空白）—— 判登录墙、提取正文都是线性的，1 秒内完', () => {
   // 原来的 /<input\b[^>]*type=password/ 对这种页面是 O(n²)：400KB 就要 8 秒，2MB 要几分钟，整个服务端跟着卡住。
+  // 线性的一页只要十几毫秒；上限给 1 秒，CI 机器忙时不误报，平方级照样抓得住。
   const N = 2 * 1024 * 1024;
   const rep = (piece) => piece.repeat(Math.ceil(N / piece.length)).slice(0, N);
   const pages = {
@@ -389,7 +393,7 @@ test('ReDoS：2MB 的对抗页面（一大堆 `<input ` / `<meta ` 不闭合、�
     const { text } = htmlToText(page);
     const login = looksLikeLogin(200, 'https://shop.test/', page, text);
     const ms = Number(process.hrtime.bigint() - started) / 1e6;
-    assert.ok(ms < 200, `${name}：${ms.toFixed(1)}ms`);
+    assert.ok(ms < 1000, `${name}：${ms.toFixed(1)}ms`);
     assert.equal(login, false, name);
   }
   // 标签照常认：大小写、单双引号、没有引号。

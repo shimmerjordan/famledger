@@ -130,6 +130,9 @@ module.exports = (ctx) => {
       log.error('static', `${file}: ${e.message}`);
       res.destroy();
     });
+    // pipe() only unpipes when the client hangs up mid-download: the paused read stream would hold
+    // its file descriptor until the process exits. After a normal finish this is a no-op.
+    res.on('close', () => stream.destroy());
     stream.pipe(res);
   }
 
