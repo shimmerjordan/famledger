@@ -50,6 +50,10 @@
   这类 SegmentedButton / Chip）：CanvasKit 第一次遇到汉字才去下中文字体，而 Flutter 3.32 下完只重排画出来的文字、不重算
   「本来该多宽」，按文字宽度定尺寸的控件就一直按没字体时的窄尺寸排。现在网页版先把中文字体拉下来再画第一帧（最多等 4 秒，
   断网照常启动），顺便没有了先闪一帧空框；「转账・拨款」的间隔号改用全角，避免中英两段字体量不准。
+- **修复：服务端运行中重建网页时，一个响应可能串进下一个**：静态文件以前按开头取到的大小写 `Content-Length`，
+  却一直读到文件末尾；文件恰好在发送途中被原地改写（`scripts/dev.sh` 跑着时用 `scripts/build-web.sh` 重建网页）时，
+  多出来的字节顺着长连接被客户端当成下一个响应的开头。现在只发说好的那么多字节。测试脚手架起服务端遇到端口刚好
+  被别的连接占走（`EADDRINUSE`）会换个端口重起，CI 不再因为这两处偶发失败。
 - **校准相关的接口**：
   - `PATCH /funds/:id` 收 `openingBalances`（整份替换）、`currentBalances`（按币种校准），返回 `openingBalances`；`/changes` 同步带上。
   - `PATCH /accounts/:id` 收 `currentBalanceCents`；债务的内部账户不能直接改期初、类型（到债务里改）。

@@ -120,8 +120,12 @@ module.exports = (ctx) => {
     }
     headers['content-length'] = st.size;
     res.writeHead(200, headers);
-    if (req.method === 'HEAD') return res.end();
-    const stream = fs.createReadStream(file);
+    if (req.method === 'HEAD' || st.size === 0) return res.end();
+    // Send exactly the bytes Content-Length promised. Reading to EOF instead goes wrong when the
+    // file is rewritten in place mid-send (scripts/build-web.sh while scripts/dev.sh serves
+    // app/build/web): the extra bytes go down the keep-alive connection and the client parses
+    // them as the start of its next response.
+    const stream = fs.createReadStream(file, { start: 0, end: st.size - 1 });
     stream.on('error', (e) => {
       log.error('static', `${file}: ${e.message}`);
       res.destroy();

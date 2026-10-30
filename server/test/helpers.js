@@ -45,13 +45,26 @@ function tmpDir(tag) {
 
 /**
  * Start a server. `env` overrides any environment variable; DATA_DIR and
- * WEB_ROOT default to fresh temp directories.
+ * WEB_ROOT default to fresh temp directories. `pickPort` is only for the
+ * helper's own test.
  * @returns {Promise<{base:string, port:number, dataDir:string, webRoot:string, stderr:()=>string, stdout:()=>string, stop:()=>Promise<void>}>}
  */
-async function startServer(env = {}) {
+async function startServer(env = {}, { pickPort = freePort } = {}) {
   const dataDir = env.DATA_DIR || tmpDir('data');
   const webRoot = env.WEB_ROOT || tmpDir('web');
-  const port = await freePort();
+  // freePort() 问到的端口要等子进程真正 listen 才算占住，中间这段它是空着的：同时在跑的其他测试文件
+  // 发请求时，出站连接的本地端口也从同一段临时端口里分配，偶尔正好拿走它，子进程就 EADDRINUSE 起不来。
+  // 撞上了就换个端口重起；数据目录照用（失败的那次最多跑完了迁移，和重启一次没有区别）。
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await launch(await pickPort(), dataDir, webRoot, env);
+    } catch (e) {
+      if (e.code !== 'EADDRINUSE' || attempt >= 5) throw e;
+    }
+  }
+}
+
+async function launch(port, dataDir, webRoot, env) {
   const child = spawn(process.execPath, [SERVER], {
     env: {
       ...process.env,
@@ -72,6 +85,8 @@ async function startServer(env = {}) {
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  // 'exit' 可能比 stderr 的最后一段先到；判断起没起来之前等管道关掉，报错信息才是全的。
+  const closed = new Promise((resolve) => child.once('close', resolve));
   let err = '';
   child.stderr.on('data', (d) => {
     err += d.toString();
@@ -96,7 +111,10 @@ async function startServer(env = {}) {
   }
   if (!up) {
     child.kill('SIGKILL');
-    throw new Error(`server did not start on ${port}\n--- stderr ---\n${err}`);
+    await closed;
+    const e = new Error(`server did not start on ${port}\n--- stderr ---\n${err}`);
+    if (err.includes('EADDRINUSE')) e.code = 'EADDRINUSE';
+    throw e;
   }
 
   return {

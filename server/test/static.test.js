@@ -7,6 +7,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { Writable } = require('node:stream');
 
 const { startServer, api, tmpDir } = require('./helpers');
 
@@ -147,4 +148,51 @@ test('WEB_ROOT 没有 index.html 时 / 返回说明页', async (t) => {
   // the API still works with no web build present
   assert.equal((await a.get('/setup/status')).status, 200);
   assert.equal((await a.raw('GET', '/main.dart.js')).status, 404);
+});
+
+test('文件发到一半被原地改写：只发 Content-Length 说好的字节数，多出来的不会串进同一条连接的下一个响应', async () => {
+  // 进程内直接调 fallback，用一个迟迟不收数据的 res 把读流卡住：响应头（长度 = 改写前的大小）已经发出、
+  // 文件才读了开头一段，这时往文件后面追加内容。以前读流一路读到文件末尾，追加的那段也照发——走 keep-alive 时
+  // 客户端把多出来的字节当成下一个响应的开头（HTTPParserError），上面「每次构建换地址」偶发失败就是这个。
+  const webRoot = buildWebRoot();
+  const file = path.join(webRoot, 'assets', 'big.bin');
+  const size = 1 << 20; // 远大于读流一次预读的 64 KiB：追加的时候一定还没读到末尾
+  fs.writeFileSync(file, Buffer.alloc(size, 0x61));
+  const { fallback } = require('../src/modules/static')({ cfg: { webRoot }, log: { error() {} } });
+
+  let release;
+  const gate = new Promise((r) => (release = r));
+  let started;
+  const firstChunk = new Promise((r) => (started = r));
+  const chunks = [];
+  const res = new Writable({
+    highWaterMark: 1,
+    write(chunk, _enc, cb) {
+      chunks.push(chunk);
+      started();
+      gate.then(() => cb());
+    },
+  });
+  res.writeHead = (status, headers) => Object.assign(res, { statusCode: status, sentHeaders: headers });
+  const finished = new Promise((resolve, reject) => res.on('finish', resolve).on('error', reject));
+
+  assert.equal(fallback({ method: 'GET', url: '/assets/big.bin', headers: {} }, res), true);
+  await firstChunk;
+  fs.appendFileSync(file, 'tail appended while the response was in flight');
+  release();
+  await finished;
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.sentHeaders['content-length'], size);
+  assert.equal(Buffer.concat(chunks).length, size, '发出去的字节数 = Content-Length，不是文件现在的大小');
+});
+
+test('空文件：200、Content-Length 0、没有正文', async (t) => {
+  const { a, webRoot } = await served(t);
+  fs.writeFileSync(path.join(webRoot, 'assets', 'empty.json'), '');
+  const r = await a.raw('GET', '/assets/empty.json');
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get('content-length'), '0');
+  assert.equal(r.text, '');
+  assert.equal((await a.raw('GET', '/healthz')).text, 'ok', '同一条连接接着能用');
 });
